@@ -67,4 +67,5 @@
 .details .muted{color:var(--muted)}
 .details .empty{color:var(--muted)}
 .details .body{font-size:12.5px;color:var(--ink2);border-left:2px solid var(--grid);padding-left:10px;margin:8px 0;white-space:pre-wrap}
+.details code.resume{font-size:11px;color:var(--ink2);user-select:all;overflow-wrap:anywhere}
 .details .actions{display:flex;gap:6px;margin-top:10px}

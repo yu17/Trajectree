@@ -1,5 +1,5 @@
 import { render, screen, fireEvent } from "@testing-library/react";
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { DetailsPanel } from "./DetailsPanel";
@@ -28,6 +28,13 @@ const data: TimelineResponse = {
   edges: [{ id: "x", src_type: "event", src_id: "e1", dst_type: "event", dst_id: "e2", rel: "led_to", props: {}, valid_from: null, valid_to: null, created_at: "2026-01-08T10:00:00Z" }],
   pending: { event: { e2: "t2" }, todo: {}, edge: {} }, strip: [], live: [], stale: [],
 };
+
+// Tests stub navigator.clipboard; put the original back so a stub never leaks into the next test.
+const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+afterEach(() => {
+  if (clipboardDescriptor) Object.defineProperty(navigator, "clipboard", clipboardDescriptor);
+  else delete (navigator as { clipboard?: unknown }).clipboard;
+});
 
 const wrap = (ui: ReactNode) => render(<QueryClientProvider client={new QueryClient()}>{ui}</QueryClientProvider>);
 
@@ -85,10 +92,20 @@ describe("DetailsPanel", () => {
     wrap(<DetailsPanel data={data} selected={{ type: "bin", projectId: "p1", start, end }} onReview={() => {}} onRevert={() => {}} />);
     expect(screen.getByText("Activity")).toBeTruthy();
     await screen.findByText("Fix build");
-    expect(api.signals).toHaveBeenCalledWith(["p1"], new Date(start), new Date(end));
+    expect(api.signals).toHaveBeenCalledWith(["p1"], new Date(start), new Date(end - 1));
     expect(screen.getByText(/3 prompts/)).toBeTruthy();
     fireEvent.click(screen.getByText("Copy resume command"));
     expect(writeText).toHaveBeenCalledWith("cd /home/u/proj && claude --resume abcd1234-ef56-7890-abcd-ef1234567890");
     await screen.findByText("Copied");
+  });
+  it("shows the resume command and reports a failed copy", async () => {
+    Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
+    const start = Date.UTC(2026, 0, 5);
+    const { container } = wrap(<DetailsPanel data={data} selected={{ type: "bin", projectId: "p1", start, end: start + 86_400_000 }} onReview={() => {}} onRevert={() => {}} />);
+    await screen.findByText("Fix build");
+    expect(screen.getByText("05 Jan 2026")).toBeTruthy();
+    expect(container.querySelector("code.resume")!.textContent).toContain("claude --resume");
+    fireEvent.click(screen.getByText("Copy resume command"));
+    await screen.findByText(/Copy failed/);
   });
 });

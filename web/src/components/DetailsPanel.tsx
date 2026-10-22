@@ -15,6 +15,7 @@ export interface DetailsPanelProps {
 }
 
 const fmtRecorded = d3.timeFormat("%d %b %Y %H:%M");
+const fmtDay = d3.utcFormat("%d %b %Y"); // strip buckets are UTC days, weeks or months
 
 function authorOf(t: Txn): string {
   return [
@@ -133,16 +134,19 @@ const num = (v: unknown): number => (typeof v === "number" ? v : 0);
 function BinDetails({ projectId, start, end }: { projectId: string; start: number; end: number }) {
   const q = useQuery({
     queryKey: ["signals", projectId, start, end],
-    queryFn: () => api.signals([projectId], new Date(start), new Date(end)),
+    // The server matches by overlap, so stop 1 ms before the exclusive end the cell did not count.
+    queryFn: () => api.signals([projectId], new Date(start), new Date(end - 1)),
   });
   const signals: Signal[] = q.data ?? [];
   const sessions = signals.filter(s => s.kind === "session");
   const commits = signals.filter(s => s.kind === "commits");
+  const first = fmtDay(new Date(start));
+  const last = fmtDay(new Date(end - 1));
 
   return (
     <aside className="details">
       <h2>Activity</h2>
-      <p className="muted">{fmtRecorded(new Date(start))} → {fmtRecorded(new Date(end))}</p>
+      <p className="muted">{first === last ? first : `${first} – ${last}`}</p>
       {q.isPending ? (
         <p className="muted">loading…</p>
       ) : q.isError ? (
@@ -157,11 +161,13 @@ function BinDetails({ projectId, start, end }: { projectId: string; start: numbe
               <ul className="links">
                 {sessions.map(s => {
                   const sid = str(s.payload.session_id) ?? "";
+                  const command = `cd ${str(s.payload.cwd) ?? "."} && claude --resume ${sid}`;
                   return (
                     <li key={s.id}>
                       <b>{str(s.payload.title) ?? sid.slice(0, 8)}</b>
                       {` · ${num(s.payload.prompts)} prompts · ${str(s.payload.model) ?? "unknown model"} `}
-                      <CopyResume command={`cd ${str(s.payload.cwd) ?? "."} && claude --resume ${sid}`} />
+                      <CopyResume command={command} />
+                      <div><code className="resume">{command}</code></div>
                     </li>
                   );
                 })}
@@ -190,16 +196,25 @@ function BinDetails({ projectId, start, end }: { projectId: string; start: numbe
   );
 }
 
+type CopyState = "idle" | "copied" | "failed";
+const COPY_LABEL: Record<CopyState, string> = {
+  idle: "Copy resume command", copied: "Copied", failed: "Copy failed, select the text",
+};
+
 function CopyResume({ command }: { command: string }) {
-  const [copied, setCopied] = useState(false);
+  const [state, setState] = useState<CopyState>("idle");
   useEffect(() => {
-    if (!copied) return;
-    const id = setTimeout(() => setCopied(false), 1500);
+    if (state === "idle") return;
+    const id = setTimeout(() => setState("idle"), state === "copied" ? 1500 : 3000);
     return () => clearTimeout(id);
-  }, [copied]);
-  // navigator.clipboard is absent outside secure contexts (plain http on a LAN host).
-  const copy = () => navigator.clipboard?.writeText(command).then(() => setCopied(true), () => {});
-  return <button onClick={copy}>{copied ? "Copied" : "Copy resume command"}</button>;
+  }, [state]);
+  const copy = () => {
+    // navigator.clipboard is absent outside secure contexts (plain http on a LAN host).
+    const clip = navigator.clipboard as Clipboard | undefined;
+    if (!clip) { setState("failed"); return; }
+    clip.writeText(command).then(() => setState("copied"), () => setState("failed"));
+  };
+  return <button onClick={copy}>{COPY_LABEL[state]}</button>;
 }
 
 function titleOf(data: TimelineResponse, id: string): { title: string; project: string } {
