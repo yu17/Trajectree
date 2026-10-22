@@ -16,6 +16,19 @@ def slug_from_path(path: Path) -> str:
     return re.sub(r"[^a-z0-9]+", "-", path.name.lower()).strip("-")[:64]
 
 
+def _git_dir(path: Path) -> Path | None:
+    dot_git = path / ".git"
+    if dot_git.is_dir():
+        return dot_git
+    try:
+        first = dot_git.read_text(encoding="utf-8").splitlines()[0]
+    except (OSError, UnicodeDecodeError, IndexError):
+        return None
+    if not first.startswith("gitdir:") or not first[7:].strip():
+        return None
+    return path / first[7:].strip()  # an absolute pointer replaces the base
+
+
 def _add_exclude(git_dir: Path) -> None:
     exclude = git_dir / "info" / "exclude"
     exclude.parent.mkdir(parents=True, exist_ok=True)
@@ -50,9 +63,16 @@ def init_project(
     no_exclude: bool = False,
 ) -> int:
     path = path.resolve()
+    if not path.is_dir():
+        print(f"not a directory: {path}", file=sys.stderr)
+        return 2
+    derived = not slug
     slug = slug or slug_from_path(path)
     if not re.match(SLUG_PATTERN, slug):
-        print(f"invalid slug: {slug}", file=sys.stderr)
+        if derived and not slug:
+            print(f"invalid slug: '' (derived from '{path.name}'); pass --slug", file=sys.stderr)
+        else:
+            print(f"invalid slug: {slug}", file=sys.stderr)
         return 2
     project = next((p for p in api.get("/api/projects") if p["slug"] == slug), None)
     if project is None:
@@ -71,13 +91,27 @@ def init_project(
         )
 
     rules = path / ".claude" / "rules" / "trajectree.md"
-    rules.parent.mkdir(parents=True, exist_ok=True)
-    rules.write_text(render_rules(slug, shown_title), encoding="utf-8")
-    if has_git and not no_exclude:
-        _add_exclude(path / ".git")
+    note = ""
+    target = rules
+    try:
+        rules.parent.mkdir(parents=True, exist_ok=True)
+        rules.write_text(render_rules(slug, shown_title), encoding="utf-8")
+        if has_git and not no_exclude:
+            git_dir = _git_dir(path)
+            if git_dir is None:
+                note = " (exclude skipped: unreadable .git pointer)"
+            else:
+                target = git_dir / "info" / "exclude"
+                _add_exclude(git_dir)
+    except OSError as exc:
+        print(
+            f"cannot write {target}: {exc} (project and resources were registered)",
+            file=sys.stderr,
+        )
+        return 1
 
     print(f"project: {slug} ({pid})", file=out)
     print(f"resources: {', '.join(kinds)}", file=out)
-    print(f"rules: {rules}", file=out)
+    print(f"rules: {rules}{note}", file=out)
     print(_ensure_mcp(runner), file=out)
     return 0

@@ -87,3 +87,25 @@ def test_init_project_reports_failed_mcp_add(tmp_path, client, app, capsys):
 
     assert main(["init-project", str(tmp_path), "--slug", "xx"], client=client, env=env_for(app), runner=failing) == 0
     assert capsys.readouterr().out.splitlines()[-1].startswith("mcp: failed (claude mcp add exited 1); run: claude mcp add")
+
+
+def test_init_project_rejects_missing_or_file_path(tmp_path, client, app, capsys):
+    afile = tmp_path / "f.txt"
+    afile.write_text("x")
+    for bad in (tmp_path / "nope", afile):
+        assert main(["init-project", str(bad), "--slug", "zz"], client=client, env=env_for(app), runner=FakeClaude()) == 2
+        assert "not a directory" in capsys.readouterr().err
+    assert client.get("/api/projects").json() == []
+
+
+def test_init_project_handles_git_file_pointer(tmp_path, client, app, capsys):
+    gitdir = tmp_path / "gitdir"
+    gitdir.mkdir()
+    folder = tmp_path / "wt"
+    folder.mkdir()
+    (folder / ".git").write_text(f"gitdir: {gitdir}\n")
+    assert main(["init-project", str(folder)], client=client, env=env_for(app), runner=FakeClaude()) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert len(out) == 4 and out[1] == "resources: folder, git_local"
+    assert (gitdir / "info" / "exclude").read_text().count(".claude/rules/trajectree.md") == 1
+    assert "git_local" in {r["kind"] for r in client.get("/api/resources").json()}

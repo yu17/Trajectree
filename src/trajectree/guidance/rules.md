@@ -16,7 +16,7 @@ Record an entry as soon as one of these happens in this session:
 ## How
 
 - Call `record_event` with a `kind` of decision, milestone, blocker, meeting, idea or note, a short `title`, and an `intent`: one line saying why you are recording it. The `intent` is stored in the ledger.
-- Call `add_todo` for each follow-up that is owed.
+- Call `add_todo` for each follow-up that is owed. `add_todo` and `link` take the same one-line `intent`.
 - Call `link` to relate two items, with a `rel` such as `depends_on`, `derived_from`, `caused` or `relates_to`.
 - Omit `project`; the server defaults it from this folder.
 
