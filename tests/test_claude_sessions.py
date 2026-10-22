@@ -138,3 +138,25 @@ def test_backend_profiles_are_scanned(ledger, human, settings, tmp_path):
 def test_scan_without_roots_is_noop(ledger, settings):
     r = scan_transcripts(ledger.conn, settings, now=datetime.now(UTC))
     assert r.files_seen == 0 and r.live == []
+
+def test_large_transcript_streams_and_resumes(ledger, human, settings, tmp_path):
+    from trajectree.repo.state import get_state
+    home, s, p = setup(ledger, human, settings, tmp_path)
+    records = [rec_user("2026-01-05T10:00:00.000Z", text="x" * 300) for _ in range(20000)]
+    path = write_transcript(home, CWD, SID, records)
+    complete_len = path.stat().st_size
+    assert complete_len > 9_000_000
+    partial = json.dumps(rec_user("2026-01-05T11:00:00.000Z"))
+    with path.open("a") as f:
+        f.write(partial[:40])
+    now = datetime.now(UTC)
+    scan_transcripts(ledger.conn, s, now=now)
+    assert list_signals(ledger.conn, project_ids=[p.id])[0].payload["prompts"] == 20000
+    assert get_state(ledger.conn, f"scan:{path.absolute()}")["offset"] == complete_len
+    with path.open("a") as f:
+        f.write(partial[40:] + "\n" + json.dumps(rec_user("2026-01-05T11:01:00.000Z")) + "\n")
+    os.utime(path, None)
+    r = scan_transcripts(ledger.conn, s, now=now)
+    assert r.files_read == 1
+    assert list_signals(ledger.conn, project_ids=[p.id])[0].payload["prompts"] == 20002
+    assert get_state(ledger.conn, f"scan:{path.absolute()}")["offset"] == path.stat().st_size

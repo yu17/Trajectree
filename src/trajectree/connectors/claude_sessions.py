@@ -6,10 +6,10 @@ look as expected is skipped, never raised on. Files are only ever opened for rea
 """
 
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 import apsw
 from pydantic import AwareDatetime, BaseModel, ValidationError
@@ -190,6 +190,29 @@ def _stored_summary(state: Any) -> SessionSummary | None:
         return None
 
 
+def _read_from(path: Path, offset: int, acc: SessionSummary) -> tuple[SessionSummary, int]:
+    """Fold the complete lines after `offset` into `acc`, streaming one line at a time.
+
+    Returns the new summary and the byte length of the complete lines consumed. Only
+    complete lines count; a live session's partial last line (no trailing newline) is
+    re-read on the next scan.
+    """
+    consumed = 0
+
+    def complete_lines(f: BinaryIO) -> Iterator[bytes]:
+        nonlocal consumed
+        for line in f:
+            if not line.endswith(b"\n"):
+                return
+            consumed += len(line)
+            yield line
+
+    with path.open("rb") as f:
+        f.seek(offset)
+        summary = parse_lines(complete_lines(f), acc)
+    return summary, consumed
+
+
 def _refresh_summaries(
     conn: apsw.Connection, settings: Settings, now: datetime
 ) -> tuple[int, int, list[tuple[SessionSummary, float]]]:
@@ -218,20 +241,15 @@ def _refresh_summaries(
             else:  # new file, unreadable state, or truncated below what was read: start over
                 offset, summary = 0, SessionSummary(transcript_path=abs_path, backend=backend)
             try:
-                with path.open("rb") as f:
-                    f.seek(offset)
-                    data = f.read()
+                summary, consumed = _read_from(path, offset, summary)
             except OSError:
                 continue
-            # Only complete lines; a live session's partial last line is re-read next time.
-            complete = data.rfind(b"\n") + 1
-            summary = parse_lines(data[:complete].splitlines(), summary)
             files_read += 1
             set_state(
                 conn,
                 key,
                 {
-                    "offset": offset + complete,
+                    "offset": offset + consumed,
                     "size": st.st_size,
                     "mtime": st.st_mtime,
                     "summary": summary.model_dump(mode="json"),
