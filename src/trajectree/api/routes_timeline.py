@@ -5,10 +5,13 @@ from pydantic import AwareDatetime, BaseModel
 
 from trajectree.api.deps import get_ledger
 from trajectree.api.routes_entities import _csv
+from trajectree.connectors.claude_sessions import LiveSession
 from trajectree.db.ledger import Ledger
-from trajectree.models import Edge, Event, Project, Todo
+from trajectree.models import Edge, Event, Project, StripBin, Todo
 from trajectree.repo import edges, events, projects, todos
 from trajectree.repo.review import pending_txns
+from trajectree.repo.signals import strip_bins
+from trajectree.repo.state import get_state
 
 router = APIRouter()
 
@@ -21,7 +24,9 @@ class TimelineResponse(BaseModel):
     todos: list[Todo]
     edges: list[Edge]
     pending: dict[str, dict[str, str]]
-    live: list = []
+    strip: list[StripBin]
+    live: list[LiveSession]
+    stale: list[str]
 
 
 @router.get("/timeline", response_model=TimelineResponse)
@@ -52,11 +57,21 @@ def timeline(
             kind: {row: txn for row, txn in sorted(pending_txns(conn, kind).items()) if row in got}
             for kind, got in returned.items()
         }
+        shown = {p.id for p in project_rows}
+        strip = strip_bins(conn, project_ids=ids, t_from=t_from, t_to=t_to)
+        live = [
+            LiveSession(**d)
+            for d in (get_state(conn, "live_sessions") or [])
+            if d["project_id"] in shown
+        ]
+        stale = [pid for pid in (get_state(conn, "stale_projects") or []) if pid in shown]
     return TimelineResponse(
         projects=project_rows,
         events=event_rows,
         todos=todo_rows,
         edges=edge_rows,
         pending=pending,
-        live=[],
+        strip=strip,
+        live=live,
+        stale=stale,
     )

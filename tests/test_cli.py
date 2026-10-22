@@ -74,3 +74,8 @@ def test_cli_context_rejects_bad_budget(app, anon, capsys):
 def test_mcp_subcommand_requires_token(tmp_path, capsys):
     assert main(["mcp"], env={"HOME": str(tmp_path)}) == 2
     assert "no token" in capsys.readouterr().err
+
+
+def test_cli_ingest(app, anon, capsys):
+    assert main(["ingest"], client=anon, env=env_for(app)) == 0
+    assert capsys.readouterr().out.startswith("ingest: ")

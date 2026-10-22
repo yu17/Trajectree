@@ -71,6 +71,8 @@ def _parser() -> argparse.ArgumentParser:
     ctx.add_argument("--budget", type=int, default=4000)
     ctx.add_argument("--q")
 
+    sub.add_parser("ingest", help="run one ingest pass now")
+
     sub.add_parser("mcp", help="run the stdio MCP shim that forwards to the daemon")
     return p
 
@@ -178,6 +180,14 @@ def _run(args: argparse.Namespace, api: _Api) -> None:
         if args.q:
             query["q"] = args.q
         print(api.get("/api/context?" + urlencode(query))["markdown"], end="")
+    elif cmd == "ingest":
+        r = api.post("/api/ingest/run", {})
+        scan = r["scan"] or {}
+        signals = (scan.get("signals_written") or 0) + r["git"]["signals_written"]
+        print(
+            f"ingest: {scan.get('files_read') or 0} transcripts read, {signals} signals,"
+            f" {len(r['stale'])} stale, {r['duration_ms']} ms"
+        )
     elif cmd == "txns":
         for t in api.get(f"/api/ledger/txns?limit={args.limit}"):
             print(
