@@ -120,10 +120,12 @@ def build_mcp(
 ) -> MCPServer:
     """A fresh MCP server with Trajectree's tools bound to this ledger."""
     from trajectree.mcpserver.read_tools import register_read_tools
+    from trajectree.mcpserver.write_tools import register_write_tools
 
     mcp = MCPServer(name="trajectree", instructions=INSTRUCTIONS)
     deps = ToolDeps(
         ledger=ledger, settings=settings, resolve=resolve, cwd_of=cwd_of or _cwd_from_headers
     )
     register_read_tools(mcp, deps)
+    register_write_tools(mcp, deps)
     return mcp
