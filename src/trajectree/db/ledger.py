@@ -239,8 +239,9 @@ class Ledger:
 
         Raises `KeyError` for an unknown id, `AlreadyReverted` if it was reverted
         before, and `RevertConflict` (with nothing applied) if any row it touched
-        has changed since. With `mark_review`, the original's review state is set
-        in the same transaction, so a failed revert leaves it untouched.
+        has changed since. A pending original is marked `rejected`, as is any
+        original when `mark_review` is given; the marking runs in the same
+        transaction, so a failed revert leaves the review untouched.
         """
         conflicts: list[Conflict] = []
 
@@ -259,10 +260,12 @@ class Ledger:
                 inverse = apsw.Changeset.invert(original.changeset)
                 apsw.Changeset.apply(inverse, self.conn, conflict=on_conflict)
                 self.conn.execute("UPDATE txn SET reverted_by = ? WHERE id = ?", (handle.id, txn_id))
-                if mark_review is not None:
+                # Reverting a write still awaiting review is a rejection of it.
+                review = mark_review or ("rejected" if original.review == "pending" else None)
+                if review is not None:
                     self.conn.execute(
                         "UPDATE txn SET review = ?, review_ts = ? WHERE id = ?",
-                        (mark_review, to_db(utcnow()), txn_id),
+                        (review, to_db(utcnow()), txn_id),
                     )
         except apsw.Error as exc:
             if conflicts:

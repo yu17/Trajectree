@@ -137,3 +137,16 @@ def test_locked_is_reentrant_inside_transaction(ledger, human):
     with ledger.transaction(human, "x"):
         with ledger.locked() as conn:
             assert conn is ledger.conn
+
+def test_revert_of_pending_txn_marks_it_rejected(ledger, human, agent):
+    _, tid = _pending_event(ledger, human, agent)
+    reverted = ledger.revert(tid, human)
+    original = ledger.get_txn(tid)
+    assert original.review == "rejected" and original.review_ts is not None and original.reverted_by == reverted.id
+    assert ledger.list_txns(review="pending") == []
+
+def test_revert_of_accepted_txn_keeps_accepted(ledger, human):
+    p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    tid = ledger.list_txns()[0].id
+    ledger.revert(tid, human)
+    assert ledger.get_txn(tid).review == "accepted"
