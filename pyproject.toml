@@ -11,6 +11,7 @@ dependencies = [
     "pydantic>=2",
     "python-ulid>=4",
     "httpx",
+    "mcp>=2.3.0",
 ]
 
 [project.scripts]

@@ -53,3 +53,8 @@ def anon(app):
     from fastapi.testclient import TestClient
 
     return TestClient(app)
+
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
