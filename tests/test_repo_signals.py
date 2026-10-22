@@ -54,11 +54,15 @@ def test_stale_projects(ledger, human):
         SignalIn(project_id=p.id, kind="session", t_start=now - timedelta(days=2), dedupe_key="s1"),
         SignalIn(project_id=q.id, kind="session", t_start=now - timedelta(days=2), dedupe_key="s2"),
     ])
-    update_project(ledger, human, q.id, ProjectPatch(summary_md="fresh"))
+    summary_at = update_project(ledger, human, q.id, ProjectPatch(summary_md="fresh")).summary_at
     settled = now - timedelta(hours=24)
     assert stale_projects(ledger.conn, settled_before=settled) == [p.id]   # a has activity and no summary
     upsert_signals(ledger.conn, [SignalIn(project_id=q.id, kind="session", t_start=now - timedelta(hours=1), dedupe_key="s3")])
-    assert stale_projects(ledger.conn, settled_before=settled) == [p.id]   # b's new activity has not settled yet
+    assert stale_projects(ledger.conn, settled_before=now) == [p.id]   # b's activity before its summary does not count
+    after = summary_at + timedelta(minutes=5)
+    upsert_signals(ledger.conn, [SignalIn(project_id=q.id, kind="session", t_start=after, dedupe_key="s4")])
+    assert stale_projects(ledger.conn, settled_before=settled) == [p.id]   # b's activity after its summary has not settled
+    assert stale_projects(ledger.conn, settled_before=after + timedelta(minutes=1)) == sorted([p.id, q.id])   # settled: b is stale
 
 def test_summary_write_stamps_summary_at(ledger, human):
     p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))

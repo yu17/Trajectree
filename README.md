@@ -73,8 +73,9 @@ writes lands as pending in the Inbox tab, where the owner accepts or rejects it.
 
 A background loop reads Claude Code transcripts under `TRAJECTREE_CLAUDE_HOME`
 and `TRAJECTREE_BACKENDS_ROOT`, and the git history of each project's
-`git_local` resources. A transcript is attached to the project whose resource
-locator equals the transcript's `cwd` (a host path).
+`git_local` resources. A transcript is attached to the project whose
+registered folder equals the session's `cwd` (a host path) or is an ancestor
+of it; the deepest registered folder wins.
 
 - `TRAJECTREE_INGEST_EVERY` sets the loop period in seconds (300; 0 disables).
 - The live marker is derived at scan time, so `TRAJECTREE_LIVE_WINDOW` must be
@@ -83,7 +84,9 @@ locator equals the transcript's `cwd` (a host path).
 - In Docker, the git connector reads the repositories through
   `TRAJECTREE_PATH_MAP`, which compose sets to
   `$TRAJECTREE_PROJECTS_ROOT=/projects`: host paths under that root are read
-  from `/projects` inside the container.
+  from `/projects` inside the container. `TRAJECTREE_PROJECTS_ROOT` must be the
+  physical path (no symlinks): `init-project` stores the resolved folder path,
+  and the path map is a prefix match on it.
 - `trajectree ingest` runs one pass now.
 - Each project's summary is exported to `data/exports/projects/<slug>/SUMMARY.md`.
 

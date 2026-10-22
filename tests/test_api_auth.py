@@ -64,3 +64,5 @@ def test_spa_fallback_serves_index_but_not_for_api(settings, ledger, tmp_path, m
     assert c.get("/app.js").text == "x"
     assert c.get("/api/nope").status_code in (401, 404)
     assert "spa" not in c.get("/api/nope").text
+    mcp_sub = c.get("/mcp/anything")
+    assert mcp_sub.status_code == 404 and "spa" not in mcp_sub.text

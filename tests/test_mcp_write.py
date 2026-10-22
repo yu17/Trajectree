@@ -26,7 +26,8 @@ async def test_record_event_lands_pending_with_session_actor(ledger, settings, h
     async with Client(owner_mcp(ledger, settings)) as c:
         r = await c.call_tool("record_event", {"project": "a", "title": "Decided", "kind": "decision", "intent": "log decision"})
         assert not r.is_error and r.structured_content["source"] == "agent"
-    t = ledger.list_txns()[0]
+        assert (await c.call_tool("record_event", {"project": "a", "title": "x", "intent": ""})).is_error
+    t = ledger.list_txns()[0]   # newest; the empty-intent call wrote nothing
     assert (t.actor_kind, t.actor_ref, t.tool, t.review, t.intent) == ("session", "sess-1", "mcp", "pending", "log decision")
 
 async def test_cwd_defaults_project(ledger, settings, human):

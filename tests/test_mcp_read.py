@@ -64,8 +64,11 @@ async def test_search_and_todos(mcp, ledger, human):
     async with Client(mcp) as c:
         hits = (await c.call_tool("search", {"q": "freeze"})).structured_content["result"]
         assert hits[0]["id"] == e.id
+        assert (await c.call_tool("search", {"q": "freeze", "limit": -1})).is_error
         todos = (await c.call_tool("list_todos", {"project": "a"})).structured_content["result"]
         assert [x["id"] for x in todos] == [t.id]
+        assert not (await c.call_tool("get_signals", {"project": "a"})).is_error
+        assert (await c.call_tool("get_signals", {"project": "a", "limit": -1})).is_error
 
 
 def test_parse_when():
