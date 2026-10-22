@@ -3,11 +3,12 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "./api/client";
 import { ProjectForm } from "./components/ProjectForm";
 import { QuickCapture } from "./components/QuickCapture";
+import { InboxView, pendingTxnsQuery } from "./views/InboxView";
 import { LedgerView } from "./views/LedgerView";
 import { TimelineView } from "./views/TimelineView";
 import "./views/views.css";
 
-type Tab = "timeline" | "ledger";
+type Tab = "timeline" | "ledger" | "inbox";
 type Panel = "project" | "capture" | null;
 
 const isUnauthorized = (err: unknown) => err instanceof ApiError && err.status === 401;
@@ -22,12 +23,15 @@ export default function App() {
     // A 401 will not fix itself on retry; surface the login banner at once.
     retry: (n, err) => !isUnauthorized(err) && n < 3,
   });
+  const pending = useQuery({ ...pendingTxnsQuery, retry: (n, err) => !isUnauthorized(err) && n < 3 });
+  const pendingCount = pending.data?.length ?? 0;
 
   const created = () => {
     setPanel(null);
     void qc.invalidateQueries({ queryKey: ["timeline"] });
     void qc.invalidateQueries({ queryKey: ["projects"] });
     void qc.invalidateQueries({ queryKey: ["txns"] });
+    void qc.invalidateQueries({ queryKey: ["todos"] });
   };
   const toggle = (p: Exclude<Panel, null>) => setPanel(cur => (cur === p ? null : p));
 
@@ -40,6 +44,9 @@ export default function App() {
           </button>
           <button role="tab" aria-selected={tab === "ledger"} onClick={() => setTab("ledger")}>
             Ledger
+          </button>
+          <button role="tab" aria-selected={tab === "inbox"} onClick={() => setTab("inbox")}>
+            {pendingCount > 0 ? `Inbox (${pendingCount})` : "Inbox"}
           </button>
         </div>
         <div className="header-actions">
@@ -59,7 +66,9 @@ export default function App() {
           {panel === "capture" && <QuickCapture projects={projects.data ?? []} onCreated={created} />}
         </aside>
       )}
-      <div role="tabpanel">{tab === "timeline" ? <TimelineView /> : <LedgerView />}</div>
+      <div role="tabpanel">
+        {tab === "timeline" ? <TimelineView /> : tab === "ledger" ? <LedgerView /> : <InboxView />}
+      </div>
     </div>
   );
 }

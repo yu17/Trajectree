@@ -114,7 +114,7 @@ export function renderTimeline(
   const gGutter = layer(svg, "g", "gutter");
 
   // ---- lane layout ----
-  const pending = new Set(data.pending.event ?? []);
+  const pending = new Set(Object.keys(data.pending.event ?? {}));
   const evById = new Map(data.events.map(e => [e.id, e]));
   const itemsByProject = new Map<string, LaneItem[]>();
   for (const e of data.events) {

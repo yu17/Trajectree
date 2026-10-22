@@ -4,8 +4,9 @@ import { api, ApiError } from "../api/client";
 import type { Conflict } from "../api/types";
 import { errorText } from "../components/errorText";
 
-// Review and revert actions shared by the timeline and the ledger. Both invalidate
-// the timeline and the ledger so every view reflects the change.
+// Review and revert actions shared by the timeline, the ledger and the inbox. They
+// invalidate the timeline and every txns query (the inbox's pending list included) so
+// every view reflects the change.
 export function useTxnActions() {
   const qc = useQueryClient();
   const [conflicts, setConflicts] = useState<Conflict[] | null>(null);
@@ -15,6 +16,8 @@ export function useTxnActions() {
     void qc.invalidateQueries({ queryKey: ["timeline"] });
     void qc.invalidateQueries({ queryKey: ["txns"] });
     void qc.invalidateQueries({ queryKey: ["txn"] });
+    // A reject reverts the write, which may remove a todo the inbox lists.
+    void qc.invalidateQueries({ queryKey: ["todos"] });
   };
 
   // A reject reverts the transaction, so it can hit the same 409 conflict as a revert.

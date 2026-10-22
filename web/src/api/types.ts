@@ -8,6 +8,7 @@ export type TodoState = "open" | "doing" | "done" | "dropped";
 export type Review = "none" | "pending" | "accepted" | "rejected";
 export type ActorKind = "human" | "agent" | "session" | "connector";
 export type EntityType = "project" | "event" | "todo" | "resource";
+export type SignalKind = "commits" | "session" | "files_changed" | "job_state" | "message";
 
 export interface Project {
   id: string;
@@ -105,13 +106,78 @@ export interface Conflict {
   conflict_row: Record<string, unknown> | null;
 }
 
+export interface Resource {
+  id: string;
+  project_id: string;
+  kind: string;
+  locator: string;
+  title: string;
+  props: Record<string, unknown>;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface Signal {
+  id: string;
+  project_id: string;
+  resource_id: string | null;
+  kind: SignalKind;
+  t_start: string;
+  t_end: string | null;
+  payload: Record<string, unknown>;
+  dedupe_key: string;
+  updated_at: string;
+}
+
+// One day's signal count for a project lane's activity strip; `day` is "YYYY-MM-DD".
+export interface StripBin {
+  project_id: string;
+  day: string;
+  kind: SignalKind;
+  count: number;
+}
+
+export interface LiveSession {
+  project_id: string;
+  session_id: string;
+  cwd: string;
+  title: string | null;
+  started: string | null;
+  last_seen: string;
+}
+
 export interface TimelineResponse {
   projects: Project[];
   events: Event[];
   todos: Todo[];
   edges: Edge[];
-  pending: Record<string, string[]>;
-  live: unknown[];
+  // Per entity kind ("event", "todo", "edge"): row id -> id of the pending txn of its latest change.
+  pending: Record<string, Record<string, string>>;
+  strip: StripBin[];
+  live: LiveSession[];
+  stale: string[];
+}
+
+export interface ScanReport {
+  files_seen: number;
+  files_read: number;
+  signals_written: number;
+  live: LiveSession[];
+}
+
+export interface GitReport {
+  repos: number;
+  signals_written: number;
+  errors: string[];
+}
+
+export interface IngestReport {
+  started: string;
+  duration_ms: number;
+  scan: ScanReport | null;
+  git: GitReport;
+  stale: string[];
+  exports_written: number;
 }
 
 export interface TxnDetail {

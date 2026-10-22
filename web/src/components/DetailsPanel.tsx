@@ -26,7 +26,10 @@ function authorOf(t: Txn): string {
 
 export function DetailsPanel({ data, selected, onReview, onRevert }: DetailsPanelProps) {
   const event = selected?.type === "event" ? data.events.find(e => e.id === selected.id) ?? null : null;
-  const txnId = event?.created_txn ?? null;
+  // Review the pending txn of the event's latest change (an agent update, say), not its creation.
+  const pendingTxn = event ? data.pending.event?.[event.id] : undefined;
+  const txnId = pendingTxn ?? event?.created_txn ?? null;
+  const isPending = pendingTxn !== undefined;
   const txn = useQuery({
     queryKey: ["txn", txnId],
     queryFn: () => api.txn(txnId!),
@@ -61,7 +64,6 @@ export function DetailsPanel({ data, selected, onReview, onRevert }: DetailsPane
     );
   }
 
-  const isPending = (data.pending.event ?? []).includes(event.id);
   const project = data.projects.find(p => p.id === event.project_id);
   const author = !txnId ? "—"
     : txn.data ? authorOf(txn.data.txn)

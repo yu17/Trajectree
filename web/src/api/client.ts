@@ -4,9 +4,13 @@ import type {
   Event,
   EventIn,
   EventPatch,
+  IngestReport,
   Project,
   ProjectIn,
+  Resource,
+  Review,
   SearchHit,
+  Signal,
   TimelineResponse,
   Todo,
   TodoIn,
@@ -62,9 +66,17 @@ export const api = {
     request<Todo>("PATCH", `/api/todos/${encodeURIComponent(id)}`, patch),
   createEdge: (body: EdgeIn) => request<Edge>("POST", "/api/edges", body),
   deleteEdge: (id: string) => request<void>("DELETE", `/api/edges/${encodeURIComponent(id)}`),
-  txns(limit = 50, before?: string) {
+  todos(states?: string[]) {
+    const q = new URLSearchParams();
+    if (states && states.length) q.set("states", states.join(","));
+    return request<Todo[]>("GET", `/api/todos${q.size ? `?${q}` : ""}`);
+  },
+  // `actor_kind` is a comma-separated list, e.g. "agent,session".
+  txns(limit = 50, before?: string, filter?: { review?: Review; actor_kind?: string }) {
     const q = new URLSearchParams({ limit: String(limit) });
     if (before) q.set("before", before);
+    if (filter?.review) q.set("review", filter.review);
+    if (filter?.actor_kind) q.set("actor_kind", filter.actor_kind);
     return request<Txn[]>("GET", `/api/ledger/txns?${q}`);
   },
   txn: (id: string) => request<TxnDetail>("GET", `/api/ledger/txns/${encodeURIComponent(id)}`),
@@ -74,4 +86,15 @@ export const api = {
     request<Txn>("POST", `/api/ledger/txns/${encodeURIComponent(id)}/review`, { state }),
   search: (q: string) =>
     request<SearchHit[]>("GET", `/api/search?${new URLSearchParams({ q })}`),
+  signals(projects: string[], from: Date, to: Date) {
+    const q = new URLSearchParams({ from: from.toISOString(), to: to.toISOString() });
+    if (projects.length) q.set("projects", projects.join(","));
+    return request<Signal[]>("GET", `/api/signals?${q}`);
+  },
+  resources(projectId?: string) {
+    const q = new URLSearchParams();
+    if (projectId) q.set("projects", projectId);
+    return request<Resource[]>("GET", `/api/resources${q.size ? `?${q}` : ""}`);
+  },
+  runIngest: () => request<IngestReport>("POST", "/api/ingest/run"),
 };

@@ -3,6 +3,7 @@ import { describe, it, expect, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { DetailsPanel } from "./DetailsPanel";
+import { api } from "../api/client";
 import type { TimelineResponse } from "../api/types";
 
 vi.mock("../api/client", () => ({ api: {
@@ -20,7 +21,7 @@ const data: TimelineResponse = {
   ],
   todos: [],
   edges: [{ id: "x", src_type: "event", src_id: "e1", dst_type: "event", dst_id: "e2", rel: "led_to", props: {}, valid_from: null, valid_to: null, created_at: "2026-01-08T10:00:00Z" }],
-  pending: { event: ["e2"], todo: [], edge: [] }, live: [],
+  pending: { event: { e2: "t2" }, todo: {}, edge: {} }, strip: [], live: [], stale: [],
 };
 
 const wrap = (ui: ReactNode) => render(<QueryClientProvider client={new QueryClient()}>{ui}</QueryClientProvider>);
@@ -51,5 +52,24 @@ describe("DetailsPanel", () => {
     expect(onRevert).toHaveBeenCalledWith("t1");
     rerender(<QueryClientProvider client={new QueryClient()}><DetailsPanel data={data} selected={null} onReview={() => {}} onRevert={onRevert} /></QueryClientProvider>);
     expect(screen.getByText("Click a block to see its details.")).toBeTruthy();
+  });
+  it("reviews the pending transaction, not the creating one", async () => {
+    // An agent updated e1 after it was created: the pending txn is the update, not the create.
+    const updated: TimelineResponse = {
+      ...data,
+      events: data.events.map(e => (e.id === "e1" ? { ...e, created_txn: "txn-create" } : e)),
+      pending: { event: { e1: "txn-pending" }, todo: {}, edge: {} },
+    };
+    const onReview = vi.fn();
+    wrap(<DetailsPanel data={updated} selected={{ type: "event", id: "e1" }} onReview={onReview} onRevert={() => {}} />);
+    expect(screen.getByText("pending")).toBeTruthy();
+    expect(screen.getByText("txn-pending")).toBeTruthy();
+    await screen.findByText(/agent run_7/);
+    expect(api.txn).toHaveBeenCalledWith("txn-pending");
+    expect(api.txn).not.toHaveBeenCalledWith("txn-create");
+    fireEvent.click(screen.getByText("Accept"));
+    expect(onReview).toHaveBeenCalledWith("txn-pending", "accepted");
+    fireEvent.click(screen.getByText("Reject"));
+    expect(onReview).toHaveBeenCalledWith("txn-pending", "rejected");
   });
 });

@@ -9,7 +9,7 @@ const data: TimelineResponse = {
   events: [{ id: "e1", project_id: "p1", kind: "decision", title: "Freeze", body_md: "", t_start: "2026-01-05T10:00:00Z", t_end: null, status: "happened", source: "human", props: {}, created_txn: "t1", created_at: "2026-01-05T10:00:00Z", updated_at: "2026-01-05T10:00:00Z" },
            { id: "e2", project_id: "p2", kind: "milestone", title: "v0.1", body_md: "", t_start: "2026-01-08T10:00:00Z", t_end: null, status: "suggested", source: "agent", props: {}, created_txn: "t2", created_at: "2026-01-08T10:00:00Z", updated_at: "2026-01-08T10:00:00Z" }],
   todos: [], edges: [{ id: "x", src_type: "event", src_id: "e1", dst_type: "event", dst_id: "e2", rel: "led_to", props: {}, valid_from: null, valid_to: null, created_at: "2026-01-08T10:00:00Z" }],
-  pending: { event: ["e2"], todo: [], edge: [] }, live: [],
+  pending: { event: { e2: "t2" }, todo: {}, edge: {} }, strip: [], live: [], stale: [],
 };
 
 describe("Timeline", () => {

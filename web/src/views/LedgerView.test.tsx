@@ -31,4 +31,27 @@ describe("LedgerView", () => {
     const keys = [...container.querySelectorAll(".diff th[scope=row]")].map(th => th.textContent);
     expect(keys).toEqual(["title"]);
   });
+
+  it("filters by review state and shows the revert chain", async () => {
+    const revert = { ...txn, id: "t3", actor_kind: "human", actor_ref: "owner", model: null, intent: "revert t2", review: "none", reverts_txn: "abcdef123456" };
+    const reverted = { ...txn, id: "t2", intent: "record event: old", review: "rejected", reverted_by: "999999fedcba" };
+    (api.txns as any).mockImplementation(async () => [revert, reverted]);
+    try {
+      render(<QueryClientProvider client={new QueryClient()}><LedgerView /></QueryClientProvider>);
+      expect(await screen.findByText("reverts 123456")).toBeTruthy();
+      expect(screen.getByText("reverted by fedcba")).toBeTruthy();
+      expect(api.txns).toHaveBeenLastCalledWith(50, undefined, {});
+      const show = screen.getByRole("combobox", { name: "Show" });
+      expect([...show.querySelectorAll("option")].map(o => o.textContent)).toEqual(["All", "Pending", "Humans", "Agents & sessions"]);
+      fireEvent.change(show, { target: { value: "pending" } });
+      await waitFor(() => expect(api.txns).toHaveBeenLastCalledWith(50, undefined, { review: "pending" }));
+      fireEvent.change(show, { target: { value: "agents" } });
+      await waitFor(() => expect(api.txns).toHaveBeenLastCalledWith(50, undefined, { actor_kind: "agent,session" }));
+      fireEvent.change(show, { target: { value: "humans" } });
+      await waitFor(() => expect(api.txns).toHaveBeenLastCalledWith(50, undefined, { actor_kind: "human" }));
+      await screen.findByText("reverts 123456");
+    } finally {
+      (api.txns as any).mockImplementation(async () => [txn]);
+    }
+  });
 });

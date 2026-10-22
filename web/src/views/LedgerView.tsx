@@ -1,13 +1,24 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api/client";
-import type { Change, Txn } from "../api/types";
+import type { Change, Review, Txn } from "../api/types";
 import { errorText } from "../components/errorText";
 import { ActionNotice } from "./ActionNotice";
 import { useTxnActions } from "./useTxnActions";
 import "./views.css";
 
 const PAGE = 50;
+
+type Filter = { review?: Review; actor_kind?: string };
+const FILTERS: [string, string, Filter][] = [
+  ["all", "All", {}],
+  ["pending", "Pending", { review: "pending" }],
+  ["humans", "Humans", { actor_kind: "human" }],
+  ["agents", "Agents & sessions", { actor_kind: "agent,session" }],
+];
+
+// The tail of a txn id is enough to tell chain links apart at a glance.
+const shortId = (id: string) => id.slice(-6);
 
 const show = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v));
 
@@ -18,7 +29,7 @@ function changedKeys(c: Change): string[] {
   return [...keys].filter(k => JSON.stringify(c.old?.[k]) !== JSON.stringify(c.new?.[k]));
 }
 
-function Diff({ txnId }: { txnId: string }) {
+export function Diff({ txnId }: { txnId: string }) {
   const q = useQuery({ queryKey: ["txn", txnId], queryFn: () => api.txn(txnId) });
   if (q.isError) return <p className="form-error">{errorText(q.error)}</p>;
   if (!q.data) return <p className="muted">loading…</p>;
@@ -57,6 +68,8 @@ function Row({ txn, actions }: { txn: Txn; actions: ReturnType<typeof useTxnActi
           {txn.intent}
         </button>
         <span className={`badge review-${txn.review}`}>{txn.review}</span>
+        {txn.reverts_txn && <span className="chain">{`reverts ${shortId(txn.reverts_txn)}`}</span>}
+        {txn.reverted_by && <span className="chain">{`reverted by ${shortId(txn.reverted_by)}`}</span>}
         <span className="row-actions">
           {txn.review === "pending" && (
             <>
@@ -73,13 +86,19 @@ function Row({ txn, actions }: { txn: Txn; actions: ReturnType<typeof useTxnActi
 }
 
 export function LedgerView() {
+  const [filterKey, setFilterKey] = useState("all");
   const [before, setBefore] = useState<string | undefined>(undefined);
   const actions = useTxnActions();
-  const q = useQuery({ queryKey: ["txns", before], queryFn: () => api.txns(PAGE, before) });
+  const filter = FILTERS.find(([key]) => key === filterKey)![2];
+  const q = useQuery({ queryKey: ["txns", before, filter], queryFn: () => api.txns(PAGE, before, filter) });
   const rows = q.data ?? [];
 
   return (
     <section className="ledger">
+      <select aria-label="Show" value={filterKey}
+        onChange={e => { setFilterKey(e.target.value); setBefore(undefined); }}>
+        {FILTERS.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+      </select>
       <ActionNotice conflicts={actions.conflicts} error={actions.error} onDismiss={actions.dismiss} />
       {q.isError && <p className="form-error">{errorText(q.error)}</p>}
       {q.isPending && <p className="muted">loading…</p>}

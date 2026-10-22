@@ -33,3 +33,7 @@ button:disabled{opacity:.5;cursor:default}
 .diff{margin:8px 0 0 12px}
 .diff table{border-collapse:collapse;font-size:12px;margin:4px 0 8px}
 .diff th,.diff td{border:1px solid var(--grid);padding:2px 8px;text-align:left;vertical-align:top}
+.chain{color:var(--muted);font-size:12px;margin-left:6px}
+.inbox{padding:8px 16px}
+.inbox h2{font-size:14px;margin:12px 0 6px}
+.inbox-list{list-style:none;padding:0;margin:0}
