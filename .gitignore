@@ -1,0 +1,9 @@
+.venv
+__pycache__
+data/
+web/node_modules
+web/dist
+src/trajectree/static/
+.claude/worktrees/
+.playwright-mcp/
+test-results/
