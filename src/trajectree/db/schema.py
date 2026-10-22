@@ -110,9 +110,18 @@ _V1_STATEMENTS: list[str] = [
     "CREATE TABLE setting (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
 ]
 
+_V2_STATEMENTS: list[str] = [
+    "ALTER TABLE project ADD COLUMN summary_at TEXT",
+    "CREATE TABLE signal (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, resource_id TEXT, kind TEXT NOT NULL, t_start TEXT NOT NULL, t_end TEXT, payload TEXT NOT NULL DEFAULT '{}', dedupe_key TEXT UNIQUE NOT NULL, updated_at TEXT NOT NULL)",
+    "CREATE INDEX signal_project_t ON signal(project_id, t_start)",
+    "CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)",
+    "CREATE TABLE token (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, label TEXT NOT NULL, scope TEXT NOT NULL, actor TEXT NOT NULL, expires_at TEXT, created_at TEXT NOT NULL)",
+]
+
 # Ordered migration steps; a later schema version appends (version, statements).
 MIGRATIONS: list[tuple[int, list[str]]] = [
     (1, _V1_STATEMENTS),
+    (2, _V2_STATEMENTS),
 ]
 
 SCHEMA_VERSION: int = MIGRATIONS[-1][0]

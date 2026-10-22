@@ -56,6 +56,8 @@ def update_project(
     if "props" in fields:
         fields["props"] = dumps_props(fields["props"])
     fields["updated_at"] = to_db(utcnow())
+    if "summary_md" in fields:
+        fields["summary_at"] = fields["updated_at"]
     try:
         with ledger.transaction(actor, intent or f"update project {project_id}") as h:
             if select_row(h.conn, "project", project_id) is None:

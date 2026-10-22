@@ -12,6 +12,10 @@ TodoState = Literal["open", "doing", "done", "dropped"]
 Review = Literal["none", "pending", "accepted", "rejected"]
 ActorKind = Literal["human", "agent", "session", "connector"]
 EntityType = Literal["project", "event", "todo", "resource"]
+SignalKind = Literal["commits", "session", "files_changed", "job_state", "message"]
+ResourceKind = Literal[
+    "folder", "git_local", "git_remote", "claude_session", "slurm_job", "url", "doc"
+]
 
 SLUG_PATTERN = r"^[a-z0-9][a-z0-9-]{0,63}$"
 
@@ -72,6 +76,24 @@ class TodoIn(BaseModel):
     state: TodoState = "open"
     priority: int = 0
     props: dict[str, Any] = Field(default_factory=dict)
+
+
+class ResourceIn(BaseModel):
+    project_id: str
+    kind: ResourceKind
+    locator: str
+    title: str = ""
+    props: dict[str, Any] = Field(default_factory=dict)
+
+
+class SignalIn(BaseModel):
+    project_id: str
+    kind: SignalKind
+    t_start: AwareDatetime
+    dedupe_key: str
+    t_end: AwareDatetime | None = None
+    resource_id: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class EdgeIn(BaseModel):
@@ -139,6 +161,7 @@ class Project(BaseModel):
     summary_md: str
     recurrence: str | None = None
     props: dict[str, Any] = Field(default_factory=dict)
+    summary_at: AwareDatetime | None = None
     created_at: AwareDatetime
     updated_at: AwareDatetime
 
@@ -186,6 +209,18 @@ class Resource(BaseModel):
     props: dict[str, Any] = Field(default_factory=dict)
     created_at: AwareDatetime | None = None
     updated_at: AwareDatetime | None = None
+
+
+class Signal(SignalIn):
+    id: str
+    updated_at: AwareDatetime
+
+
+class StripBin(BaseModel):
+    project_id: str
+    day: str
+    kind: SignalKind
+    count: int
 
 
 class Edge(BaseModel):
