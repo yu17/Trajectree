@@ -70,6 +70,8 @@ def _parser() -> argparse.ArgumentParser:
     ctx.add_argument("--days", type=int, default=90)
     ctx.add_argument("--budget", type=int, default=4000)
     ctx.add_argument("--q")
+
+    sub.add_parser("mcp", help="run the stdio MCP shim that forwards to the daemon")
     return p
 
 
@@ -191,6 +193,10 @@ def main(
         args = _parser().parse_args(argv)
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else 2
+    if args.cmd == "mcp":
+        from trajectree.cli.shim import run_shim
+
+        return run_shim(env)
     token = _token(env)
     if token is None:
         print(

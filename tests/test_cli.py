@@ -69,3 +69,8 @@ def test_cli_context_prints_pack(app, client, anon, capsys):
 def test_cli_context_rejects_bad_budget(app, anon, capsys):
     assert main(["context", "clmi", "--budget", "5"], client=anon, env=env_for(app)) == 2
     assert "invalid budget" in capsys.readouterr().err
+
+
+def test_mcp_subcommand_requires_token(tmp_path, capsys):
+    assert main(["mcp"], env={"HOME": str(tmp_path)}) == 2
+    assert "no token" in capsys.readouterr().err
