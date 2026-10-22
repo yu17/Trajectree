@@ -49,6 +49,28 @@ def test_parse_lines_counts_prompts_tokens_and_title():
     assert out.title == "Fix the build" and out.model == "claude-opus-5-5" and out.cwd == CWD and out.git_branch == "main"
     assert out.t_start == datetime(2026, 1, 5, 10, tzinfo=UTC) and out.t_end == datetime(2026, 1, 5, 10, 2, tzinfo=UTC)
 
+def test_parse_lines_counts_usage_once_per_message_id():
+    def line(msg_id, out):
+        usage = {"input_tokens": 10, "cache_creation_input_tokens": 5, "cache_read_input_tokens": 100, "output_tokens": out}
+        return json.dumps({"type": "assistant", "message": {"id": msg_id, "role": "assistant", "usage": usage}}).encode()
+    lines = [line("m1", 3), line("m1", 7), line("m2", 2)]
+    out = parse_lines(lines, SessionSummary(transcript_path="x", backend="claude"))
+    assert (out.assistant_msgs, out.tokens_in, out.tokens_out) == (2, 230, 9)
+    # The same lines split across incremental reads (summary stored as JSON in between).
+    first = parse_lines(lines[:1], SessionSummary(transcript_path="x", backend="claude"))
+    resumed = SessionSummary.model_validate(first.model_dump(mode="json"))
+    out2 = parse_lines(lines[1:], resumed)
+    assert (out2.assistant_msgs, out2.tokens_in, out2.tokens_out) == (2, 230, 9)
+
+def test_session_id_falls_back_to_file_stem(ledger, human, settings, tmp_path):
+    home, s, p = setup(ledger, human, settings, tmp_path)
+    rec = rec_user("2026-01-05T10:00:00.000Z")
+    del rec["sessionId"]
+    write_transcript(home, CWD, "4" * 36, [rec])
+    scan_transcripts(ledger.conn, s, now=datetime.now(UTC))
+    sig = list_signals(ledger.conn, project_ids=[p.id])[0]
+    assert sig.dedupe_key == f"claude_session:{'4' * 36}" and sig.payload["session_id"] == "4" * 36
+
 def test_scan_maps_sessions_and_skips_unmapped(ledger, human, settings, tmp_path):
     home, s, p = setup(ledger, human, settings, tmp_path)
     write_transcript(home, CWD, SID, [rec_user("2026-01-05T10:00:00.000Z"), rec_assistant("2026-01-05T10:02:00.000Z"), rec_user("2026-01-05T10:03:00.000Z")])

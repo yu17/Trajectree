@@ -36,6 +36,11 @@ class SessionSummary(BaseModel):
     tokens_out: int = 0
     transcript_path: str
     backend: str
+    # One API response is written as several assistant lines (one per content block) that
+    # share `message.id` and repeat its usage; these let a later line, even one read in a
+    # later incremental scan, replace that message's contribution instead of adding to it.
+    last_msg_id: str | None = None
+    last_msg_usage: tuple[int, int] = (0, 0)
 
 
 class LiveSession(BaseModel):
@@ -95,14 +100,24 @@ def _apply(acc: SessionSummary, rec: dict[str, Any]) -> None:
     elif kind == "assistant":
         message = _dict(rec.get("message"))
         usage = _dict(message.get("usage"))
-        acc.assistant_msgs += 1
         acc.model = _str(message.get("model")) or acc.model
-        acc.tokens_in += (
+        tokens_in = (
             _int(usage.get("input_tokens"))
             + _int(usage.get("cache_creation_input_tokens"))
             + _int(usage.get("cache_read_input_tokens"))
         )
-        acc.tokens_out += _int(usage.get("output_tokens"))
+        tokens_out = _int(usage.get("output_tokens"))
+        msg_id = _str(message.get("id"))
+        if msg_id is not None and msg_id == acc.last_msg_id:
+            # Same response as the previous line: its last line's usage is the one that counts.
+            acc.tokens_in -= acc.last_msg_usage[0]
+            acc.tokens_out -= acc.last_msg_usage[1]
+        else:  # a new message (a line without an id is its own message)
+            acc.assistant_msgs += 1
+            acc.last_msg_id = msg_id
+        acc.tokens_in += tokens_in
+        acc.tokens_out += tokens_out
+        acc.last_msg_usage = (tokens_in, tokens_out)
     elif kind == "ai-title":
         acc.title = _str(rec.get("aiTitle")) or acc.title
     elif kind == "summary" and acc.title is None:
@@ -136,7 +151,11 @@ def transcript_roots(settings: Settings) -> list[tuple[str, Path]]:
     if settings.claude_home is not None and (settings.claude_home / "projects").is_dir():
         roots.append(("claude", settings.claude_home / "projects"))
     if settings.backends_root is not None and settings.backends_root.is_dir():
-        for profile in sorted(settings.backends_root.iterdir()):
+        try:
+            profiles = sorted(settings.backends_root.iterdir())
+        except OSError:
+            profiles = []
+        for profile in profiles:
             if (profile / "projects").is_dir():
                 roots.append((profile.name, profile / "projects"))
     return roots
@@ -171,11 +190,10 @@ def _stored_summary(state: Any) -> SessionSummary | None:
         return None
 
 
-def scan_transcripts(conn: apsw.Connection, settings: Settings, *, now: datetime) -> ScanReport:
-    """Bring every recent transcript's summary up to date and upsert its session signal.
-
-    Runs all DB work on `conn`; callers that need the ledger lock take it themselves.
-    """
+def _refresh_summaries(
+    conn: apsw.Connection, settings: Settings, now: datetime
+) -> tuple[int, int, list[tuple[SessionSummary, float]]]:
+    """Update each recent transcript's stored summary; returns (seen, read, summaries)."""
     cutoff = (now - timedelta(days=settings.scan_since_days)).timestamp()
     files_seen = files_read = 0
     summaries: list[tuple[SessionSummary, float]] = []
@@ -195,9 +213,9 @@ def scan_transcripts(conn: apsw.Connection, settings: Settings, *, now: datetime
             if stored is not None and state["size"] == st.st_size and state["mtime"] == st.st_mtime:
                 summaries.append((stored, st.st_mtime))
                 continue
-            if stored is not None and st.st_size >= state["size"]:
+            if stored is not None and st.st_size >= state["offset"]:
                 offset, summary = state["offset"], stored
-            else:  # new file, unreadable state, or the file shrank: start over
+            else:  # new file, unreadable state, or truncated below what was read: start over
                 offset, summary = 0, SessionSummary(transcript_path=abs_path, backend=backend)
             try:
                 with path.open("rb") as f:
@@ -220,13 +238,24 @@ def scan_transcripts(conn: apsw.Connection, settings: Settings, *, now: datetime
                 },
             )
             summaries.append((summary, st.st_mtime))
+    return files_seen, files_read, summaries
 
+
+def _session_signals(
+    conn: apsw.Connection,
+    settings: Settings,
+    summaries: list[tuple[SessionSummary, float]],
+    now: datetime,
+) -> tuple[list[SignalIn], list[LiveSession]]:
+    """One `session` signal per summary whose cwd maps to a project, plus the live ones."""
     projects: dict[str, Project | None] = {}
     signals: list[SignalIn] = []
     live: list[LiveSession] = []
     for summary, mtime in summaries:
-        if summary.session_id is None or summary.cwd is None:
+        if summary.cwd is None:
             continue
+        # The transcript file is named after its session; use that when no record said.
+        session_id = summary.session_id or Path(summary.transcript_path).stem
         if summary.cwd not in projects:
             projects[summary.cwd] = project_for_path(conn, summary.cwd)
         project = projects[summary.cwd]
@@ -240,9 +269,9 @@ def scan_transcripts(conn: apsw.Connection, settings: Settings, *, now: datetime
                 kind="session",
                 t_start=summary.t_start or seen,
                 t_end=summary.t_end or seen,
-                dedupe_key=f"claude_session:{summary.session_id}",
+                dedupe_key=f"claude_session:{session_id}",
                 payload={
-                    "session_id": summary.session_id,
+                    "session_id": session_id,
                     "cwd": summary.cwd,
                     "title": summary.title,
                     "git_branch": summary.git_branch,
@@ -260,14 +289,26 @@ def scan_transcripts(conn: apsw.Connection, settings: Settings, *, now: datetime
             live.append(
                 LiveSession(
                     project_id=project.id,
-                    session_id=summary.session_id,
+                    session_id=session_id,
                     cwd=summary.cwd,
                     title=summary.title,
                     started=summary.t_start,
                     last_seen=seen,
                 )
             )
-    written = upsert_signals(conn, signals)
+    return signals, live
+
+
+def scan_transcripts(conn: apsw.Connection, settings: Settings, *, now: datetime) -> ScanReport:
+    """Bring every recent transcript's summary up to date and upsert its session signal.
+
+    Runs all DB work on `conn` in one transaction, so cursors and signals land together;
+    callers that need the ledger lock take it themselves.
+    """
+    with conn:
+        files_seen, files_read, summaries = _refresh_summaries(conn, settings, now)
+        signals, live = _session_signals(conn, settings, summaries, now)
+        written = upsert_signals(conn, signals)
     return ScanReport(
         files_seen=files_seen, files_read=files_read, signals_written=written, live=live
     )

@@ -16,6 +16,8 @@ def test_load_settings_parses_phase2_env(monkeypatch, tmp_path):
     monkeypatch.setenv("TRAJECTREE_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("TRAJECTREE_PATH_MAP", "/mnt/apps=/projects;/data=/d")
     monkeypatch.setenv("TRAJECTREE_CLAUDE_HOME", "")
+    monkeypatch.setenv("TRAJECTREE_BACKENDS_ROOT", "")
     monkeypatch.setenv("TRAJECTREE_INGEST_EVERY", "0")
     s = load_settings()
     assert s.path_map == [("/mnt/apps", "/projects"), ("/data", "/d")] and s.claude_home is None and s.ingest_interval_s == 0
+    assert s.backends_root is None
