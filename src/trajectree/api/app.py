@@ -12,7 +12,7 @@ from trajectree.api.routes_entities import router as entities_router
 from trajectree.config import Settings, ensure_token
 from trajectree.db.connection import open_db
 from trajectree.db.ledger import Ledger
-from trajectree.repo import DuplicateEdge, DuplicateSlug, NotFound
+from trajectree.repo import DuplicateEdge, DuplicateSlug, InvalidRange, NotFound
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -41,7 +41,7 @@ def create_app(settings: Settings, *, ledger: Ledger | None = None) -> FastAPI:
     app.add_exception_handler(NotFound, _error_handler(404))
     app.add_exception_handler(DuplicateSlug, _error_handler(409))
     app.add_exception_handler(DuplicateEdge, _error_handler(409))
-    app.add_exception_handler(ValueError, _error_handler(422))
+    app.add_exception_handler(InvalidRange, _error_handler(422))
 
     @app.get("/api/health")
     def health() -> dict:

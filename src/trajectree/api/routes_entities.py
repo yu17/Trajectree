@@ -58,8 +58,8 @@ def _csv(value: str | None) -> list[str] | None:
 
 
 def _strip(body, model):
-    """Rebuild the plain model from a request wrapper, keeping unset fields unset."""
-    return model(**body.model_dump(exclude_unset=True, exclude={"intent"}))
+    """Rebuild the plain model without re-validating (FastAPI already did); unset fields stay unset."""
+    return model.model_construct(**body.model_dump(exclude_unset=True, exclude={"intent"}))
 
 
 @router.get("/projects", response_model=list[Project])

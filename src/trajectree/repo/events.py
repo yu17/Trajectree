@@ -8,7 +8,7 @@ import apsw
 from trajectree.db.ledger import Ledger
 from trajectree.ids import new_id
 from trajectree.models import Actor, Event, EventIn, EventPatch
-from trajectree.repo import NotFound
+from trajectree.repo import InvalidRange, NotFound
 from trajectree.repo._rows import dumps_props, row_to_model, select_row, select_rows, update_fields
 from trajectree.timeutil import to_db, utcnow
 
@@ -86,7 +86,7 @@ def update_event(
         t_start = changes.get("t_start", current.t_start)
         t_end = changes["t_end"] if "t_end" in changes else current.t_end
         if t_end is not None and t_end < t_start:
-            raise ValueError("t_end before t_start")
+            raise InvalidRange("t_end before t_start")
         update_fields(h.conn, "event", event_id, fields)
     event = get_event(ledger.conn, event_id)
     assert event is not None

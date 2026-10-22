@@ -38,3 +38,13 @@ def test_todo_and_edge_routes(client):
     assert edge.status_code == 200
     assert client.post("/api/edges", json={"src_type": "event", "src_id": e1["id"], "dst_type": "event", "dst_id": e2["id"], "rel": "led_to"}).status_code == 409
     assert client.delete(f"/api/edges/{edge.json()['id']}").status_code == 204
+
+
+def test_event_patch_invalid_range_422_and_null_clears_end(client):
+    p = mk_project(client)
+    e = client.post("/api/events", json={"project_id": p["id"], "kind": "meeting", "title": "m",
+                                          "t_start": "2026-01-05T10:00:00Z", "t_end": "2026-01-05T11:00:00Z"}).json()
+    bad = client.patch(f"/api/events/{e['id']}", json={"t_end": "2026-01-01T00:00:00Z"})
+    assert bad.status_code == 422 and isinstance(bad.json()["detail"], str)
+    cleared = client.patch(f"/api/events/{e['id']}", json={"t_end": None})
+    assert cleared.status_code == 200 and cleared.json()["t_end"] is None

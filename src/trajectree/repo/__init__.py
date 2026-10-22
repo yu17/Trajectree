@@ -11,3 +11,7 @@ class DuplicateSlug(Exception):
 
 class DuplicateEdge(Exception):
     """An edge with the same endpoints and relation already exists."""
+
+
+class InvalidRange(ValueError):
+    """An update would leave an event ending before it starts."""
