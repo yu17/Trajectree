@@ -13,8 +13,6 @@ _SOURCES: tuple[tuple[str, str, str, str, str], ...] = (
     ("project", "title", "summary_md", "project", "id"),
 )
 
-_SPECIAL_CHARS = '"()*:^-'
-
 
 class SearchHit(BaseModel):
     id: str
@@ -65,11 +63,11 @@ def rebuild(conn: apsw.Connection) -> None:
 
 
 def _match_expr(q: str) -> str | None:
-    if not q.strip():
+    """Quote every whitespace token as an FTS5 phrase (implicit AND); operators are unsupported."""
+    tokens = q.split()
+    if not tokens:
         return None
-    if any(c in q for c in _SPECIAL_CHARS):
-        return '"' + q.replace('"', '""') + '"'
-    return q
+    return " ".join('"' + t.replace('"', '""') + '"' for t in tokens)
 
 
 def search(conn: apsw.Connection, q: str, *, limit: int = 50) -> list[SearchHit]:

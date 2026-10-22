@@ -31,3 +31,16 @@ def test_changeset_excludes_fts_shadow_tables(ledger, human):
     with ledger.transaction(human, "add") as h:
         insert_project(h); add_event(h, "e1", "Encoder design frozen")
     assert {c.table_name for c in ledger.changes_for(h.id)} == {"project", "event"}
+
+def test_punctuated_and_operator_queries_do_not_raise(ledger, human):
+    with ledger.transaction(human, "add") as h:
+        insert_project(h); add_event(h, "e1", "Don't ship v1.2 yet")
+    for q in ("don't", "v1.2", "C++", "a,b", "AND", 'say "hi'):
+        search(ledger.conn, q)
+    assert [x.id for x in search(ledger.conn, "don't")] == ["e1"]
+    assert [x.id for x in search(ledger.conn, "v1.2")] == ["e1"]
+    assert [x.id for x in search(ledger.conn, "ship v1.2")] == ["e1"]
+
+def test_empty_query_returns_no_hits(ledger):
+    assert search(ledger.conn, "") == []
+    assert search(ledger.conn, "   ") == []
