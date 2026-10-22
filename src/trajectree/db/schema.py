@@ -4,6 +4,8 @@ import weakref
 
 import apsw
 
+from trajectree.db import fts
+
 LEDGER_TABLES: tuple[str, ...] = ("project", "event", "todo", "resource", "edge")
 
 _V1_STATEMENTS: list[str] = [
@@ -126,6 +128,7 @@ def migrate(conn: apsw.Connection) -> None:
             for statement in statements:
                 conn.execute(statement)
             conn.execute(f"PRAGMA user_version = {version}")
+    fts.install(conn)  # idempotent; runs on every open so existing databases get it too
 
 
 _columns_cache: "weakref.WeakKeyDictionary[apsw.Connection, dict[str, list[str]]]" = (
