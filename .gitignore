@@ -7,3 +7,5 @@ src/trajectree/static/
 .claude/worktrees/
 .playwright-mcp/
 test-results/
+web/test-results/
+web/playwright-report/
