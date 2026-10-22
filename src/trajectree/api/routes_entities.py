@@ -64,7 +64,8 @@ def _strip(body, model):
 
 @router.get("/projects", response_model=list[Project])
 def list_projects(ledger: Ledger = Depends(get_ledger)):
-    return projects.list_projects(ledger.conn)
+    with ledger.locked() as conn:
+        return projects.list_projects(conn)
 
 
 @router.post("/projects", response_model=Project)
@@ -91,9 +92,10 @@ def list_events(
     t_to: AwareDatetime | None = Query(default=None, alias="to"),
     ledger: Ledger = Depends(get_ledger),
 ):
-    return events.list_events(
-        ledger.conn, project_ids=_csv(projects), t_from=t_from, t_to=t_to, kinds=_csv(kinds)
-    )
+    with ledger.locked() as conn:
+        return events.list_events(
+            conn, project_ids=_csv(projects), t_from=t_from, t_to=t_to, kinds=_csv(kinds)
+        )
 
 
 @router.post("/events", response_model=Event)
@@ -118,7 +120,8 @@ def list_todos(
     states: str | None = None,
     ledger: Ledger = Depends(get_ledger),
 ):
-    return todos.list_todos(ledger.conn, project_ids=_csv(projects), states=_csv(states))
+    with ledger.locked() as conn:
+        return todos.list_todos(conn, project_ids=_csv(projects), states=_csv(states))
 
 
 @router.post("/todos", response_model=Todo)

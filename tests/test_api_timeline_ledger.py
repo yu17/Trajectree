@@ -15,7 +15,7 @@ def test_timeline_returns_window_and_pending(client, app, agent):
     tl = client.get("/api/timeline", params={"from": "2026-01-01T00:00:00Z", "to": "2026-02-01T00:00:00Z"}).json()
     assert [x["id"] for x in tl["projects"]] == [p["id"]]
     assert {x["id"] for x in tl["events"]} == {e["id"], pending.id}
-    assert tl["pending"]["event"] == [pending.id] and tl["live"] == []
+    assert tl["pending"]["event"] == {pending.id: client.get("/api/ledger/txns").json()[0]["id"]} and tl["live"] == []
 
 def test_ledger_list_detail_and_revert(client):
     p, e = seed(client)
@@ -67,3 +67,14 @@ def test_timeline_todos_due_in_window_and_open_undated(client):
         client.post("/api/todos", json={"project_id": p["id"], "title": title, "due": due, "state": state})
     tl = client.get("/api/timeline", params={"from": "2026-01-01T00:00:00Z", "to": "2026-02-01T00:00:00Z"}).json()
     assert {t["title"] for t in tl["todos"]} == {"in", "undated"}
+
+def test_ledger_filters(client, app, agent):
+    p, _ = seed(client)
+    from trajectree.repo.events import create_event
+    from trajectree.models import EventIn
+    from datetime import datetime, timezone
+    create_event(app.state.ledger, agent, EventIn(project_id=p["id"], kind="note", title="n",
+                 t_start=datetime(2026, 1, 6, tzinfo=timezone.utc), source="agent"))
+    assert [t["actor_kind"] for t in client.get("/api/ledger/txns", params={"review": "pending"}).json()] == ["agent"]
+    assert len(client.get("/api/ledger/txns", params={"actor_kind": "human"}).json()) == 2
+    assert client.get("/api/ledger/txns", params={"review": "bogus"}).status_code == 422

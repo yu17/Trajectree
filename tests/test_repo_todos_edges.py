@@ -5,7 +5,7 @@ from trajectree.repo.projects import create_project
 from trajectree.repo.events import create_event
 from trajectree.repo.todos import create_todo, update_todo, list_todos
 from trajectree.repo.edges import create_edge, delete_edge, list_edges
-from trajectree.repo.review import pending_ids
+from trajectree.repo.review import pending_txns
 from trajectree.models import ProjectIn, EventIn, TodoIn, TodoPatch, EdgeIn
 
 UTC = timezone.utc
@@ -40,9 +40,10 @@ def test_edge_requires_existing_endpoints(ledger, human, two_events):
     with pytest.raises(NotFound):
         create_edge(ledger, human, EdgeIn(src_type="event", src_id=e1.id, dst_type="todo", dst_id="nope", rel="blocked_by"))
 
-def test_pending_ids_follow_latest_txn(ledger, human, agent, two_events):
+def test_pending_txns_follow_latest_txn(ledger, human, agent, two_events):
     p = two_events[0]
     e = create_event(ledger, agent, EventIn(project_id=p.id, kind="milestone", title="draft", t_start=ts(3), source="agent"))
-    assert pending_ids(ledger.conn, "event") == {e.id}
-    ledger.set_review(ledger.list_txns()[0].id, "accepted", human)
-    assert pending_ids(ledger.conn, "event") == set()
+    tid = ledger.list_txns()[0].id
+    assert pending_txns(ledger.conn, "event") == {e.id: tid}
+    ledger.set_review(tid, "accepted", human)
+    assert pending_txns(ledger.conn, "event") == {}

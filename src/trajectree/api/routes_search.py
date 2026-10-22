@@ -11,4 +11,5 @@ router = APIRouter()
 
 @router.get("/search", response_model=list[fts.SearchHit])
 def search(q: str, limit: int = Query(default=50, ge=1, le=500), ledger: Ledger = Depends(get_ledger)):
-    return fts.search(ledger.conn, q, limit=limit)
+    with ledger.locked() as conn:
+        return fts.search(conn, q, limit=limit)

@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from pydantic import AwareDatetime, BaseModel
 
 from trajectree.api.deps import actor_from_request, get_ledger
+from trajectree.api.routes_entities import _csv
 from trajectree.db.ledger import Ledger
 from trajectree.models import ActorKind, Change, Review, Txn
 from trajectree.repo import NotFound
@@ -62,15 +63,21 @@ def _require(ledger: Ledger, txn_id: str) -> Txn:
 def list_txns(
     limit: int = Query(default=50, ge=1, le=500),
     before: str | None = None,
+    review: Literal["pending", "accepted", "rejected", "none"] | None = None,
+    actor_kind: str | None = None,
     ledger: Ledger = Depends(get_ledger),
 ):
-    return [_out(t) for t in ledger.list_txns(limit=limit, before=before)]
+    with ledger.locked():
+        txns = ledger.list_txns(limit=limit, before=before, review=review, actor_kinds=_csv(actor_kind))
+    return [_out(t) for t in txns]
 
 
 @router.get("/ledger/txns/{txn_id}", response_model=TxnDetail)
 def get_txn(txn_id: str, ledger: Ledger = Depends(get_ledger)):
-    txn = _require(ledger, txn_id)
-    return TxnDetail(txn=_out(txn), changes=ledger.changes_for(txn_id))
+    with ledger.locked():
+        txn = _require(ledger, txn_id)
+        changes = ledger.changes_for(txn_id)
+    return TxnDetail(txn=_out(txn), changes=changes)
 
 
 @router.post("/ledger/txns/{txn_id}/revert", response_model=TxnOut)

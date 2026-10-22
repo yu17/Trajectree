@@ -172,15 +172,40 @@ class Ledger:
             row = self.conn.execute(f"{_TXN_SELECT} WHERE id = ?", (txn_id,)).fetchone()
         return None if row is None else _txn_from_row(row)
 
-    def list_txns(self, *, limit: int = 50, before: str | None = None) -> list[Txn]:
-        """Transactions newest first; `before` pages to ids older than the given one."""
+    @contextmanager
+    def locked(self) -> Iterator[apsw.Connection]:
+        """Hold the ledger lock for a block of reads; re-entrant inside `transaction`."""
         with self._lock:
-            if before is None:
-                rows = self.conn.execute(f"{_TXN_SELECT} ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
-            else:
-                rows = self.conn.execute(
-                    f"{_TXN_SELECT} WHERE id < ? ORDER BY id DESC LIMIT ?", (before, limit)
-                ).fetchall()
+            yield self.conn
+
+    def list_txns(
+        self,
+        *,
+        limit: int = 50,
+        before: str | None = None,
+        review: str | None = None,
+        actor_kinds: list[str] | None = None,
+    ) -> list[Txn]:
+        """Transactions newest first; `before` pages to ids older than the given one.
+
+        `review` keeps only that review state, `actor_kinds` only those actor kinds.
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+        if before is not None:
+            clauses.append("id < ?")
+            params.append(before)
+        if review is not None:
+            clauses.append("review = ?")
+            params.append(review)
+        if actor_kinds is not None:
+            clauses.append(f"actor_kind IN ({', '.join('?' * len(actor_kinds))})" if actor_kinds else "0")
+            params.extend(actor_kinds)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._lock:
+            rows = self.conn.execute(
+                f"{_TXN_SELECT}{where} ORDER BY id DESC LIMIT ?", (*params, limit)
+            ).fetchall()
         return [_txn_from_row(row) for row in rows]
 
     def changes_for(self, txn_id: str) -> list[Change]:
@@ -202,12 +227,20 @@ class Ledger:
             for txn_id_, seq, table_name, op, pk, old, new in rows
         ]
 
-    def revert(self, txn_id: str, actor: Actor, intent: str | None = None) -> Txn:
+    def revert(
+        self,
+        txn_id: str,
+        actor: Actor,
+        intent: str | None = None,
+        *,
+        mark_review: Literal["rejected"] | None = None,
+    ) -> Txn:
         """Apply the inverse of `txn_id` as a new transaction linked to it both ways.
 
         Raises `KeyError` for an unknown id, `AlreadyReverted` if it was reverted
         before, and `RevertConflict` (with nothing applied) if any row it touched
-        has changed since.
+        has changed since. With `mark_review`, the original's review state is set
+        in the same transaction, so a failed revert leaves it untouched.
         """
         conflicts: list[Conflict] = []
 
@@ -226,6 +259,11 @@ class Ledger:
                 inverse = apsw.Changeset.invert(original.changeset)
                 apsw.Changeset.apply(inverse, self.conn, conflict=on_conflict)
                 self.conn.execute("UPDATE txn SET reverted_by = ? WHERE id = ?", (handle.id, txn_id))
+                if mark_review is not None:
+                    self.conn.execute(
+                        "UPDATE txn SET review = ?, review_ts = ? WHERE id = ?",
+                        (mark_review, to_db(utcnow()), txn_id),
+                    )
         except apsw.Error as exc:
             if conflicts:
                 raise RevertConflict(conflicts) from exc
@@ -235,14 +273,26 @@ class Ledger:
         return reverted
 
     def set_review(self, txn_id: str, state: Literal["accepted", "rejected"], actor: Actor) -> Txn:
-        """Accept a transaction, or reject it by reverting it; returns the reviewed transaction."""
-        if state == "rejected":
-            self.revert(txn_id, actor)
+        """Accept a transaction, or reject it by reverting it; returns the reviewed transaction.
+
+        Reviewing again with the same state returns the transaction unchanged.
+        Accepting a reverted transaction raises `AlreadyReverted`; rejecting runs
+        the revert and the review update as one transaction.
+        """
         with self._lock:
-            self.conn.execute(
-                "UPDATE txn SET review = ?, review_ts = ? WHERE id = ?", (state, to_db(utcnow()), txn_id)
-            )
-        txn = self.get_txn(txn_id)
-        if txn is None:
-            raise KeyError(txn_id)
-        return txn
+            txn = self.get_txn(txn_id)
+            if txn is None:
+                raise KeyError(txn_id)
+            if state == "accepted" and txn.reverted_by is not None:
+                raise AlreadyReverted(txn_id)
+            if txn.review == state:
+                return txn
+            if state == "rejected":
+                self.revert(txn_id, actor, mark_review="rejected")
+            else:
+                self.conn.execute(
+                    "UPDATE txn SET review = ?, review_ts = ? WHERE id = ?", (state, to_db(utcnow()), txn_id)
+                )
+            reviewed = self.get_txn(txn_id)
+        assert reviewed is not None
+        return reviewed
