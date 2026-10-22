@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trajectree timeline mock</title>
+<style>
+:root{
+  color-scheme: light;
+  --surface:#fcfcfb; --plane:#f9f9f7; --ink:#0b0b0b; --ink2:#52514e; --muted:#898781;
+  --grid:#e1e0d9; --axis:#c3c2b7; --border:rgba(11,11,11,.10); --band:rgba(11,11,11,.025);
+  --k-decision:#2a78d6; --k-meeting:#eb6834; --k-milestone:#1baf7a; --k-idea:#52514e; --k-activity:#898781;
+  --strip-1:#e9e8e2; --strip-2:#cfceC6; --strip-3:#adaca3; --strip-4:#898781; --strip-5:#52514e;
+  --future:rgba(11,11,11,.035); --now:#d03b3b; --sel:#0b0b0b; --warn:#fab219; --wire:#52514e;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme: dark;
+    --surface:#1a1a19; --plane:#0d0d0d; --ink:#f0efec; --ink2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,.10); --band:rgba(255,255,255,.03);
+    --k-decision:#3987e5; --k-meeting:#d95926; --k-milestone:#199e70; --k-idea:#c3c2b7; --k-activity:#898781;
+    --strip-1:#262624; --strip-2:#383835; --strip-3:#52514e; --strip-4:#898781; --strip-5:#c3c2b7;
+    --future:rgba(255,255,255,.045); --sel:#f0efec; --wire:#c3c2b7;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --surface:#1a1a19; --plane:#0d0d0d; --ink:#f0efec; --ink2:#c3c2b7; --muted:#898781;
+  --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,.10); --band:rgba(255,255,255,.03);
+  --k-decision:#3987e5; --k-meeting:#d95926; --k-milestone:#199e70; --k-idea:#c3c2b7; --k-activity:#898781;
+  --strip-1:#262624; --strip-2:#383835; --strip-3:#52514e; --strip-4:#898781; --strip-5:#c3c2b7;
+  --future:rgba(255,255,255,.045); --sel:#f0efec; --wire:#c3c2b7;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--plane);color:var(--ink);font:13px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
+header{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--grid);background:var(--surface)}
+header h1{font-size:15px;margin:0 6px 0 0;font-weight:600}
+header .tag{font-size:11px;color:var(--muted);border:1px solid var(--border);border-radius:10px;padding:1px 7px}
+.ctl{display:flex;align-items:center;gap:6px}
+.ctl label{color:var(--ink2);font-size:12px}
+button{font:inherit;font-size:12px;color:var(--ink);background:var(--surface);border:1px solid var(--axis);border-radius:6px;padding:4px 10px;cursor:pointer}
+button:hover{border-color:var(--ink2)}
+button.on{background:var(--ink);color:var(--surface);border-color:var(--ink)}
+.legend{display:flex;flex-wrap:wrap;gap:4px 14px;padding:6px 16px;font-size:12px;color:var(--ink2);background:var(--surface);border-bottom:1px solid var(--grid)}
+.legend .it{display:inline-flex;align-items:center;gap:5px}
+.sw{width:14px;height:10px;border-radius:3px;border:1px solid var(--kc);background:color-mix(in srgb,var(--kc) 18%,transparent)}
+.sw.dash{border-style:dashed;background:transparent}
+.sw.dot{border-style:dotted;background:transparent;opacity:.75}
+.sw.gray{--kc:var(--k-activity);background:color-mix(in srgb,var(--kc) 28%,transparent)}
+.pend{width:8px;height:8px;border-radius:50%;background:var(--warn);display:inline-block}
+.main{display:grid;grid-template-columns:1fr 320px;min-height:calc(100vh - 170px)}
+.tlwrap{position:relative;overflow:hidden;background:var(--surface)}
+svg{display:block;user-select:none}
+.axis text{fill:var(--muted);font-size:11px}
+.axis path,.axis line{stroke:var(--axis)}
+.grid line{stroke:var(--grid)}
+.band{fill:var(--band)}
+.lane-sep{stroke:var(--grid)}
+.lbl-name{fill:var(--ink);font-size:12.5px;font-weight:600}
+.lbl-kind{fill:var(--muted);font-size:10.5px}
+.gutter-bg{fill:var(--surface)}
+.gutter-edge{stroke:var(--axis)}
+.future{fill:var(--future)}
+.now{stroke:var(--now);stroke-width:1.5}
+.now-lbl{fill:var(--now);font-size:11px;font-weight:600}
+.block rect.body{fill:var(--kc);fill-opacity:.16;stroke:var(--kc);stroke-width:1}
+.block.k-decision{--kc:var(--k-decision)} .block.k-meeting{--kc:var(--k-meeting)}
+.block.k-milestone{--kc:var(--k-milestone)} .block.k-idea{--kc:var(--k-idea)}
+.block.k-task,.block.k-commits,.block.k-session{--kc:var(--k-activity)}
+.block.k-idea rect.body{rx:11px;fill-opacity:.06}
+.block.k-commits rect.body,.block.k-session rect.body{fill-opacity:.26;stroke-opacity:.5}
+.block.s-planned rect.body{fill-opacity:0;stroke-dasharray:4 3;stroke-width:1.2}
+.block.s-suggested rect.body{fill-opacity:0;stroke-dasharray:2 3;stroke-width:1.2}
+.block.s-suggested text{font-style:italic;fill:var(--ink2)}
+.block.s-done rect.body{fill-opacity:.08;stroke-opacity:.5}
+.block text{fill:var(--ink);font-size:11.5px;pointer-events:none}
+.block text .g{fill:var(--kc)}
+.block.k-commits text,.block.k-session text{fill:var(--ink2);font-size:11px}
+.block.hover rect.body,.block.linked rect.body{stroke-width:2}
+.block.sel rect.body{stroke:var(--sel);stroke-width:2}
+.block .pending{fill:var(--warn);stroke:var(--surface);stroke-width:1}
+.block{cursor:pointer}
+.strip rect{stroke:none}
+.wire{fill:none;stroke:var(--wire);stroke-width:2;stroke-opacity:.9}
+.wire-lbl{fill:var(--ink2);font-size:10.5px;paint-order:stroke;stroke:var(--surface);stroke-width:3px}
+.tip{position:absolute;pointer-events:none;background:var(--ink);color:var(--surface);font-size:11.5px;padding:4px 8px;border-radius:5px;max-width:280px;display:none;z-index:5}
+aside{border-left:1px solid var(--grid);background:var(--plane);padding:14px 16px;overflow:auto}
+aside h2{font-size:13px;margin:0 0 6px;color:var(--ink2);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+aside h3{font-size:15px;margin:0 0 4px}
+aside .meta{display:grid;grid-template-columns:auto 1fr;gap:4px 10px;font-size:12px;margin:10px 0}
+aside .meta dt{color:var(--muted)} aside .meta dd{margin:0}
+aside .badge{display:inline-block;font-size:11px;padding:1px 7px;border-radius:9px;border:1px solid var(--border);color:var(--ink2);margin-right:4px}
+aside .badge.warn{background:color-mix(in srgb,var(--warn) 25%,transparent);border-color:var(--warn);color:var(--ink)}
+aside .links li{margin:3px 0} aside ul{padding-left:18px;margin:4px 0}
+aside .empty{color:var(--muted)}
+aside .body{font-size:12.5px;color:var(--ink2);border-left:2px solid var(--grid);padding-left:10px;margin:8px 0}
+aside .actions{display:flex;gap:6px;margin-top:10px}
+footer{position:sticky;bottom:0;display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;padding:10px 16px;border-top:1px solid var(--grid);background:var(--surface)}
+footer .q{font-weight:600;margin-right:4px}
+footer .opt{padding:7px 12px;border-radius:8px;border:1.5px solid var(--axis)}
+footer .opt.sel{border-color:var(--ink);box-shadow:inset 0 0 0 1px var(--ink)}
+footer .hint{color:var(--muted);font-size:12px}
+kbd{font:11px ui-monospace,monospace;background:var(--plane);border:1px solid var(--border);border-radius:4px;padding:0 4px}
+@media (max-width:900px){.main{grid-template-columns:1fr}aside{border-left:0;border-top:1px solid var(--grid)}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Trajectree · timeline mock</h1><span class="tag">throwaway · fake data · now = 21 Oct 2026</span>
+  <div class="ctl"><label>Lane model</label>
+    <button id="modeA" class="on" onclick="setMode('A')">A · curated blocks + activity strip</button>
+    <button id="modeB" onclick="setMode('B')">B · everything is a block</button></div>
+  <div class="ctl"><label>Zoom</label>
+    <button onclick="showWindow(10*DAY)">Week</button><button onclick="showWindow(35*DAY)">Month</button>
+    <button onclick="showWindow(150*DAY)">Quarter+</button><button onclick="fit()">All</button></div>
+  <div class="ctl"><button id="wiresBtn" onclick="toggleWires()">Show all wires</button>
+    <span class="hint" style="color:var(--muted);font-size:12px">wheel = zoom time · drag = pan · hover/click a block to see its wires</span>
+    <span id="clusterNote" style="color:var(--ink2);font-size:12px;font-weight:600"></span></div>
+</header>
+<div class="legend">
+  <span class="it"><span class="sw" style="--kc:var(--k-decision)"></span>◆ decision</span>
+  <span class="it"><span class="sw" style="--kc:var(--k-meeting)"></span>● meeting</span>
+  <span class="it"><span class="sw" style="--kc:var(--k-milestone)"></span>▲ milestone</span>
+  <span class="it"><span class="sw" style="--kc:var(--k-idea);border-radius:7px;background:transparent"></span>✦ idea / note (pill, no hue)</span>
+  <span class="it"><span class="sw gray"></span>☐ task · ▮ commits · ▣ Claude session</span>
+  <span class="it"><span class="sw dash" style="--kc:var(--ink2)"></span>planned (you)</span>
+  <span class="it"><span class="sw dot" style="--kc:var(--ink2)"></span>suggested (agent)</span>
+  <span class="it"><span class="pend"></span>agent write, unreviewed</span>
+  <span class="it" id="stripLegend"><span class="sw" style="--kc:var(--strip-4);background:var(--strip-3)"></span>activity strip: commits, sessions, file changes per day</span>
+</div>
+<div class="main">
+  <div class="tlwrap" id="tlwrap"><svg id="tl"></svg><div class="tip" id="tip"></div></div>
+  <aside id="panel"><h2>Details</h2><p class="empty">Click a block. Hover the activity strip for the day's digest.</p></aside>
+</div>
+<footer>
+  <span class="q">Which lane model should the real UI use?</span>
+  <button class="opt" data-choice="A" onclick="pick('A')">A · Curated blocks + activity strip</button>
+  <button class="opt" data-choice="B" onclick="pick('B')">B · Every commit batch and session is a block</button>
+  <span class="hint">Clicking records your pick here; everything else, reply in the terminal.</span>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<script>
+// ---------- fake data ----------
+const DAY = 864e5;
+const NOW = new Date(2026, 9, 21, 12);
+const T0 = new Date(2026, 5, 1), T1 = new Date(2027, 1, 1);
+const dt = (s) => { const [y,m,d,h] = s.split(/[-T]/).map(Number); return new Date(y, m-1, d, h ?? 10); };
+
+const projects = [
+  {id:'clmi', name:'CLMI', kind:'research'},
+  {id:'qultsf', name:'QuLTSF', kind:'research'},
+  {id:'keccak', name:'Keccak attack', kind:'research'},
+  {id:'traj', name:'Trajectree', kind:'tooling'},
+  {id:'chatmaid', name:'chatmaid', kind:'tooling'},
+  {id:'ccx', name:'ccx', kind:'tooling'},
+  {id:'meetings', name:'Group meetings', kind:'routine'},
+  {id:'inbox', name:'Inbox', kind:'one-shots'},
+];
+
+const H = 'human', A = 'agent', C = 'connector';
+const curated = [
+  // CLMI
+  {id:'e1', p:'clmi', kind:'decision', title:'Use ShinkaEvolve as the search baseline', start:dt('2026-06-10'), src:H},
+  {id:'e2', p:'clmi', kind:'meeting', title:'Advisor sync: scope the v2 experiments', start:dt('2026-07-02T14'), end:dt('2026-07-02T15'), src:H},
+  {id:'e3', p:'clmi', kind:'milestone', title:'Runs 1 to 4 finished, results archived', start:dt('2026-07-24'), src:H},
+  {id:'e4', p:'clmi', kind:'idea', title:'Video-encoder variant of the pipeline', start:dt('2026-08-14'), src:H},
+  {id:'e5', p:'clmi', kind:'decision', title:'Encoder design frozen', start:dt('2026-09-09'), src:H,
+    body:'Settled on the two-stage design after the Aug 14 idea panned out in the smoke runs.'},
+  {id:'e6', p:'clmi', kind:'meeting', title:'Presented CLMI progress', start:dt('2026-10-09T15'), end:dt('2026-10-09T16'), src:H},
+  {id:'e7', p:'clmi', kind:'milestone', title:'Paper draft v0 compiled', start:dt('2026-10-15'), src:A, review:'pending',
+    body:'Detected from the nightly digest: paper/main.tex gained 1,900 words and a first full build succeeded.'},
+  {id:'e8', p:'clmi', kind:'meeting', title:'Internal review of the draft', start:dt('2026-11-16T10'), end:dt('2026-11-16T12'), status:'planned', src:H},
+  {id:'e9', p:'clmi', kind:'decision', title:'Pick target venue and deadline', start:dt('2026-12-07'), status:'suggested', src:A, review:'pending',
+    body:'Suggested because the draft exists but no venue is recorded. Two plausible deadlines fall in January.'},
+  // QuLTSF
+  {id:'q1', p:'qultsf', kind:'idea', title:'Try long-term structure features', start:dt('2026-06-25'), src:H},
+  {id:'q2', p:'qultsf', kind:'milestone', title:'Dataset pipeline done', start:dt('2026-08-05'), src:H},
+  {id:'q3', p:'qultsf', kind:'decision', title:'Paused until the CLMI draft is out', start:dt('2026-09-20'), src:H},
+  {id:'q4', p:'qultsf', kind:'milestone', title:'Resume: rerun with the CLMI encoder', start:dt('2026-11-23'), status:'suggested', src:A, review:'pending'},
+  // Keccak
+  {id:'k1', p:'keccak', kind:'idea', title:'Constraint solver could be shared with QuLTSF', start:dt('2026-07-15'), src:H},
+  {id:'k2', p:'keccak', kind:'milestone', title:'Round-reduced attack reproduces the paper', start:dt('2026-08-28'), src:H},
+  {id:'k3', p:'keccak', kind:'decision', title:'Switch solver backend to CaDiCaL', start:dt('2026-10-10'), src:H},
+  // Trajectree
+  {id:'t1', p:'traj', kind:'idea', title:'Project started: a timeline of everything', start:dt('2026-10-21T09'), src:H},
+  {id:'t2', p:'traj', kind:'decision', title:'Architecture: SQLite ledger, d3 timeline, headless CLI runner', start:dt('2026-10-21T17'), src:H},
+  {id:'t3', p:'traj', kind:'milestone', title:'Spike: d3 timeline with semantic zoom', start:dt('2026-10-28'), status:'planned', src:H},
+  {id:'t4', p:'traj', kind:'milestone', title:'Ingest Claude Code sessions via hooks', start:dt('2026-11-11'), status:'suggested', src:A, review:'pending'},
+  {id:'t5', p:'traj', kind:'milestone', title:'Nightly digest routine live', start:dt('2026-12-02'), status:'suggested', src:A, review:'pending'},
+  // chatmaid
+  {id:'ch1', p:'chatmaid', kind:'idea', title:'Unified comms assistant', start:dt('2026-09-27'), src:H},
+  {id:'ch2', p:'chatmaid', kind:'decision', title:'Research hybrid LLM routing for chat', start:dt('2026-10-01'), src:H},
+  {id:'ch3', p:'chatmaid', kind:'milestone', title:'Push communication events into Trajectree', start:dt('2026-12-15'), status:'planned', src:H},
+  // ccx
+  {id:'c1', p:'ccx', kind:'milestone', title:'v0.1: DeepSeek, Kimi, LM Studio backends', start:dt('2026-10-04'), src:H},
+  {id:'c2', p:'ccx', kind:'decision', title:'Default to manual permission mode', start:dt('2026-10-06'), src:H},
+  // Inbox
+  {id:'i1', p:'inbox', kind:'task', title:'Email dataset maintainers for access', start:dt('2026-07-08'), status:'done', src:H},
+  {id:'i2', p:'inbox', kind:'task', title:'Reply to reviewer 2', start:dt('2026-10-25'), status:'planned', src:H},
+  {id:'i3', p:'inbox', kind:'task', title:'Renew cluster allocation', start:dt('2026-11-02'), status:'planned', src:H},
+];
+// biweekly group meetings (Fridays)
+for (let t = dt('2026-06-05T15'); t < new Date(2026, 11, 20); t = new Date(t.getTime() + 14*DAY)) {
+  const id = 'm' + t.toISOString().slice(0,10);
+  const past = t < NOW;
+  curated.push({id, p:'meetings', kind:'meeting', title: past ? 'Group meeting' : 'Group meeting (scheduled)',
+    start:t, end:new Date(t.getTime() + 36e5), status: past ? undefined : 'planned', src: past ? H : C,
+    body: past ? 'Recurring. Notes attached from the shared doc.' : 'Recurring routine instance.'});
+}
+curated.push({id:'mAgenda', p:'meetings', kind:'idea', title:'Draft agenda for the 23 Oct meeting', start:dt('2026-10-22T09'), status:'suggested', src:A, review:'pending',
+  body:'Routine "meeting-prep" proposes an agenda from events of the last two weeks across CLMI, Keccak and chatmaid.'});
+
+const edges = [
+  {a:'e6', b:'m2026-10-09', rel:'presented at'},
+  {a:'k1', b:'q2', rel:'shares solver module'},
+  {a:'e5', b:'q4', rel:'reuses encoder'},
+  {a:'c2', b:'t2', rel:'informs runner design'},
+  {a:'t2', b:'ch3', rel:'integration contract'},
+  {a:'e4', b:'e5', rel:'led to'},
+  {a:'e8', b:'q3', rel:'unblocks'},
+  {a:'e7', b:'e9', rel:'prompted'},
+];
+
+// activity (seeded)
+function rng(seed){ let a = seed >>> 0; return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const intensity = {
+  clmi: d => d < dt('2026-10-01') ? 0.8 : 0.5,
+  qultsf: d => d < dt('2026-09-20') ? 0.55 : 0.04,
+  keccak: d => d < dt('2026-07-01') ? 0.05 : 0.4,
+  traj: d => d >= dt('2026-10-21') ? 1 : 0,
+  chatmaid: d => d < dt('2026-09-27') ? 0 : d < dt('2026-10-06') ? 0.7 : 0.2,
+  ccx: d => d < dt('2026-10-03') ? 0 : d < dt('2026-10-07') ? 0.9 : 0.1,
+  meetings: () => 0, inbox: () => 0,
+};
+const sessionTitles = ['fix flaky encoder test','refactor data loader','write results section','debug slurm submit script','tune hyperparameters','clean up notebooks','add CLI flags','investigate OOM on node 12','update README','plot ablations'];
+const activity = {};      // pid -> [{day, commits, sessions, files}]
+const activityBlocks = [];// mode B blocks
+projects.forEach((p, pi) => {
+  const r = rng(1000 + pi * 7919);
+  activity[p.id] = [];
+  for (let d = new Date(T0); d <= NOW; d = new Date(d.getTime() + DAY)) {
+    const wk = d.getDay() === 0 || d.getDay() === 6 ? 0.3 : 1;
+    const it = intensity[p.id](d) * wk;
+    const commits = r() < it * 0.75 ? 1 + Math.floor(r() * 6) : 0;
+    const sessions = r() < it * 0.55 ? 1 + Math.floor(r() * 2.2) : 0;
+    const files = commits * (2 + Math.floor(r() * 4)) + sessions * (3 + Math.floor(r() * 6));
+    if (!commits && !sessions) continue;
+    activity[p.id].push({day:new Date(d), commits, sessions, files});
+    if (commits) activityBlocks.push({id:`${p.id}-c-${+d}`, p:p.id, kind:'commits', title:`${commits} commit${commits>1?'s':''} · main`,
+      start:new Date(d.getTime() + 10*36e5), end:new Date(d.getTime() + 18*36e5), src:C, files});
+    for (let s = 0; s < sessions; s++) {
+      const st = new Date(d.getTime() + (9 + s*4 + r()*2) * 36e5);
+      activityBlocks.push({id:`${p.id}-s-${+d}-${s}`, p:p.id, kind:'session', title:'Claude: ' + sessionTitles[Math.floor(r()*sessionTitles.length)],
+        start:st, end:new Date(st.getTime() + (0.5 + r()*2.5) * 36e5), src:C, cost:(0.4 + r()*5).toFixed(2)});
+    }
+  }
+});
+
+// ---------- rendering ----------
+const GUTTER = 176, AXIS_H = 34, ROW_H = 28, BLOCK_H = 22, STRIP_H = 14, PAD = 8, MIN_W = 16;
+const glyph = {decision:'◆', meeting:'●', milestone:'▲', idea:'✦', task:'☐', commits:'▮', session:'▣'};
+let mode = 'A', showAll = false, selected = null, hovered = null;
+let W = 0, plotW = 0, transform = d3.zoomIdentity;
+const x = d3.scaleTime().domain([T0, T1]);
+const svg = d3.select('#tl');
+const defs = svg.append('defs');
+defs.append('clipPath').attr('id','plotclip').append('rect');
+defs.append('marker').attr('id','arrow').attr('viewBox','0 0 10 10').attr('refX',9).attr('refY',5).attr('markerWidth',6).attr('markerHeight',6).attr('orient','auto-start-reverse')
+  .append('path').attr('d','M0,0 L10,5 L0,10 z').attr('fill','var(--wire)');
+const gBands = svg.append('g');
+const gPlot = svg.append('g').attr('clip-path','url(#plotclip)').attr('transform',`translate(${GUTTER},${AXIS_H})`);
+const gFuture = gPlot.append('rect').attr('class','future');
+const gGrid = gPlot.append('g').attr('class','grid');
+const gStrips = gPlot.append('g');
+const gBlocks = gPlot.append('g');
+const gWires = gPlot.append('g');
+const gNow = gPlot.append('g');
+gNow.append('line').attr('class','now');
+gNow.append('text').attr('class','now-lbl').attr('y',12).attr('x',5).text('now');
+const gAxis = svg.append('g').attr('class','axis').attr('transform',`translate(${GUTTER},${AXIS_H})`);
+const gGutter = svg.append('g');
+const tip = document.getElementById('tip');
+
+const zoom = d3.zoom().scaleExtent([0.6, 120]).filter(ev => !ev.button).on('zoom', ev => { transform = ev.transform; render(); });
+svg.call(zoom).on('dblclick.zoom', null);
+
+function labelW(t){ return Math.min(t.length * 6.4 + 14, 170); }
+function layoutLane(items, xz, maxRows){
+  const prep = items.map(it => {
+    const px = xz(it.start); const w = Math.max(it.end ? xz(it.end) - px : 0, (it.kind==='commits'||it.kind==='session') && !it.cluster ? 10 : MIN_W);
+    const lw = labelW(it.title); const inside = w >= lw + 6;
+    return {it, px, w, lw, inside, label:true};
+  }).sort((a,b) => a.px - b.px);
+  const rows = [];
+  prep.forEach(b => {
+    const withL = b.w + (b.inside ? 0 : b.lw + 4);
+    const r = rows.findIndex(end => end + 3 <= b.px);
+    if (r >= 0) { rows[r] = b.px + withL; b.row = r; b.label = true; return; }
+    if (rows.length < maxRows) { rows.push(b.px + withL); b.row = rows.length - 1; b.label = true; return; }
+    rows.push(b.px + b.w); b.row = rows.length - 1; b.label = b.inside; // over budget: new row, outside label dropped
+  });
+  return {blocks:prep, rows:Math.max(1, rows.length)};
+}
+function clusterActivity(binner){
+  const out = [];
+  projects.forEach(p => d3.rollup(activity[p.id], v => ({c:d3.sum(v,d=>d.commits), s:d3.sum(v,d=>d.sessions)}), d => +binner.floor(d.day))
+    .forEach((v,k) => { const t = new Date(k); out.push({id:`${p.id}-x-${k}`, p:p.id, kind:'commits', title:`${v.c} commits · ${v.s} sessions`, start:t, end:binner.offset(t,1), src:C, cluster:true}); }));
+  return out;
+}
+
+function render(){
+  W = document.getElementById('tlwrap').clientWidth; plotW = Math.max(200, W - GUTTER);
+  x.range([0, plotW]); const xz = transform.rescaleX(x);
+  const dayW0 = xz(new Date(T0.getTime()+DAY)) - xz(T0);
+  const items = mode === 'B' ? curated.concat(dayW0 >= 22 ? activityBlocks : clusterActivity(dayW0*7 >= 22 ? d3.timeWeek : d3.timeMonth)) : curated;
+  const maxRows = mode === 'B' ? 6 : 3;
+  document.getElementById('clusterNote').textContent = mode === 'B' ? (dayW0 >= 22 ? 'B: individual commit batches and sessions' : `B: activity clustered per ${dayW0*7 >= 22 ? 'week' : 'month'} at this zoom`) : '';
+  // lane layout
+  let y = 0; const lanes = [];
+  const vis = it => { const a = xz(it.start), b = it.end ? xz(it.end) : a; return b >= -400 && a <= plotW + 400; };
+  projects.forEach(p => {
+    const lay = layoutLane(items.filter(it => it.p === p.id && vis(it)), xz, maxRows);
+    const stripH = mode === 'A' && activity[p.id].length ? STRIP_H + 4 : 0;
+    const h = PAD + lay.rows * ROW_H + stripH + PAD;
+    lanes.push({p, y, h, stripY: PAD + lay.rows * ROW_H + 2, blocks: lay.blocks});
+    y += h;
+  });
+  const plotH = y, totalH = AXIS_H + plotH + 8;
+  svg.attr('width', W).attr('height', totalH);
+  defs.select('#plotclip rect').attr('width', plotW).attr('height', plotH);
+  gFuture.attr('x', xz(NOW)).attr('y', 0).attr('width', Math.max(0, plotW - xz(NOW))).attr('height', plotH);
+  // bands + gutter
+  gBands.selectAll('rect.band').data(lanes).join('rect').attr('class','band').attr('x',0).attr('y',d=>AXIS_H+d.y).attr('width',W).attr('height',d=>d.h).style('opacity',(d,i)=>i%2?1:0);
+  gBands.selectAll('line.lane-sep').data(lanes).join('line').attr('class','lane-sep').attr('x1',0).attr('x2',W).attr('y1',d=>AXIS_H+d.y+d.h).attr('y2',d=>AXIS_H+d.y+d.h);
+  gGutter.selectAll('rect.gutter-bg').data([0]).join('rect').attr('class','gutter-bg').attr('width',GUTTER).attr('height',totalH).style('opacity',0);
+  gGutter.selectAll('line.gutter-edge').data([0]).join('line').attr('class','gutter-edge').attr('x1',GUTTER-.5).attr('x2',GUTTER-.5).attr('y1',0).attr('y2',totalH);
+  const lab = gGutter.selectAll('g.lab').data(lanes).join(enter => { const g = enter.append('g').attr('class','lab'); g.append('text').attr('class','lbl-name'); g.append('text').attr('class','lbl-kind'); return g; });
+  lab.attr('transform', d => `translate(14,${AXIS_H + d.y + PAD + 15})`);
+  lab.select('.lbl-name').text(d => d.p.name); lab.select('.lbl-kind').attr('y', 14).text(d => d.p.kind);
+  // axis + grid
+  const ticks = Math.max(3, Math.floor(plotW / 120));
+  gAxis.call(d3.axisTop(xz).ticks(ticks).tickSizeOuter(0));
+  gGrid.selectAll('line').data(xz.ticks(ticks)).join('line').attr('x1',d=>xz(d)).attr('x2',d=>xz(d)).attr('y1',0).attr('y2',plotH);
+  gNow.select('line').attr('x1',xz(NOW)).attr('x2',xz(NOW)).attr('y1',0).attr('y2',plotH);
+  gNow.select('text').attr('x', xz(NOW)+5);
+  // strips
+  const dayW = xz(new Date(T0.getTime()+DAY)) - xz(T0);
+  const binner = dayW >= 3 ? d3.timeDay : dayW*7 >= 3 ? d3.timeWeek : d3.timeMonth;
+  const stripData = [];
+  if (mode === 'A') lanes.forEach(l => {
+    const bins = d3.rollup(activity[l.p.id], v => ({commits:d3.sum(v,d=>d.commits), sessions:d3.sum(v,d=>d.sessions), files:d3.sum(v,d=>d.files), n:v.length}), d => +binner.floor(d.day));
+    bins.forEach((v,k) => stripData.push({lane:l, t:new Date(k), ...v, score:v.commits + 2*v.sessions + v.files/8}));
+  });
+  const smax = d3.max(stripData, d => d.score) || 1;
+  const sColor = d3.scaleQuantize([0, smax], ['var(--strip-1)','var(--strip-2)','var(--strip-3)','var(--strip-4)','var(--strip-5)']);
+  gStrips.selectAll('rect').data(stripData, d => d.lane.p.id + '|' + +d.t).join('rect').attr('class','strip')
+    .attr('x', d => xz(d.t) + .5).attr('width', d => Math.max(1.5, xz(binner.offset(d.t,1)) - xz(d.t) - 1))
+    .attr('y', d => d.lane.y + d.lane.stripY).attr('height', STRIP_H).attr('rx', 2).attr('fill', d => sColor(d.score))
+    .on('mousemove', (ev,d) => showTip(ev, `<b>${d3.timeFormat(binner===d3.timeDay?'%a %d %b':binner===d3.timeWeek?'week of %d %b':'%B')(d.t)}</b> · ${d.lane.p.name}<br>${d.commits} commits · ${d.sessions} Claude sessions · ${d.files} files changed<br><i>nightly digest: ${d.n} active day${d.n>1?'s':''}, hover a block for curated events</i>`))
+    .on('mouseleave', hideTip);
+  // blocks
+  const pos = {}; const flat = [];
+  lanes.forEach(l => l.blocks.forEach(b => { b.y = l.y + PAD + b.row * ROW_H + (ROW_H - BLOCK_H)/2; pos[b.it.id] = {x:b.px, y:b.y, w:b.w, h:BLOCK_H}; flat.push(b); }));
+  const linked = new Set(); const focus = hovered || selected;
+  const visEdges = edges.filter(e => pos[e.a] && pos[e.b] && (showAll || e.a === focus || e.b === focus));
+  visEdges.forEach(e => { linked.add(e.a); linked.add(e.b); });
+  const blk = gBlocks.selectAll('g.block').data(flat, d => d.it.id).join(enter => {
+    const g = enter.append('g'); g.append('rect').attr('class','body').attr('rx',4).attr('height',BLOCK_H); g.append('text').attr('y', BLOCK_H/2 + 4); g.append('circle').attr('class','pending').attr('r',4); return g; });
+  blk.attr('class', d => `block k-${d.it.kind} s-${d.it.status || 'happened'}${d.it.id===selected?' sel':''}${d.it.id===hovered?' hover':''}${linked.has(d.it.id)?' linked':''}`)
+    .attr('transform', d => `translate(${d.px},${d.y})`)
+    .on('mouseenter', (ev,d) => { hovered = d.it.id; render(); })
+    .on('mousemove', (ev,d) => showTip(ev, `<b>${d.it.title}</b><br>${fmtWhen(d.it)}${d.it.cost?` · est. $${d.it.cost}`:''}`))
+    .on('mouseleave', () => { hovered = null; hideTip(); render(); })
+    .on('click', (ev,d) => { ev.stopPropagation(); selected = d.it.id; showDetails(d.it); render(); });
+  blk.select('rect.body').attr('width', d => d.w);
+  blk.select('text').attr('x', d => d.inside ? 6 : d.w + 5).style('display', d => d.label ? null : 'none')
+    .html(d => `<tspan class="g">${glyph[d.it.kind] || '•'}</tspan> ${trunc(d.it.title, d.inside ? d.w - 22 : d.lw)}`);
+  blk.select('circle.pending').style('display', d => d.it.review === 'pending' ? null : 'none').attr('cx', d => d.w - 1).attr('cy', 1);
+  // wires
+  const wire = gWires.selectAll('g.w').data(visEdges, e => e.a + e.b).join(enter => { const g = enter.append('g').attr('class','w'); g.append('path').attr('class','wire').attr('marker-end','url(#arrow)'); g.append('text').attr('class','wire-lbl'); return g; });
+  wire.select('path').attr('d', e => wirePath(pos[e.a], pos[e.b]));
+  wire.select('text').attr('x', e => (mid(pos[e.a]).x + mid(pos[e.b]).x)/2).attr('y', e => (mid(pos[e.a]).y + mid(pos[e.b]).y)/2 - 4).attr('text-anchor','middle').text(e => e.rel);
+}
+function mid(b){ return {x:b.x + b.w/2, y:b.y + b.h/2}; }
+function wirePath(a, b){
+  const forward = b.x >= a.x + a.w;
+  const x1 = forward ? a.x + a.w : a.x, x2 = forward ? b.x : b.x + b.w, y1 = a.y + a.h/2, y2 = b.y + b.h/2;
+  if (Math.abs(y1 - y2) < 1) return `M${x1},${y1} Q${(x1+x2)/2},${y1 - ROW_H*0.9} ${x2},${y2}`;
+  const dx = Math.max(28, Math.abs(x2 - x1)/2) * (forward ? 1 : -1);
+  return `M${x1},${y1} C${x1+dx},${y1} ${x2-dx},${y2} ${x2},${y2}`;
+}
+function trunc(t, w){ const n = Math.floor(w / 6.4); return t.length > n ? t.slice(0, Math.max(1, n - 1)) + '…' : t; }
+function fmtWhen(it){ const f = d3.timeFormat('%a %d %b %Y, %H:%M'); return f(it.start) + (it.end ? ' → ' + d3.timeFormat('%H:%M')(it.end) : ''); }
+function showTip(ev, html){ tip.innerHTML = html; tip.style.display = 'block'; const r = document.getElementById('tlwrap').getBoundingClientRect(); tip.style.left = (ev.clientX - r.left + 12) + 'px'; tip.style.top = (ev.clientY - r.top + 12) + 'px'; }
+function hideTip(){ tip.style.display = 'none'; }
+function showDetails(it){
+  const p = projects.find(p => p.id === it.p);
+  const author = it.src === H ? 'you · web UI quick-add' : it.src === A ? 'agent run #142 · claude-opus-5-5 via <code>claude -p</code> · routine: nightly-digest' : 'connector · git / Claude Code hooks';
+  const links = edges.filter(e => e.a === it.id || e.b === it.id).map(e => { const o = e.a === it.id ? e.b : e.a; const ot = curated.find(c => c.id === o); return `<li>${e.a === it.id ? '→' : '←'} <b>${e.rel}</b> · ${ot ? ot.title : o} <span style="color:var(--muted)">(${projects.find(p=>p.id===(ot||{}).p)?.name || '?'})</span></li>`; });
+  document.getElementById('panel').innerHTML = `<h2>Details</h2><h3>${glyph[it.kind]||'•'} ${it.title}</h3>
+    <div>${it.review === 'pending' ? '<span class="badge warn">unreviewed · agent write</span>' : ''}<span class="badge">${it.status || 'happened'}</span><span class="badge">${it.kind}</span></div>
+    ${it.body ? `<div class="body">${it.body}</div>` : ''}
+    <dl class="meta"><dt>project</dt><dd>${p.name}</dd><dt>when</dt><dd>${fmtWhen(it)}</dd><dt>recorded</dt><dd>${d3.timeFormat('%d %b %Y %H:%M')(new Date(Math.min(+it.start, +NOW)))}</dd><dt>author</dt><dd>${author}</dd><dt>txn</dt><dd><code>txn_0${(Math.abs(hash(it.id)) % 9000 + 1000)}</code> · 1 insert, ${links.length} link${links.length===1?'':'s'}</dd>${it.cost ? `<dt>cost</dt><dd>est. $${it.cost} (subscription)</dd>` : ''}</dl>
+    <h2>Wires</h2>${links.length ? `<ul class="links">${links.join('')}</ul>` : '<p class="empty">No explicit links. Lane order is implicit.</p>'}
+    <div class="actions">${it.review === 'pending' ? '<button>Accept</button><button>Revert txn</button>' : '<button>Edit</button><button>Add wire</button>'}${it.kind==='session' ? '<button>Copy resume command</button>' : ''}</div>`;
+}
+function hash(s){ let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) | 0; return h; }
+function setMode(m){ mode = m; document.getElementById('modeA').classList.toggle('on', m==='A'); document.getElementById('modeB').classList.toggle('on', m==='B'); document.getElementById('stripLegend').style.opacity = m==='A' ? 1 : .35; render(); }
+function toggleWires(){ showAll = !showAll; document.getElementById('wiresBtn').classList.toggle('on', showAll); document.getElementById('wiresBtn').textContent = showAll ? 'Wires: all shown' : 'Show all wires'; render(); }
+function pick(m){ setMode(m); document.querySelectorAll('footer .opt').forEach(b => b.classList.toggle('sel', b.dataset.choice === m)); if (window.brainstorm) window.brainstorm.choice(m, {screen:'timeline-granularity'}); }
+function showWindow(spanMs, frac = 0.68){ const k = plotW / (x(new Date(T0.getTime() + spanMs)) - x(T0)); svg.transition().duration(350).call(zoom.transform, d3.zoomIdentity.translate(frac * plotW - k * x(NOW), 0).scale(k)); }
+function fit(){ svg.transition().duration(350).call(zoom.transform, d3.zoomIdentity); }
+svg.on('click', () => { selected = null; document.getElementById('panel').innerHTML = '<h2>Details</h2><p class="empty">Click a block. Hover the activity strip for the day\'s digest.</p>'; render(); });
+window.addEventListener('resize', render);
+render(); showWindow(150*DAY);
+</script>
+</body>
+</html>
