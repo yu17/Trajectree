@@ -20,4 +20,28 @@ describe("QuickCapture", () => {
     expect(body.t_start).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z$/);
     expect(body.intent).toBe("after advisor sync");
   });
+
+  it("sends no due for a todo with a blank date", async () => {
+    const onCreated = vi.fn();
+    (api.createTodo as any).mockResolvedValue({ id: "t" });
+    render(<QuickCapture projects={[{ id: "p1", slug: "clmi", title: "CLMI" } as any]} onCreated={onCreated} />);
+    fireEvent.change(screen.getByLabelText("Entry type"), { target: { value: "todo" } });
+    expect((screen.getByLabelText("When") as HTMLInputElement).value).toBe("");
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Email Bob" } });
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    const body = (api.createTodo as any).mock.calls[0][0];
+    expect(body.title).toBe("Email Bob");
+    expect("due" in body).toBe(false);
+  });
+
+  it("shows a validation message for an invalid event time and does not submit", async () => {
+    (api.createEvent as any).mockClear();
+    const { container } = render(<QuickCapture projects={[{ id: "p1", slug: "clmi", title: "CLMI" } as any]} onCreated={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "X" } });
+    fireEvent.change(screen.getByLabelText("When"), { target: { value: "" } });
+    fireEvent.submit(container.querySelector("form")!);
+    expect((await screen.findByRole("alert")).textContent).toBe("Enter a valid date and time");
+    expect(api.createEvent).not.toHaveBeenCalled();
+  });
 });

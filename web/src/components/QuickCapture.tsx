@@ -13,7 +13,13 @@ function localNow(): string {
 }
 
 // datetime-local is local wall time; the API wants ISO UTC.
-const toUtc = (v: string) => new Date(v).toISOString();
+// Returns null for an empty or invalid value.
+function toUtc(v: string): string | null {
+  const d = new Date(v);
+  return v && !Number.isNaN(d.getTime()) ? d.toISOString() : null;
+}
+
+const BAD_TIME = "Enter a valid date and time";
 
 export function QuickCapture({ projects, onCreated }: { projects: Project[]; onCreated: () => void }) {
   const [projectId, setProjectId] = useState("");
@@ -30,20 +36,32 @@ export function QuickCapture({ projects, onCreated }: { projects: Project[]; onC
 
   const isEvent = entry === "event";
   // Until the user picks one, an event defaults to the first project; a todo may have none.
+  // A todo has no due date unless the user enters one; an event defaults to now.
+  const changeEntry = (next: "event" | "todo") => {
+    setEntry(next);
+    setWhen(next === "todo" ? "" : localNow());
+    setError(null);
+  };
   const effectiveProject = projectId || (isEvent ? projects[0]?.id ?? "" : "");
 
   async function submit(e: FormEvent) {
     e.preventDefault();
-    setBusy(true);
     setError(null);
+    const whenUtc = when ? toUtc(when) : null;
+    const endUtc = end ? toUtc(end) : null;
+    if ((isEvent && !whenUtc) || (when && !whenUtc) || (isEvent && end && !endUtc)) {
+      setError(BAD_TIME);
+      return;
+    }
+    setBusy(true);
     try {
       if (isEvent) {
         await api.createEvent({
           project_id: effectiveProject,
           kind,
           title,
-          t_start: toUtc(when),
-          ...(end ? { t_end: toUtc(end) } : {}),
+          t_start: whenUtc!,
+          ...(endUtc ? { t_end: endUtc } : {}),
           status,
           ...(body ? { body_md: body } : {}),
           ...(intent ? { intent } : {}),
@@ -52,7 +70,7 @@ export function QuickCapture({ projects, onCreated }: { projects: Project[]; onC
         await api.createTodo({
           ...(effectiveProject ? { project_id: effectiveProject } : {}),
           title,
-          ...(when ? { due: toUtc(when) } : {}),
+          ...(whenUtc ? { due: whenUtc } : {}),
           ...(body ? { body_md: body } : {}),
           ...(intent ? { intent } : {}),
         });
@@ -74,7 +92,7 @@ export function QuickCapture({ projects, onCreated }: { projects: Project[]; onC
         {projects.map(p => <option key={p.id} value={p.id}>{p.slug}</option>)}
       </select>
       <label htmlFor="qc-entry">Entry type</label>
-      <select id="qc-entry" value={entry} onChange={e => setEntry(e.target.value as "event" | "todo")}>
+      <select id="qc-entry" value={entry} onChange={e => changeEntry(e.target.value as "event" | "todo")}>
         <option value="event">event</option>
         <option value="todo">todo</option>
       </select>
