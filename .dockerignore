@@ -1,0 +1,10 @@
+.git
+.venv
+.superpowers
+.claude
+web/node_modules
+src/trajectree/static
+data
+docs
+tests
+*.db
