@@ -8,11 +8,13 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
 from pydantic import BaseModel
 
+from trajectree.context.pack import ContextPack, build_context_pack
 from trajectree.db import fts
 from trajectree.db.fts import SearchHit
 from trajectree.mcpserver.server import ToolDeps, parse_when, resolve_project
 from trajectree.models import Edge, Event, Project, Resource, Signal, Todo
 from trajectree.repo import edges, events, projects, resources, signals, todos
+from trajectree.repo import projects as projects_repo
 from trajectree.timeutil import utcnow
 
 OPEN_STATES = ["open", "doing"]
@@ -109,6 +111,37 @@ def register_read_tools(mcp: MCPServer, deps: ToolDeps) -> None:
         with deps.ledger.locked() as conn:
             ids = None if project is None else [resolve_project(conn, project, None).id]
             return todos.list_todos(conn, project_ids=ids, states=states or OPEN_STATES)
+
+    @mcp.tool()
+    async def get_context_pack(
+        ctx: Context,
+        projects: list[str] | None = None,
+        start: str | None = None,
+        end: str | None = None,
+        token_budget: int = 4000,
+        question: str | None = None,
+    ) -> ContextPack:
+        """Return a token-budgeted markdown digest (summary, events, open todos, resources, recent
+        activity) of the given project slugs, default all active projects, for the window from
+        `start` to `end` (ISO 8601; default 90 days ago to 30 days ahead). `question` adds
+        full-text search hits; `dropped` lists what the budget cut."""
+        deps.resolve(ctx)
+        now = utcnow()
+        t_from = parse_when(start, now - WINDOW_BEFORE)
+        t_to = parse_when(end, now + WINDOW_AFTER)
+        with deps.ledger.locked() as conn:
+            if projects is None:
+                ids = [p.id for p in projects_repo.list_projects(conn, status="active")]
+            else:
+                ids = [resolve_project(conn, s, None).id for s in projects]
+            return build_context_pack(
+                conn,
+                project_ids=ids,
+                t_from=t_from,
+                t_to=t_to,
+                token_budget=token_budget,
+                question=question,
+            )
 
     @mcp.tool()
     async def get_signals(

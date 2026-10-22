@@ -78,3 +78,9 @@ def test_ledger_filters(client, app, agent):
     assert [t["actor_kind"] for t in client.get("/api/ledger/txns", params={"review": "pending"}).json()] == ["agent"]
     assert len(client.get("/api/ledger/txns", params={"actor_kind": "human"}).json()) == 2
     assert client.get("/api/ledger/txns", params={"review": "bogus"}).status_code == 422
+
+
+def test_context_route(client):
+    p, e = seed(client)
+    r = client.get("/api/context", params={"projects": p["slug"], "from": "2026-01-01T00:00:00Z", "to": "2026-02-01T00:00:00Z"})
+    assert r.status_code == 200 and "Freeze" in r.json()["markdown"]

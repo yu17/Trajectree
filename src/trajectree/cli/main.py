@@ -3,9 +3,10 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping, Protocol
+from urllib.parse import urlencode
 
 import httpx
 
@@ -63,6 +64,12 @@ def _parser() -> argparse.ArgumentParser:
 
     txns = sub.add_parser("txns", help="list recent transactions")
     txns.add_argument("--limit", type=int, default=20)
+
+    ctx = sub.add_parser("context", help="print a token-budgeted context pack")
+    ctx.add_argument("projects", nargs="+")
+    ctx.add_argument("--days", type=int, default=90)
+    ctx.add_argument("--budget", type=int, default=4000)
+    ctx.add_argument("--q")
     return p
 
 
@@ -156,6 +163,17 @@ def _run(args: argparse.Namespace, api: _Api) -> None:
         print(api.post("/api/todos", body)["id"])
     elif cmd == "revert":
         print(api.post(f"/api/ledger/txns/{args.txn_id}/revert", {})["id"])
+    elif cmd == "context":
+        now = utcnow()
+        query = {
+            "projects": ",".join(args.projects),
+            "from": to_db(now - timedelta(days=args.days)),
+            "to": to_db(now + timedelta(days=30)),
+            "budget": args.budget,
+        }
+        if args.q:
+            query["q"] = args.q
+        print(api.get("/api/context?" + urlencode(query))["markdown"], end="")
     elif cmd == "txns":
         for t in api.get(f"/api/ledger/txns?limit={args.limit}"):
             print(

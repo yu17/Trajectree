@@ -55,3 +55,12 @@ def test_cli_project_add_and_todo(app, client, anon, capsys):
     todos = client.get("/api/todos").json()
     assert {t["title"] for t in todos} == {"Do it", "Loose"}
     assert [t["project_id"] for t in todos if t["title"] == "Loose"] == [None]
+
+
+def test_cli_context_prints_pack(app, client, anon, capsys):
+    client.post("/api/projects", json={"slug": "clmi", "title": "CLMI", "kind": "research"})
+    main(["note", "clmi", "hello"], client=anon, env=env_for(app))
+    capsys.readouterr()  # discard the note id printed above
+    assert main(["context", "clmi", "--days", "30"], client=anon, env=env_for(app)) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("# Trajectree context") and "hello" in out
