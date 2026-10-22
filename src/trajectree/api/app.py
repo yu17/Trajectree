@@ -3,29 +3,29 @@ from __future__ import annotations
 from importlib.metadata import version
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException
-from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from trajectree.api.deps import COOKIE_NAME, require_token, token_matches
+from trajectree.api.routes_entities import router as entities_router
 from trajectree.config import Settings, ensure_token
 from trajectree.db.connection import open_db
 from trajectree.db.ledger import Ledger
+from trajectree.repo import DuplicateEdge, DuplicateSlug, NotFound
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
-# Later tasks: write a module-level `router = APIRouter()` of plain routes (no
-# prefix, no auth) and append it to PROTECTED_ROUTERS. create_app includes each
-# into a fresh /api router that enforces require_token.
-_placeholder = APIRouter()
+# Plain routers (no prefix, no auth). create_app includes each into a fresh
+# /api router that enforces require_token. Later tasks append theirs here.
+PROTECTED_ROUTERS: list[APIRouter] = [entities_router]
 
 
-@_placeholder.get("/projects")
-def list_projects_placeholder() -> list:
-    return []  # replaced in Task 10
+def _error_handler(status: int):
+    def handler(request: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse({"detail": str(exc)}, status_code=status)
 
-
-PROTECTED_ROUTERS: list[APIRouter] = [_placeholder]
+    return handler
 
 
 def create_app(settings: Settings, *, ledger: Ledger | None = None) -> FastAPI:
@@ -37,6 +37,11 @@ def create_app(settings: Settings, *, ledger: Ledger | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.ledger = ledger
     app.state.token = token
+
+    app.add_exception_handler(NotFound, _error_handler(404))
+    app.add_exception_handler(DuplicateSlug, _error_handler(409))
+    app.add_exception_handler(DuplicateEdge, _error_handler(409))
+    app.add_exception_handler(ValueError, _error_handler(422))
 
     @app.get("/api/health")
     def health() -> dict:
