@@ -85,6 +85,19 @@ def create_app(settings: Settings, *, ledger: Ledger | None = None) -> FastAPI:
         return PlainTextResponse("Trajectree API")
 
     if index.exists():
+        static_root = STATIC_DIR.resolve()
+
+        @app.get("/{path:path}", include_in_schema=False)
+        def spa_fallback(path: str):
+            # Registered before the mount so unknown client-side routes get
+            # index.html instead of the mount's 404; real asset files win.
+            if path == "api" or path.startswith("api/"):
+                raise HTTPException(status_code=404, detail="Not Found")
+            candidate = (static_root / path).resolve()
+            if candidate.is_file() and candidate.is_relative_to(static_root):
+                return FileResponse(candidate)
+            return FileResponse(index)
+
         app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
 
     return app

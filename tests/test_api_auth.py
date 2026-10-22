@@ -46,3 +46,20 @@ def test_empty_static_dir_is_not_mounted(settings, ledger, tmp_path, monkeypatch
     monkeypatch.setattr(app_module, "STATIC_DIR", empty)
     built = app_module.create_app(settings, ledger=ledger)
     assert not any(getattr(r, "name", "") == "static" for r in built.routes)
+
+
+def test_spa_fallback_serves_index_but_not_for_api(settings, ledger, tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from trajectree.api import app as app_module
+
+    static = tmp_path / "static"
+    static.mkdir()
+    (static / "index.html").write_text("<html>spa</html>")
+    (static / "app.js").write_text("x")
+    monkeypatch.setattr(app_module, "STATIC_DIR", static)
+    c = TestClient(app_module.create_app(settings, ledger=ledger))
+    assert "spa" in c.get("/timeline/some/route").text
+    assert c.get("/app.js").text == "x"
+    assert c.get("/api/nope").status_code in (401, 404)
+    assert "spa" not in c.get("/api/nope").text
