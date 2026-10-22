@@ -15,7 +15,10 @@ export function ActionNotice({
           <ul>
             {conflicts.map((c, i) => (
               <li key={i}>
-                <code>{c.table_name} {c.op} {c.pk.join(", ")}</code> {c.reason}
+                {c.reason === "SQLITE_CHANGESET_FOREIGN_KEY"
+                  ? "Other rows still reference rows this transaction created"
+                  : <code>{c.table_name} {c.op} {c.pk.join(", ")}</code>}{" "}
+                {c.reason}
               </li>
             ))}
           </ul>

@@ -22,4 +22,13 @@ describe("LedgerView", () => {
     fireEvent.click(screen.getByText("Accept"));
     await waitFor(() => expect(api.review).toHaveBeenCalledWith("t1", "accepted"));
   });
+
+  it("lists only an UPDATE's changed columns, not its primary key", async () => {
+    (api.txn as any).mockResolvedValueOnce({ txn, changes: [{ txn_id: "t1", seq: 0, table_name: "event", op: "UPDATE", pk: ["e1"], old: { id: "e1", title: "a" }, new: { title: "b" } }] });
+    const { container } = render(<QueryClientProvider client={new QueryClient()}><LedgerView /></QueryClientProvider>);
+    fireEvent.click(await screen.findByText("record event: draft"));
+    await screen.findByText("b");
+    const keys = [...container.querySelectorAll(".diff th[scope=row]")].map(th => th.textContent);
+    expect(keys).toEqual(["title"]);
+  });
 });

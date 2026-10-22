@@ -44,4 +44,13 @@ describe("QuickCapture", () => {
     expect((await screen.findByRole("alert")).textContent).toBe("Enter a valid date and time");
     expect(api.createEvent).not.toHaveBeenCalled();
   });
+
+  it("disables Save for an event when there are no projects", () => {
+    render(<QuickCapture projects={[]} onCreated={vi.fn()} />);
+    expect(screen.getByText("Create a project first")).toBeTruthy();
+    expect((screen.getByText("Save") as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("Entry type"), { target: { value: "todo" } });
+    expect(screen.queryByText("Create a project first")).toBeNull();
+    expect((screen.getByText("Save") as HTMLButtonElement).disabled).toBe(false);
+  });
 });

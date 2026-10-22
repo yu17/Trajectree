@@ -12,6 +12,8 @@ const PAGE = 50;
 const show = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v));
 
 function changedKeys(c: Change): string[] {
+  // An UPDATE's old side also carries the primary key; only keys in new changed.
+  if (c.op === "UPDATE") return Object.keys(c.new ?? {});
   const keys = new Set([...Object.keys(c.old ?? {}), ...Object.keys(c.new ?? {})]);
   return [...keys].filter(k => JSON.stringify(c.old?.[k]) !== JSON.stringify(c.new?.[k]));
 }

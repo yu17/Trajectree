@@ -14,6 +14,7 @@ def test_login_url_sets_cookie_and_redirects(anon, app):
     r = anon.get(f"/?token={app.state.token}", follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "/"
     assert "trajectree_token" in r.cookies
+    assert "Max-Age=31536000" in r.headers["set-cookie"]
     assert anon.get("/api/projects").status_code == 200
 
 

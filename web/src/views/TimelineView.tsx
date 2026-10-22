@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { DetailsPanel } from "../components/DetailsPanel";
@@ -12,7 +12,11 @@ const DAY = 86_400_000;
 const PRESETS: [string, number][] = [["Week", 10], ["Month", 35], ["Quarter+", 150], ["All", 365]];
 
 export function TimelineView() {
-  const [now] = useState(() => new Date());
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 60_000);
+    return () => clearInterval(id);
+  }, []);
   const [range, setRange] = useState<[Date, Date]>(() => [
     new Date(now.getTime() - 120 * DAY), new Date(now.getTime() + 60 * DAY),
   ]);

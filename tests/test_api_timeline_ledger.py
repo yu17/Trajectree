@@ -51,6 +51,10 @@ def test_search_route(client):
     hits = client.get("/api/search", params={"q": "freeze"}).json()
     assert hits[0]["kind"] == "event" and hits[0]["title"] == "Freeze"
 
+def test_search_limit_is_bounded(client):
+    for bad in (0, 1000):
+        assert client.get("/api/search", params={"q": "x", "limit": bad}).status_code == 422
+
 def test_unknown_txn_is_404(client):
     assert client.get("/api/ledger/txns/nope").status_code == 404
     assert client.post("/api/ledger/txns/nope/revert", json={}).status_code == 404

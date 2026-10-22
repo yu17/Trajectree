@@ -77,7 +77,8 @@ def create_app(settings: Settings, *, ledger: Ledger | None = None) -> FastAPI:
                 raise HTTPException(status_code=401, detail="Unauthorized")
             response = RedirectResponse("/", status_code=303)
             response.set_cookie(
-                COOKIE_NAME, token, httponly=True, samesite="lax", path="/"
+                COOKIE_NAME, token, max_age=365 * 24 * 3600,
+                httponly=True, samesite="lax", path="/",
             )
             return response
         if index.exists():

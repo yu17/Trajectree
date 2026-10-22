@@ -43,9 +43,11 @@ export function QuickCapture({ projects, onCreated }: { projects: Project[]; onC
     setError(null);
   };
   const effectiveProject = projectId || (isEvent ? projects[0]?.id ?? "" : "");
+  const needsProject = isEvent && projects.length === 0;
 
   async function submit(e: FormEvent) {
     e.preventDefault();
+    if (needsProject) return;
     setError(null);
     const whenUtc = when ? toUtc(when) : null;
     const endUtc = end ? toUtc(end) : null;
@@ -122,7 +124,8 @@ export function QuickCapture({ projects, onCreated }: { projects: Project[]; onC
       <label htmlFor="qc-intent">Intent</label>
       <input id="qc-intent" value={intent} onChange={e => setIntent(e.target.value)} />
       {error && <p role="alert" className="form-error">{error}</p>}
-      <button type="submit" disabled={busy}>Save</button>
+      {needsProject && <p className="form-error">Create a project first</p>}
+      <button type="submit" disabled={busy || needsProject}>Save</button>
     </form>
   );
 }

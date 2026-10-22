@@ -17,24 +17,27 @@ export function useTxnActions() {
     void qc.invalidateQueries({ queryKey: ["txn"] });
   };
 
+  // A reject reverts the transaction, so it can hit the same 409 conflict as a revert.
+  const onError = (err: Error) => {
+    if (err instanceof ApiError && err.status === 409 && Array.isArray(err.body?.conflicts)) {
+      setError(null);
+      setConflicts(err.body.conflicts as Conflict[]);
+    } else {
+      setConflicts(null);
+      setError(errorText(err));
+    }
+  };
+
   const reviewM = useMutation({
     mutationFn: ({ id, state }: { id: string; state: "accepted" | "rejected" }) => api.review(id, state),
-    onSuccess: () => { setError(null); refresh(); },
-    onError: err => setError(errorText(err)),
+    onSuccess: () => { setConflicts(null); setError(null); refresh(); },
+    onError,
   });
 
   const revertM = useMutation({
     mutationFn: (id: string) => api.revert(id),
     onSuccess: () => { setConflicts(null); setError(null); refresh(); },
-    onError: err => {
-      if (err instanceof ApiError && err.status === 409 && Array.isArray(err.body?.conflicts)) {
-        setError(null);
-        setConflicts(err.body.conflicts as Conflict[]);
-      } else {
-        setConflicts(null);
-        setError(errorText(err));
-      }
-    },
+    onError,
   });
 
   return {
