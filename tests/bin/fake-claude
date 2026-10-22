@@ -2,6 +2,7 @@
 """Stand-in for the claude CLI in tests. Never calls an LLM."""
 import json
 import os
+import subprocess
 import sys
 import time
 import urllib.request
@@ -55,8 +56,13 @@ def main():
         time.sleep(60)
     elif mode == "garbage":
         print("not json")
-        print("boom", file=sys.stderr)
+        print("boom " + os.environ.get("FAKE_CLAUDE_STDERR", ""), file=sys.stderr)
         return 1
+    elif mode == "orphan":
+        # Grandchild escapes the process group, ignores SIGTERM and keeps the pipes open.
+        subprocess.Popen([sys.executable, "-c", "import time,signal; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(20)"],
+                         start_new_session=True)
+        time.sleep(60)
     elif mode == "budget":
         print(result_line(subtype="error_max_budget_usd", is_error=True, result="Reached budget"))
         return 1

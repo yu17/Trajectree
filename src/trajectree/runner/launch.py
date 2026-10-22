@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import shlex
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -25,6 +27,13 @@ def _mask_text(text: str, secrets: list[str]) -> str:
     return mask([text], secrets)[0]
 
 
+def _signal_group(proc, sig: int, fallback) -> None:
+    try:
+        os.killpg(proc.pid, sig)
+    except ProcessLookupError:
+        fallback()
+
+
 def launch(
     argv: list[str],
     *,
@@ -44,7 +53,8 @@ def launch(
     try:
         proc = popen(
             argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace",
+            start_new_session=True,
         )
     except FileNotFoundError:
         log_path.write_text(header)
@@ -56,12 +66,17 @@ def launch(
         stdout, stderr = proc.communicate(timeout=timeout_s)
     except subprocess.TimeoutExpired:
         timed_out = True
-        proc.terminate()
+        _signal_group(proc, signal.SIGTERM, proc.terminate)
         try:
             proc.wait(5)
         except subprocess.TimeoutExpired:
-            proc.kill()
-        stdout, stderr = proc.communicate()
+            _signal_group(proc, signal.SIGKILL, proc.kill)
+        _signal_group(proc, signal.SIGKILL, proc.kill)
+        try:
+            stdout, stderr = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            # A grandchild escaped the process group and still holds the pipes.
+            stdout, stderr = "", ""
     exit_code = proc.returncode
     duration_ms = int((time.monotonic() - start) * 1000)
     stdout = stdout or ""
@@ -72,6 +87,7 @@ def launch(
         + "--- stderr ---\n" + _mask_text(stderr, secrets) + "\n"
     )
     return RunOutcome(
-        exit_code=exit_code, timed_out=timed_out, stdout=stdout, stderr_tail=stderr[-STDERR_TAIL:],
+        exit_code=exit_code, timed_out=timed_out, stdout=stdout,
+        stderr_tail=_mask_text(stderr, secrets)[-STDERR_TAIL:],
         log_path=str(log_path), duration_ms=duration_ms,
     )

@@ -41,7 +41,7 @@ def test_codex_argv():
 
 def test_run_env_is_built_from_scratch(settings):
     base = {"PATH": "/usr/bin", "TRAJECTREE_DATA_DIR": "/data", "ANTHROPIC_API_KEY": "leak", "LANG": "C.UTF-8", "HTTPS_PROXY": "http://p"}
-    s = settings.model_copy(update={"run_env_passthrough": ["HTTPS_PROXY"]})
+    s = settings.model_copy(update={"run_env_passthrough": ["HTTPS_PROXY", "TRAJECTREE_DATA_DIR", "ANTHROPIC_API_KEY"]})
     env = run_env(spec(), s, base=base, oauth_token="oat")
     assert env["PATH"] == "/usr/bin" and env["LANG"] == "C.UTF-8" and env["TERM"] == "dumb" and env["HTTPS_PROXY"] == "http://p"
     assert env["CLAUDE_CONFIG_DIR"] == str(s.claude_config_dir) and env["HOME"] == str(s.run_home)

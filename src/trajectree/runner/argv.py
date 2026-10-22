@@ -9,6 +9,7 @@ from trajectree.runner.credentials import profile_has_credentials
 from trajectree.runner.spec import MissingCredentials, RunSpec
 
 MCP_SERVER_NAME = "trajectree"
+_NEVER_PASSTHROUGH = {"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"}
 
 
 def mcp_config_json(spec: RunSpec) -> str:
@@ -84,7 +85,7 @@ def run_env(spec: RunSpec, settings: Settings, *, base: Mapping[str, str], oauth
         env["CODEX_HOME"] = str(settings.codex_home)
         env["TRAJECTREE_RUN_TOKEN"] = spec.mcp_token
     for name in settings.run_env_passthrough:
-        if name in base:
+        if name in base and not name.startswith("TRAJECTREE_") and name not in _NEVER_PASSTHROUGH:
             env[name] = base[name]
     return env
 

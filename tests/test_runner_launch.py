@@ -20,6 +20,16 @@ def test_launch_missing_binary(tmp_path):
     out = launch(["/definitely/missing/bin"], env={"PATH": "/bin"}, cwd=tmp_path, timeout_s=5, log_path=tmp_path / "r.log", secrets=[])
     assert out.exit_code is None and "not found" in out.stderr_tail
 
+def test_launch_timeout_does_not_block_on_orphaned_grandchild(tmp_path):
+    t0 = time.monotonic()
+    out = launch([FAKE], env={**os.environ, "FAKE_CLAUDE_MODE": "orphan"}, cwd=tmp_path, timeout_s=1, log_path=tmp_path / "r.log", secrets=[])
+    assert out.timed_out and time.monotonic() - t0 < 10
+
+def test_launch_masks_stderr_tail(tmp_path):
+    out = launch([FAKE], env={**os.environ, "FAKE_CLAUDE_MODE": "garbage", "FAKE_CLAUDE_STDERR": "leak trj_x"}, cwd=tmp_path,
+                 timeout_s=5, log_path=tmp_path / "r.log", secrets=["trj_x"])
+    assert "trj_x" not in out.stderr_tail and "leak ***" in out.stderr_tail
+
 def test_fake_claude_garbage_and_version(tmp_path):
     out = launch([FAKE], env={**os.environ, "FAKE_CLAUDE_MODE": "garbage"}, cwd=tmp_path, timeout_s=5, log_path=tmp_path / "r.log", secrets=[])
     assert out.exit_code == 1 and "boom" in out.stderr_tail
