@@ -1,0 +1,57 @@
+/* Timeline (lane model A), ported from
+   docs/superpowers/specs/mockups/2026-10-21-timeline-lane-model-a.html.
+   Colors come from styles/tokens.css. Text always uses ink tokens. */
+.tlwrap{position:relative;overflow:hidden;background:var(--surface)}
+.tlwrap svg{display:block;user-select:none}
+.axis text{fill:var(--muted);font-size:11px}
+.axis path,.axis line{stroke:var(--axis)}
+.grid line{stroke:var(--grid)}
+.band{fill:var(--band)}
+.lane-sep{stroke:var(--grid)}
+.lbl-name{fill:var(--ink);font-size:12.5px;font-weight:600}
+.lbl-kind{fill:var(--muted);font-size:10.5px}
+.gutter-edge{stroke:var(--axis)}
+.future{fill:var(--future)}
+.now{stroke:var(--now);stroke-width:1.5}
+.now-lbl{fill:var(--now);font-size:11px;font-weight:600}
+
+.block{cursor:pointer;--kc:var(--k-activity)}
+.block.k-decision{--kc:var(--k-decision)}
+.block.k-meeting{--kc:var(--k-meeting)}
+.block.k-milestone{--kc:var(--k-milestone)}
+.block.k-idea,.block.k-note{--kc:var(--k-idea)}
+.block rect.body{fill:var(--kc);fill-opacity:.16;stroke:var(--kc);stroke-width:1}
+.block.k-idea rect.body,.block.k-note rect.body{rx:11px;fill-opacity:.06}
+.block.s-planned rect.body{fill-opacity:0;stroke-dasharray:4 3;stroke-width:1.2}
+.block.s-suggested rect.body{fill-opacity:0;stroke-dasharray:2 3;stroke-width:1.2}
+.block.s-dropped rect.body{fill-opacity:.08;stroke-opacity:.5}
+.block text{fill:var(--ink);font-size:11.5px;pointer-events:none}
+.block.s-suggested text{font-style:italic;fill:var(--ink2)}
+.block.hover rect.body,.block.linked rect.body{stroke-width:2}
+.block.sel rect.body{stroke:var(--sel);stroke-width:2}
+.block .pending{fill:var(--warn);stroke:var(--surface);stroke-width:1}
+
+.todo-marker{fill:var(--surface);stroke:var(--muted);stroke-width:1.5;cursor:pointer}
+.todo-marker:hover{stroke:var(--ink2)}
+.todo-marker.sel{stroke:var(--sel);stroke-width:2}
+
+.wire{fill:none;stroke:var(--wire);stroke-width:2;stroke-opacity:.9}
+.wire-lbl{fill:var(--ink2);font-size:10.5px;paint-order:stroke;stroke:var(--surface);stroke-width:3px}
+.tip{position:absolute;pointer-events:none;background:var(--ink);color:var(--surface);font-size:11.5px;padding:4px 8px;border-radius:5px;max-width:280px;display:none;z-index:5}
+
+/* Details panel */
+.details{background:var(--plane);padding:14px 16px;overflow:auto}
+.details h2{font-size:13px;margin:12px 0 6px;color:var(--ink2);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.details h2:first-child{margin-top:0}
+.details h3{font-size:15px;margin:0 0 4px}
+.details .meta{display:grid;grid-template-columns:auto 1fr;gap:4px 10px;font-size:12px;margin:10px 0}
+.details .meta dt{color:var(--muted)}
+.details .meta dd{margin:0;overflow-wrap:anywhere}
+.details .badge{display:inline-block;font-size:11px;padding:1px 7px;border-radius:9px;border:1px solid var(--border);color:var(--ink2);margin-right:4px}
+.details .badge.warn{background:color-mix(in srgb,var(--warn) 25%,transparent);border-color:var(--warn);color:var(--ink)}
+.details ul{padding-left:18px;margin:4px 0}
+.details .links li{margin:3px 0}
+.details .muted{color:var(--muted)}
+.details .empty{color:var(--muted)}
+.details .body{font-size:12.5px;color:var(--ink2);border-left:2px solid var(--grid);padding-left:10px;margin:8px 0;white-space:pre-wrap}
+.details .actions{display:flex;gap:6px;margin-top:10px}
