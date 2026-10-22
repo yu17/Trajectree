@@ -104,6 +104,11 @@ of it; the deepest registered folder wins.
 | `TRAJECTREE_LIVE_WINDOW` | `900` | Seconds since the last transcript activity during which a session counts as live |
 | `TRAJECTREE_STALE_SETTLE_H` | `24` | Hours after a project's first activity since its last summary before it is flagged stale (summary due) |
 | `TRAJECTREE_SCAN_SINCE_DAYS` | `365` | Ignore transcripts and commits older than this many days |
+| `TRAJECTREE_CFG_DIR` | `<data dir>/cfg` | Container-private runner config: OAuth token, synced backend profiles, runner home |
+| `TRAJECTREE_CLAUDE_BIN` | `claude` | Claude Code binary the runner spawns |
+| `TRAJECTREE_CODEX_BIN` | `codex` | Codex binary the runner spawns |
+| `TRAJECTREE_DEFAULT_RUNNER` | `claude` | Runner used when none is chosen (`claude`, or `ccx:<backend>`) |
+| `TRAJECTREE_RUN_ENV_PASSTHROUGH` | none | Comma-separated environment variable names passed through to runner processes |
 | `TRAJECTREE_PROJECTS_ROOT` | none (required by compose) | Host folder mounted read-only at `/projects`; used by compose only |
 | `TRAJECTREE_URL` | `http://127.0.0.1:8742` | Daemon URL for the host CLI and shim |
 | `TRAJECTREE_TOKEN` | contents of `~/.config/trajectree/token` | Bearer token for the host CLI and shim |

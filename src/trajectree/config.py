@@ -18,6 +18,39 @@ class Settings(BaseModel):
     live_window_s: int = 900
     stale_settle_h: int = 24
     scan_since_days: int = 365
+    cfg_dir: Path | None = None
+    claude_bin: str = "claude"
+    codex_bin: str = "codex"
+    default_runner: str = "claude"
+    run_env_passthrough: list[str] = []
+
+    @property
+    def cfg_root(self) -> Path:
+        return self.cfg_dir or self.data_dir / "cfg"
+
+    @property
+    def runs_dir(self) -> Path:
+        return self.data_dir / "runs"
+
+    @property
+    def prompts_dir(self) -> Path:
+        return self.data_dir / "prompts"
+
+    @property
+    def claude_config_dir(self) -> Path:
+        return self.cfg_root / "claude"
+
+    @property
+    def backends_cfg_dir(self) -> Path:
+        return self.cfg_root / "backends"
+
+    @property
+    def codex_home(self) -> Path:
+        return self.cfg_root / "codex"
+
+    @property
+    def run_home(self) -> Path:
+        return self.cfg_root / "home"
 
     @property
     def db_path(self) -> Path:
@@ -61,6 +94,13 @@ _INT_ENV = {
 }
 
 
+_STR_ENV = {
+    "TRAJECTREE_CLAUDE_BIN": "claude_bin",
+    "TRAJECTREE_CODEX_BIN": "codex_bin",
+    "TRAJECTREE_DEFAULT_RUNNER": "default_runner",
+}
+
+
 def load_settings() -> Settings:
     data_dir = Path(
         os.environ.get("TRAJECTREE_DATA_DIR", "~/.local/share/trajectree")
@@ -76,6 +116,17 @@ def load_settings() -> Settings:
     )
     if "TRAJECTREE_PATH_MAP" in os.environ:
         values["path_map"] = _parse_path_map(os.environ["TRAJECTREE_PATH_MAP"])
+    if os.environ.get("TRAJECTREE_CFG_DIR"):
+        values["cfg_dir"] = Path(os.environ["TRAJECTREE_CFG_DIR"]).expanduser()
+    for var, field in _STR_ENV.items():
+        if var in os.environ:
+            values[field] = os.environ[var]
+    if "TRAJECTREE_RUN_ENV_PASSTHROUGH" in os.environ:
+        values["run_env_passthrough"] = [
+            item.strip()
+            for item in os.environ["TRAJECTREE_RUN_ENV_PASSTHROUGH"].split(",")
+            if item.strip()
+        ]
     for var, field in _INT_ENV.items():
         if var in os.environ:
             values[field] = int(os.environ[var])
