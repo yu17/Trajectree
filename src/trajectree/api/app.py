@@ -22,6 +22,7 @@ from trajectree.api.routes_timeline import router as timeline_router
 from trajectree.config import Settings, ensure_token
 from trajectree.db.connection import open_db
 from trajectree.db.ledger import AlreadyReverted, Ledger, RevertConflict
+from trajectree.ingest.job import IngestBusy
 from trajectree.ingest.scheduler import ingest_loop
 from trajectree.mcpserver.server import build_mcp
 from trajectree.repo import DuplicateEdge, DuplicateSlug, InvalidRange, NotFound
@@ -80,6 +81,7 @@ def create_app(settings: Settings, *, ledger: Ledger | None = None) -> FastAPI:
     app.add_exception_handler(DuplicateSlug, _error_handler(409))
     app.add_exception_handler(DuplicateEdge, _error_handler(409))
     app.add_exception_handler(InvalidRange, _error_handler(422))
+    app.add_exception_handler(IngestBusy, _error_handler(409))
 
     def revert_conflict(request: Request, exc: Exception) -> JSONResponse:
         assert isinstance(exc, RevertConflict)

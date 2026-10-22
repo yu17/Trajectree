@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from datetime import datetime, timedelta
 
@@ -18,6 +19,13 @@ from trajectree.repo.state import set_state
 from trajectree.timeutil import utcnow
 
 
+class IngestBusy(Exception):
+    """Another ingest pass is already running."""
+
+
+_RUNNING = threading.Lock()
+
+
 class IngestReport(BaseModel):
     started: AwareDatetime
     duration_ms: int
@@ -25,47 +33,68 @@ class IngestReport(BaseModel):
     git: GitReport
     stale: list[str]
     exports_written: int
+    exports_errors: list[str] = []
 
 
 def run_ingest(ledger: Ledger, settings: Settings, *, now: datetime | None = None) -> IngestReport:
     """Run every connector, then record staleness, live sessions and the report in state.
 
     Each phase holds the ledger lock on its own, so API reads can interleave between them.
+    Only one pass runs at a time (`IngestBusy` otherwise). `ingest:last` is stored even when a
+    phase raises, with defaults for the phases that did not finish; the exception is re-raised.
     """
-    now = now or utcnow()
-    clock = time.monotonic()
-    scan: ScanReport | None = None
-    if transcript_roots(settings):
-        with ledger.locked() as conn:
-            scan = scan_transcripts(conn, settings, now=now)
-    # git runs between two locked phases, never while the lock is held
-    with ledger.locked() as conn:
-        git_resources = list_resources(conn, kinds=["git_local"])
-        git_states = read_git_states(conn, git_resources)
-    collection = collect_git(
-        settings, git_resources, git_states, now=now, since_days=settings.scan_since_days
-    )
-    with ledger.locked() as conn:
-        git_written = write_git(conn, collection, now=now)
-    git = GitReport(
-        repos=len(git_resources), signals_written=git_written, errors=collection.errors
-    )
-    with ledger.locked() as conn:
-        stale = stale_projects(conn, settled_before=now - timedelta(hours=settings.stale_settle_h))
-        with conn:
-            set_state(conn, "live_sessions", [s.model_dump(mode="json") for s in (scan.live if scan else [])])
-            set_state(conn, "stale_projects", stale)
-    with ledger.locked() as conn:
-        files = render_exports(conn, settings)
-    exports_written = write_files(files)
-    report = IngestReport(
-        started=now,
-        duration_ms=int((time.monotonic() - clock) * 1000),
-        scan=scan,
-        git=git,
-        stale=stale,
-        exports_written=exports_written,
-    )
-    with ledger.locked() as conn:
-        set_state(conn, "ingest:last", report.model_dump(mode="json"))
-    return report
+    if not _RUNNING.acquire(blocking=False):
+        raise IngestBusy("ingest already running")
+    try:
+        now = now or utcnow()
+        clock = time.monotonic()
+        scan: ScanReport | None = None
+        git: GitReport | None = None
+        stale: list[str] = []
+        exports_written = 0
+        exports_errors: list[str] = []
+        failure: Exception | None = None
+        try:
+            if transcript_roots(settings):
+                with ledger.locked() as conn:
+                    scan = scan_transcripts(conn, settings, now=now)
+            # git runs between two locked phases, never while the lock is held
+            with ledger.locked() as conn:
+                git_resources = list_resources(conn, kinds=["git_local"])
+                git_states = read_git_states(conn, git_resources)
+            collection = collect_git(
+                settings, git_resources, git_states, now=now, since_days=settings.scan_since_days
+            )
+            with ledger.locked() as conn:
+                git_written = write_git(conn, collection, now=now)
+            git = GitReport(
+                repos=len(git_resources), signals_written=git_written, errors=collection.errors
+            )
+            with ledger.locked() as conn:
+                stale = stale_projects(conn, settled_before=now - timedelta(hours=settings.stale_settle_h))
+                with conn:
+                    set_state(conn, "live_sessions", [s.model_dump(mode="json") for s in (scan.live if scan else [])])
+                    set_state(conn, "stale_projects", stale)
+            with ledger.locked() as conn:
+                files = render_exports(conn, settings, now=now)
+            exports_written, exports_errors = write_files(files)
+        except Exception as exc:
+            failure = exc
+            raise
+        finally:
+            if git is None:
+                git = GitReport(repos=0, signals_written=0, errors=[str(failure)] if failure else [])
+            report = IngestReport(
+                started=now,
+                duration_ms=int((time.monotonic() - clock) * 1000),
+                scan=scan,
+                git=git,
+                stale=stale,
+                exports_written=exports_written,
+                exports_errors=exports_errors,
+            )
+            with ledger.locked() as conn:
+                set_state(conn, "ingest:last", report.model_dump(mode="json"))
+        return report
+    finally:
+        _RUNNING.release()

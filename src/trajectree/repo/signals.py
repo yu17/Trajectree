@@ -111,7 +111,8 @@ def strip_bins(
     where, params = _where(project_ids, t_from, t_to)
     sql = (
         "SELECT project_id, substr(t_start, 1, 10) AS day, kind,"
-        " CASE WHEN kind = 'commits' THEN SUM(COALESCE(json_extract(payload, '$.count'), 1))"
+        " CASE WHEN kind = 'commits' THEN SUM(CASE WHEN typeof(json_extract(payload, '$.count')) IN ('integer', 'real')"
+        " THEN json_extract(payload, '$.count') ELSE 1 END)"
         " ELSE COUNT(*) END"
         " FROM signal"
     )

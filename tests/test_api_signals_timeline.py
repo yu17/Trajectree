@@ -31,3 +31,17 @@ def test_ingest_run_and_status(client):
     r = client.post("/api/ingest/run")
     assert r.status_code == 200 and "duration_ms" in r.json()
     assert client.get("/api/ingest/status").json()["duration_ms"] == r.json()["duration_ms"]
+
+def test_ingest_run_409_when_busy(client):
+    import trajectree.ingest.job as job
+    assert job._RUNNING.acquire(blocking=False)
+    try:
+        assert client.post("/api/ingest/run").status_code == 409
+    finally:
+        job._RUNNING.release()
+
+def test_timeline_skips_malformed_live_entries(client, app):
+    p = mk_project(client)
+    set_state(app.state.ledger.conn, "live_sessions", [{"project_id": p["id"]}, {"project_id": p["id"], "session_id": "ok", "cwd": "/c", "title": None, "started": None, "last_seen": "2026-01-05T12:00:00Z"}])
+    tl = client.get("/api/timeline", params={"from": "2026-01-01T00:00:00Z", "to": "2026-02-01T00:00:00Z"}).json()
+    assert [l["session_id"] for l in tl["live"]] == ["ok"]

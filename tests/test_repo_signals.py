@@ -77,3 +77,9 @@ def test_latest_signals_returns_newest_in_ascending_order(conn):
     upsert_signals(conn, [sig("p1", d) for d in range(1, 13)])
     rows = latest_signals(conn, project_id="p1", t_from=None, t_to=None, n=10)
     assert len(rows) == 10 and rows[0].t_start.day == 3 and rows[-1].t_start.day == 12
+
+def test_strip_bins_tolerate_non_numeric_counts(conn):
+    upsert_signals(conn, [SignalIn(project_id="p", kind="commits", t_start=datetime(2026, 1, 5, tzinfo=UTC), dedupe_key="a", payload={"count": "many"}),
+                          SignalIn(project_id="p", kind="commits", t_start=datetime(2026, 1, 5, 1, tzinfo=UTC), dedupe_key="b", payload={"count": 2})])
+    bins = strip_bins(conn, project_ids=["p"], t_from=datetime(2026, 1, 1, tzinfo=UTC), t_to=datetime(2026, 2, 1, tzinfo=UTC))
+    assert bins[0].count == 3

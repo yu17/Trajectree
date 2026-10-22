@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, Query
-from pydantic import AwareDatetime, BaseModel
+from pydantic import AwareDatetime, BaseModel, ValidationError
 
 from trajectree.api.deps import get_ledger
 from trajectree.api.routes_entities import _csv
@@ -29,7 +31,20 @@ class TimelineResponse(BaseModel):
     stale: list[str]
 
 
-@router.get("/timeline", response_model=TimelineResponse)
+def _live_from_state(raw: Any, shown: set[str]) -> list[LiveSession]:
+    """Stop-gap: validate stored live sessions, skipping malformed entries."""
+    live: list[LiveSession] = []
+    for entry in raw or []:
+        try:
+            session = LiveSession.model_validate(entry)
+        except ValidationError:
+            continue
+        if session.project_id in shown:
+            live.append(session)
+    return live
+
+
+@router.get("/timeline",response_model=TimelineResponse)
 def timeline(
     t_from: AwareDatetime = Query(alias="from"),
     t_to: AwareDatetime = Query(alias="to"),
@@ -59,11 +74,7 @@ def timeline(
         }
         shown = {p.id for p in project_rows}
         strip = strip_bins(conn, project_ids=ids, t_from=t_from, t_to=t_to)
-        live = [
-            LiveSession(**d)
-            for d in (get_state(conn, "live_sessions") or [])
-            if d["project_id"] in shown
-        ]
+        live = _live_from_state(get_state(conn, "live_sessions"), shown)
         stale = [pid for pid in (get_state(conn, "stale_projects") or []) if pid in shown]
     return TimelineResponse(
         projects=project_rows,

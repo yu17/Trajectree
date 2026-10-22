@@ -28,11 +28,12 @@ def test_run_ingest_scans_exports_and_flags_stale(ledger, human, settings, tmp_p
 
 def test_exports_rewrite_only_on_change(ledger, human, settings):
     p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
-    assert write_exports(ledger.conn, settings) == 1
-    assert write_exports(ledger.conn, settings) == 0
+    now = datetime.now(UTC)
+    assert write_exports(ledger.conn, settings, now=now) == (1, [])
+    assert write_exports(ledger.conn, settings, now=now) == (0, [])
     update_project(ledger, human, p.id, ProjectPatch(summary_md="Now summarised"))
-    assert write_exports(ledger.conn, settings) == 1
-    md = render_summary_md(ledger.conn, get_project(ledger.conn, p.id))
+    assert write_exports(ledger.conn, settings, now=now) == (1, [])
+    md = render_summary_md(ledger.conn, get_project(ledger.conn, p.id), now=now)
     assert "## Summary\nNow summarised" in md and "status: active · slug: a · summary updated: " in md
 
 def test_run_ingest_without_roots_still_exports(ledger, human, settings):
@@ -53,3 +54,45 @@ async def test_ingest_loop_runs_until_stopped(ledger, settings):
     stop.set()
     await asyncio.wait_for(task, 1)
     assert len(calls) >= 3
+
+from trajectree.ingest.exports import write_files
+from trajectree.ingest.job import IngestBusy
+import trajectree.ingest.job as job
+
+def test_ingest_busy_raises(ledger, settings):
+    assert job._RUNNING.acquire(blocking=False)
+    try:
+        with pytest.raises(IngestBusy):
+            run_ingest(ledger, settings)
+    finally:
+        job._RUNNING.release()
+
+def test_ingest_stores_last_even_when_a_phase_fails(ledger, human, settings, monkeypatch):
+    create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    def boom(*a, **k):
+        raise RuntimeError("git exploded")
+    monkeypatch.setattr(job, "collect_git", boom)
+    with pytest.raises(RuntimeError):
+        run_ingest(ledger, settings)
+    assert "git exploded" in " ".join(get_state(ledger.conn, "ingest:last")["git"]["errors"])
+
+def test_write_files_is_atomic_and_isolates_errors(tmp_path):
+    good = tmp_path / "ok" / "SUMMARY.md"
+    bad = tmp_path / "blocked" / "SUMMARY.md"
+    bad.parent.mkdir()
+    bad.parent.chmod(0o500)
+    try:
+        written, errors = write_files([(good, "hello\n"), (bad, "x\n")])
+    finally:
+        bad.parent.chmod(0o700)
+    assert written == 1 and good.read_text() == "hello\n" and len(errors) == 1 and str(bad) in errors[0]
+    assert not list(good.parent.glob("*.tmp"))
+
+def test_summary_md_excludes_future_events(ledger, human, settings):
+    from trajectree.models import EventIn
+    from trajectree.repo.events import create_event
+    p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    create_event(ledger, human, EventIn(project_id=p.id, kind="note", title="Past", t_start=datetime(2026, 1, 1, tzinfo=UTC)))
+    create_event(ledger, human, EventIn(project_id=p.id, kind="milestone", title="Future", t_start=datetime(2027, 1, 1, tzinfo=UTC), status="planned"))
+    md = render_summary_md(ledger.conn, get_project(ledger.conn, p.id), now=datetime(2026, 6, 1, tzinfo=UTC))
+    assert "Past" in md and "Future" not in md
