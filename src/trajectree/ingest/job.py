@@ -9,9 +9,10 @@ from pydantic import AwareDatetime, BaseModel
 
 from trajectree.config import Settings
 from trajectree.connectors.claude_sessions import ScanReport, scan_transcripts, transcript_roots
-from trajectree.connectors.local_git import GitReport, poll_git
+from trajectree.connectors.local_git import GitReport, collect_git, read_git_states, write_git
 from trajectree.db.ledger import Ledger
 from trajectree.ingest.exports import render_exports, write_files
+from trajectree.repo.resources import list_resources
 from trajectree.repo.signals import stale_projects
 from trajectree.repo.state import set_state
 from trajectree.timeutil import utcnow
@@ -37,8 +38,18 @@ def run_ingest(ledger: Ledger, settings: Settings, *, now: datetime | None = Non
     if transcript_roots(settings):
         with ledger.locked() as conn:
             scan = scan_transcripts(conn, settings, now=now)
+    # git runs between two locked phases, never while the lock is held
     with ledger.locked() as conn:
-        git = poll_git(conn, settings, now=now, since_days=settings.scan_since_days)
+        git_resources = list_resources(conn, kinds=["git_local"])
+        git_states = read_git_states(conn, git_resources)
+    collection = collect_git(
+        settings, git_resources, git_states, now=now, since_days=settings.scan_since_days
+    )
+    with ledger.locked() as conn:
+        git_written = write_git(conn, collection, now=now)
+    git = GitReport(
+        repos=len(git_resources), signals_written=git_written, errors=collection.errors
+    )
     with ledger.locked() as conn:
         stale = stale_projects(conn, settled_before=now - timedelta(hours=settings.stale_settle_h))
         with conn:

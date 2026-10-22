@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 
+import anyio.to_thread
 from fastapi import FastAPI
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
@@ -29,7 +30,8 @@ class BearerGate:
         self.owner_token = owner_token
         self.ledger = ledger
 
-    def _authorized(self, scope: Scope) -> bool:
+    @staticmethod
+    def _bearer(scope: Scope) -> str | None:
         auth = ""
         for name, value in scope.get("headers", []):
             if name == b"authorization":
@@ -38,6 +40,11 @@ class BearerGate:
         scheme, _, value = auth.partition(" ")
         token = value.strip()
         if scheme.lower() != "bearer" or not token:
+            return None
+        return token
+
+    def _authorized(self, token: str | None) -> bool:
+        if token is None:
             return False
         if token_matches(token, self.owner_token):
             return True
@@ -45,7 +52,10 @@ class BearerGate:
             return resolve_token(conn, token) is not None
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http" and not self._authorized(scope):
+        # the ledger lock may be held by the ingest worker: wait for it off the event loop
+        if scope["type"] == "http" and not await anyio.to_thread.run_sync(
+            self._authorized, self._bearer(scope)
+        ):
             response = JSONResponse({"detail": "Unauthorized"}, status_code=401)
             await response(scope, receive, send)
             return

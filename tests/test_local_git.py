@@ -115,3 +115,15 @@ def test_failed_repo_is_reported_and_others_still_polled(ledger, human, settings
     by_locator = {x.locator: x for x in list_resources(ledger.conn, kinds=["git_local"])}
     assert get_state(ledger.conn, f"git:{by_locator[str(bad)].id}") is None
     assert "last_poll" in get_state(ledger.conn, f"git:{by_locator[str(repo)].id}")
+
+
+def test_collect_git_runs_without_a_connection(ledger, human, settings, tmp_path):
+    from trajectree.connectors.local_git import collect_git
+    repo = make_repo(tmp_path)
+    p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    upsert_resource(ledger, human, ResourceIn(project_id=p.id, kind="git_local", locator=str(repo)))
+    resources = list_resources(ledger.conn, kinds=["git_local"])
+    c = collect_git(settings, resources, {resources[0].id: None}, now=datetime(2026, 1, 7, tzinfo=UTC), since_days=30)
+    assert len(c.signals) == 2 and c.errors == [] and c.polled == [resources[0].id]
+    # nothing was written: the caller writes later, under the lock
+    assert list_signals(ledger.conn, project_ids=[p.id]) == [] and get_state(ledger.conn, f"git:{resources[0].id}") is None
