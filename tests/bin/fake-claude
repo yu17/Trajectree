@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+"""Stand-in for the claude CLI in tests. Never calls an LLM."""
+import json
+import os
+import sys
+import time
+import urllib.request
+
+
+def result_line(**over):
+    data = {
+        "type": "result", "subtype": "success", "is_error": False,
+        "result": os.environ.get("FAKE_CLAUDE_RESULT", "done"),
+        "session_id": "fake-sess", "total_cost_usd": 0.0123,
+        "usage": {"input_tokens": 100, "output_tokens": 20,
+                  "cache_creation_input_tokens": 5, "cache_read_input_tokens": 7},
+        "num_turns": 2, "duration_ms": 345,
+    }
+    if os.environ.get("FAKE_CLAUDE_STRUCTURED"):
+        data["structured_output"] = json.loads(os.environ["FAKE_CLAUDE_STRUCTURED"])
+    return json.dumps({**data, **over})
+
+
+def call_mcp(argv):
+    cfg = json.loads(argv[argv.index("--mcp-config") + 1])
+    server = next(iter(cfg["mcpServers"].values()))
+    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+        "name": "set_project_summary",
+        "arguments": {"project": os.environ.get("FAKE_CLAUDE_PROJECT"),
+                      "summary_md": "# Fresh summary", "intent": "regenerate summary"}}}
+    req = urllib.request.Request(server["url"], data=json.dumps(body).encode(), method="POST", headers={
+        "Content-Type": "application/json", "Accept": "application/json, text/event-stream",
+        "Authorization": server["headers"]["Authorization"]})
+    urllib.request.urlopen(req, timeout=15).read()
+
+
+def main():
+    argv = sys.argv[1:]
+    if argv == ["--version"]:
+        print("2.1.309 (Claude Code)")
+        return 0
+    if os.environ.get("FAKE_CLAUDE_ARGV_FILE"):
+        with open(os.environ["FAKE_CLAUDE_ARGV_FILE"], "w") as f:
+            f.write(json.dumps(argv))
+    if os.environ.get("FAKE_CLAUDE_ENV_FILE"):
+        with open(os.environ["FAKE_CLAUDE_ENV_FILE"], "w") as f:
+            f.write(json.dumps(dict(os.environ)))
+    mode_file = os.environ.get("FAKE_CLAUDE_MODE_FILE")
+    if mode_file:
+        with open(mode_file) as f:
+            mode = f.read().strip()
+    else:
+        mode = os.environ.get("FAKE_CLAUDE_MODE", "ok")
+    if mode == "sleep":
+        time.sleep(60)
+    elif mode == "garbage":
+        print("not json")
+        print("boom", file=sys.stderr)
+        return 1
+    elif mode == "budget":
+        print(result_line(subtype="error_max_budget_usd", is_error=True, result="Reached budget"))
+        return 1
+    elif mode == "mcp":
+        call_mcp(argv)
+        print(result_line())
+    else:
+        print(result_line())
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

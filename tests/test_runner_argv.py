@@ -1,0 +1,67 @@
+import json
+from pathlib import Path
+import pytest
+from trajectree.runner.argv import claude_argv, codex_argv, mask, run_env
+from trajectree.runner.spec import MissingCredentials, RunSpec, ToolPolicy
+
+def spec(**over):
+    base = dict(run_id="r1", kind="ask", runner="claude", backend="claude", model=None, prompt="Q?", system_prompt=None,
+                cwd=Path("/tmp/w"), tools=ToolPolicy(tools=[], allowed=["mcp__trajectree__*"]), usd_cap=0.5, timeout_s=120,
+                mcp_url="http://127.0.0.1:8742/mcp", mcp_token="trj_secret", json_schema=None)
+    return RunSpec(**{**base, **over})
+
+def test_claude_argv_fixed_shape():
+    s = spec(model="sonnet", json_schema={"type": "object"}, system_prompt="Be brief.",
+             tools=ToolPolicy(tools=["Read", "Grep", "Glob", "Bash"], allowed=["Read", "Grep", "Glob", "Bash(git log *)", "mcp__trajectree__*"]))
+    argv = claude_argv(s, binary="claude")
+    assert argv[:5] == ["claude", "-p", "Q?", "--output-format", "json"]
+    assert argv[argv.index("--permission-mode") + 1] == "dontAsk" and argv[argv.index("--setting-sources") + 1] == "user"
+    assert "--strict-mcp-config" in argv
+    cfg = json.loads(argv[argv.index("--mcp-config") + 1])
+    assert cfg["mcpServers"]["trajectree"] == {"type": "http", "url": "http://127.0.0.1:8742/mcp", "headers": {"Authorization": "Bearer trj_secret"}}
+    assert argv[argv.index("--tools") + 1] == "Read,Grep,Glob,Bash"
+    i = argv.index("--allowedTools")
+    assert argv[i + 1:i + 6] == ["Read", "Grep", "Glob", "Bash(git log *)", "mcp__trajectree__*"]
+    assert argv[argv.index("--max-budget-usd") + 1] == "0.5" and argv[argv.index("--model") + 1] == "sonnet"
+    assert json.loads(argv[argv.index("--json-schema") + 1]) == {"type": "object"}
+    assert argv[argv.index("--append-system-prompt") + 1] == "Be brief." and "--max-turns" not in argv
+
+def test_claude_argv_no_tools_and_optional_flags_absent():
+    argv = claude_argv(spec(), binary="/opt/claude")
+    assert argv[argv.index("--tools") + 1] == "" and "--model" not in argv and "--json-schema" not in argv and "--append-system-prompt" not in argv
+
+def test_codex_argv():
+    argv = codex_argv(spec(runner="codex", backend="codex", model="gpt-5", system_prompt="Sys."), binary="codex",
+                      schema_path=Path("/tmp/s.json"), last_message_path=Path("/tmp/last.md"))
+    assert argv[:3] == ["codex", "exec", "--json"] and "--ephemeral" in argv and argv[argv.index("--sandbox") + 1] == "read-only"
+    assert 'mcp_servers.trajectree.url="http://127.0.0.1:8742/mcp"' in argv
+    assert 'mcp_servers.trajectree.bearer_token_env_var="TRAJECTREE_RUN_TOKEN"' in argv
+    assert argv[argv.index("-o") + 1] == "/tmp/last.md" and argv[argv.index("--output-schema") + 1] == "/tmp/s.json"
+    assert argv[-1] == "Sys.\n\nQ?" and argv[argv.index("-m") + 1] == "gpt-5"
+
+def test_run_env_is_built_from_scratch(settings):
+    base = {"PATH": "/usr/bin", "TRAJECTREE_DATA_DIR": "/data", "ANTHROPIC_API_KEY": "leak", "LANG": "C.UTF-8", "HTTPS_PROXY": "http://p"}
+    s = settings.model_copy(update={"run_env_passthrough": ["HTTPS_PROXY"]})
+    env = run_env(spec(), s, base=base, oauth_token="oat")
+    assert env["PATH"] == "/usr/bin" and env["LANG"] == "C.UTF-8" and env["TERM"] == "dumb" and env["HTTPS_PROXY"] == "http://p"
+    assert env["CLAUDE_CONFIG_DIR"] == str(s.claude_config_dir) and env["HOME"] == str(s.run_home)
+    assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "oat" and env["DISABLE_AUTOUPDATER"] == "1"
+    assert "TRAJECTREE_DATA_DIR" not in env and "ANTHROPIC_API_KEY" not in env and "TRAJECTREE_RUN_TOKEN" not in env
+
+def test_run_env_ccx_and_codex(settings):
+    prof = settings.backends_cfg_dir / "kimi"
+    prof.mkdir(parents=True)
+    (prof / "settings.json").write_text('{"env": {"ANTHROPIC_AUTH_TOKEN": "k"}}')
+    env = run_env(spec(runner="ccx:kimi", backend="kimi"), settings, base={"PATH": "/bin"}, oauth_token=None)
+    assert env["CLAUDE_CONFIG_DIR"] == str(prof) and "CLAUDE_CODE_OAUTH_TOKEN" not in env
+    env = run_env(spec(runner="codex", backend="codex"), settings, base={"PATH": "/bin"}, oauth_token=None)
+    assert env["TRAJECTREE_RUN_TOKEN"] == "trj_secret" and env["CODEX_HOME"] == str(settings.codex_home)
+
+def test_run_env_missing_credentials(settings):
+    with pytest.raises(MissingCredentials, match="trajectree login"):
+        run_env(spec(), settings, base={"PATH": "/bin"}, oauth_token=None)
+    with pytest.raises(MissingCredentials, match="backends sync"):
+        run_env(spec(runner="ccx:nope", backend="nope"), settings, base={"PATH": "/bin"}, oauth_token=None)
+
+def test_mask():
+    assert mask(["--mcp-config", '{"Authorization": "Bearer trj_s"}', "x"], ["trj_s", ""]) == ["--mcp-config", '{"Authorization": "Bearer ***"}', "x"]
