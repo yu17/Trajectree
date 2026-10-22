@@ -2,7 +2,15 @@ services:
   trajectree:
     build: .
     ports: ["127.0.0.1:8742:8742"]
-    volumes: ["./data:/data"]
+    volumes:
+      - ./data:/data
+      - ${HOME}/.claude:/host/claude:ro
+      - ${HOME}/.config/claude-backends:/host/claude-backends:ro
+      - ${TRAJECTREE_PROJECTS_ROOT:?set TRAJECTREE_PROJECTS_ROOT to the folder that holds your project folders}:/projects:ro
+    environment:
+      TRAJECTREE_CLAUDE_HOME: /host/claude
+      TRAJECTREE_BACKENDS_ROOT: /host/claude-backends
+      TRAJECTREE_PATH_MAP: ${TRAJECTREE_PROJECTS_ROOT}=/projects
     read_only: true
     tmpfs: ["/tmp"]
     cap_drop: [ALL]

@@ -21,4 +21,10 @@ test("create a project and an event, see the block, revert it from the ledger", 
   await page.getByRole("button", { name: "Revert" }).first().click();
   await page.getByRole("tab", { name: "Timeline" }).click();
   await expect(page.locator("g.block.k-decision")).toHaveCount(0);
+  await page.getByRole("tab", { name: "Inbox" }).click();
+  await expect(page.getByText("Nothing to review")).toBeVisible();
+  const run = await page.request.post("/api/ingest/run", { headers: { Authorization: `Bearer ${token}` } });
+  expect(run.status()).toBe(200);
+  await page.getByRole("tab", { name: "Timeline" }).click();
+  await expect(page.locator("g.lab", { hasText: "CLMI" })).toBeVisible();
 });

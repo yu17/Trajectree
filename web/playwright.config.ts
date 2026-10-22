@@ -27,6 +27,9 @@ export default defineConfig({
       TRAJECTREE_DATA_DIR: dataDir,
       TRAJECTREE_PORT: "8799",
       TRAJECTREE_HOST: "127.0.0.1",
+      TRAJECTREE_INGEST_EVERY: "0",
+      TRAJECTREE_CLAUDE_HOME: "",
+      TRAJECTREE_BACKENDS_ROOT: "",
     },
   },
 });

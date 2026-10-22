@@ -14,6 +14,7 @@ COPY src/ ./src/
 COPY --from=web /build/src/trajectree/static ./src/trajectree/static
 RUN uv sync --frozen --no-dev
 COPY docker/entrypoint.sh ./docker/entrypoint.sh
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 RUN useradd --uid 1000 --no-create-home --shell /usr/sbin/nologin trajectree \
     && mkdir /data && chown 1000:1000 /data
 ENV TRAJECTREE_DATA_DIR=/data \
