@@ -25,3 +25,31 @@ def human():
 @pytest.fixture
 def agent():
     return Actor(kind="agent", ref="run_test", model="claude-opus-5-5", backend="claude")
+
+
+@pytest.fixture
+def settings(tmp_path):
+    from trajectree.config import Settings
+
+    return Settings(data_dir=tmp_path / "data")
+
+
+@pytest.fixture
+def app(settings, ledger):
+    from trajectree.api.app import create_app
+
+    return create_app(settings, ledger=ledger)
+
+
+@pytest.fixture
+def client(app):
+    from fastapi.testclient import TestClient
+
+    return TestClient(app, headers={"Authorization": f"Bearer {app.state.token}"})
+
+
+@pytest.fixture
+def anon(app):
+    from fastapi.testclient import TestClient
+
+    return TestClient(app)
