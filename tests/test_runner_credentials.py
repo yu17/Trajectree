@@ -58,3 +58,19 @@ def test_runner_status_and_version_cache(settings):
     runner_status(settings, which=which, run=run)
     assert len(calls) == 1
     assert cli_version("definitely-missing-binary-xyz") is None
+
+
+def test_sync_backends_skips_unreadable_profile(settings, tmp_path):
+    root = tmp_path / "backends"
+    for name in ("aaa-locked", "zzz-ok"):
+        (root / name).mkdir(parents=True)
+        (root / name / "settings.json").write_text('{"apiKeyHelper": "x"}')
+    locked = root / "aaa-locked" / "settings.json"
+    locked.chmod(0o000)
+    s = settings.model_copy(update={"backends_root": root})
+    try:
+        assert sync_backends(s) == ["zzz-ok"]
+    finally:
+        locked.chmod(0o600)
+    assert (s.backends_cfg_dir / "zzz-ok" / "settings.json").exists()
+    assert not (s.backends_cfg_dir / "aaa-locked").exists()

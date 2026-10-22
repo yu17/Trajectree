@@ -85,12 +85,18 @@ def sync_backends(settings: Settings) -> list[str]:
         if not profile.is_dir() or not src.is_file():
             continue
         dest = settings.backends_cfg_dir / profile.name
-        _private_dir(settings.backends_cfg_dir)
-        _private_dir(dest)
-        _write_secret(dest / "settings.json", src.read_bytes())
         onboarding = profile / ".claude.json"
-        if onboarding.is_file():
-            _write_secret(dest / ".claude.json", onboarding.read_bytes())
+        try:
+            # Read everything first so an unreadable file leaves no half-copied profile.
+            settings_bytes = src.read_bytes()
+            onboarding_bytes = onboarding.read_bytes() if onboarding.is_file() else None
+            _private_dir(settings.backends_cfg_dir)
+            _private_dir(dest)
+            _write_secret(dest / "settings.json", settings_bytes)
+            if onboarding_bytes is not None:
+                _write_secret(dest / ".claude.json", onboarding_bytes)
+        except OSError:
+            continue
         names.append(profile.name)
     return sorted(names)
 
