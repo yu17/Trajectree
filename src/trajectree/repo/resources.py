@@ -53,17 +53,15 @@ def list_resources(
 def upsert_resource(
     ledger: Ledger, actor: Actor, data: ResourceIn, *, intent: str | None = None
 ) -> Resource:
-    with ledger.locked() as conn:
-        existing = find_resource(conn, data.project_id, data.kind, data.locator)
-        if existing is not None and existing.title == data.title and existing.props == data.props:
-            return existing
     now = to_db(utcnow())
-    label = f"{data.kind} {data.locator}"
-    if existing is None:
-        resource_id = new_id()
-        with ledger.transaction(actor, intent or f"register resource {label}") as h:
+    with ledger.transaction(
+        actor, intent or f"upsert resource {data.kind} {data.locator}"
+    ) as h:
+        existing = find_resource(h.conn, data.project_id, data.kind, data.locator)
+        if existing is None:
             if h.conn.execute("SELECT 1 FROM project WHERE id = ?", (data.project_id,)).fetchone() is None:
                 raise NotFound(data.project_id)
+            resource_id = new_id()
             h.conn.execute(
                 "INSERT INTO resource (id, project_id, kind, locator, title, props,"
                 " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -72,15 +70,15 @@ def upsert_resource(
                     dumps_props(data.props), now, now,
                 ),
             )
-    else:
-        resource_id = existing.id
-        with ledger.transaction(actor, intent or f"update resource {label}") as h:
-            update_fields(
-                h.conn,
-                "resource",
-                resource_id,
-                {"title": data.title, "props": dumps_props(data.props), "updated_at": now},
-            )
+        else:
+            resource_id = existing.id
+            if existing.title != data.title or existing.props != data.props:
+                update_fields(
+                    h.conn,
+                    "resource",
+                    resource_id,
+                    {"title": data.title, "props": dumps_props(data.props), "updated_at": now},
+                )
     resource = get_resource(ledger.conn, resource_id)
     assert resource is not None
     return resource
