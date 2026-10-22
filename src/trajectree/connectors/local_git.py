@@ -1,4 +1,8 @@
-"""Local git connector: one `commits` signal per (repository, UTC day) from `git log`."""
+"""Local git connector: one `commits` signal per (repository, UTC day) from `git log`.
+
+Commits are placed by committer date (the date `--since` filters on), so a day is always
+computed whole and a rebased or amended commit cannot leave a day partial.
+"""
 
 import os
 import subprocess
@@ -30,7 +34,8 @@ def _since(conn: apsw.Connection, resource_id: str, now: datetime, since_days: i
             return back.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         except ValueError:
             pass
-    return now - timedelta(days=since_days)
+    first = (now - timedelta(days=since_days)).astimezone(timezone.utc)
+    return first.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 def _parse(stdout: str) -> dict[str, list[tuple[datetime, str, str, str]]]:
@@ -39,9 +44,9 @@ def _parse(stdout: str) -> dict[str, list[tuple[datetime, str, str, str]]]:
         parts = line.split("\x1f")
         if len(parts) != 4:
             continue
-        sha, author_iso, author, subject = parts
+        sha, commit_iso, author, subject = parts
         try:
-            when = datetime.fromisoformat(author_iso).astimezone(timezone.utc)
+            when = datetime.fromisoformat(commit_iso).astimezone(timezone.utc)
         except ValueError:
             continue
         days.setdefault(when.date().isoformat(), []).append((when, sha, author, subject))
@@ -62,25 +67,27 @@ def poll_git(
     polled: list[str] = []
     with conn:
         for resource in resources:
-            local = to_local(settings, resource.locator)
-            if not (local / ".git").exists():
-                errors.append(f"{resource.locator}: not a git repository")
-                continue
-            since = _since(conn, resource.id, now, since_days)
-            cmd = [
-                "git", "-c", "safe.directory=*", "-C", str(local), "log", "--all",
-                f"--since={since.isoformat()}", "--date=iso-strict",
-                "--format=%H%x1f%aI%x1f%an%x1f%s",
-            ]  # fmt: skip
             try:
+                local = to_local(settings, resource.locator)
+                if not (local / ".git").exists():
+                    errors.append(f"{resource.locator}: not a git repository")
+                    continue
+                since = _since(conn, resource.id, now, since_days)
+                cmd = [
+                    "git", "-c", "safe.directory=*", "-C", str(local), "log", "--all",
+                    f"--since={since.isoformat()}", "--date=iso-strict",
+                    "--format=%H%x1f%cI%x1f%an%x1f%s",
+                ]  # fmt: skip
                 proc = subprocess.run(
                     cmd,
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=60,
                     env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
                 )
-            except (subprocess.TimeoutExpired, OSError) as exc:
+            except (subprocess.TimeoutExpired, OSError, ValueError) as exc:
                 errors.append(f"{resource.locator}: {exc}")
                 continue
             if proc.returncode != 0:
