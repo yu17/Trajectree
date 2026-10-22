@@ -1,7 +1,8 @@
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import * as d3 from "d3";
 import { api } from "../api/client";
-import type { TimelineResponse, Txn } from "../api/types";
+import type { Signal, TimelineResponse, Txn } from "../api/types";
 import type { Selection } from "../timeline/Timeline";
 import { fmtWhen, glyph } from "../timeline/render";
 import "../timeline/timeline.css";
@@ -35,6 +36,10 @@ export function DetailsPanel({ data, selected, onReview, onRevert }: DetailsPane
     queryFn: () => api.txn(txnId!),
     enabled: txnId !== null,
   });
+
+  if (selected?.type === "bin") {
+    return <BinDetails projectId={selected.projectId} start={selected.start} end={selected.end} />;
+  }
 
   if (selected?.type === "todo") {
     const todo = data.todos.find(t => t.id === selected.id);
@@ -120,6 +125,81 @@ export function DetailsPanel({ data, selected, onReview, onRevert }: DetailsPane
       )}
     </aside>
   );
+}
+
+const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
+const num = (v: unknown): number => (typeof v === "number" ? v : 0);
+
+function BinDetails({ projectId, start, end }: { projectId: string; start: number; end: number }) {
+  const q = useQuery({
+    queryKey: ["signals", projectId, start, end],
+    queryFn: () => api.signals([projectId], new Date(start), new Date(end)),
+  });
+  const signals: Signal[] = q.data ?? [];
+  const sessions = signals.filter(s => s.kind === "session");
+  const commits = signals.filter(s => s.kind === "commits");
+
+  return (
+    <aside className="details">
+      <h2>Activity</h2>
+      <p className="muted">{fmtRecorded(new Date(start))} → {fmtRecorded(new Date(end))}</p>
+      {q.isPending ? (
+        <p className="muted">loading…</p>
+      ) : q.isError ? (
+        <p className="empty">Activity unavailable.</p>
+      ) : !sessions.length && !commits.length ? (
+        <p className="empty">No activity in this bin.</p>
+      ) : (
+        <>
+          {sessions.length > 0 && (
+            <>
+              <h2>Sessions</h2>
+              <ul className="links">
+                {sessions.map(s => {
+                  const sid = str(s.payload.session_id) ?? "";
+                  return (
+                    <li key={s.id}>
+                      <b>{str(s.payload.title) ?? sid.slice(0, 8)}</b>
+                      {` · ${num(s.payload.prompts)} prompts · ${str(s.payload.model) ?? "unknown model"} `}
+                      <CopyResume command={`cd ${str(s.payload.cwd) ?? "."} && claude --resume ${sid}`} />
+                    </li>
+                  );
+                })}
+              </ul>
+            </>
+          )}
+          {commits.length > 0 && (
+            <>
+              <h2>Commits</h2>
+              <ul className="links">
+                {commits.map(s => {
+                  const subjects = Array.isArray(s.payload.subjects) ? s.payload.subjects.map(String) : [];
+                  return (
+                    <li key={s.id}>
+                      {num(s.payload.count)} commits
+                      {subjects.length > 0 && <ul>{subjects.map((t, i) => <li key={i}>{t}</li>)}</ul>}
+                    </li>
+                  );
+                })}
+              </ul>
+            </>
+          )}
+        </>
+      )}
+    </aside>
+  );
+}
+
+function CopyResume({ command }: { command: string }) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const id = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(id);
+  }, [copied]);
+  // navigator.clipboard is absent outside secure contexts (plain http on a LAN host).
+  const copy = () => navigator.clipboard?.writeText(command).then(() => setCopied(true), () => {});
+  return <button onClick={copy}>{copied ? "Copied" : "Copy resume command"}</button>;
 }
 
 function titleOf(data: TimelineResponse, id: string): { title: string; project: string } {

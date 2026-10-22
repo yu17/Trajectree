@@ -74,4 +74,17 @@ describe("Timeline", () => {
     expect(container.querySelector("g.lab")!.textContent).toContain("CLMI");
     expect(container.querySelector("g.lab")!.textContent).toContain("research");
   });
+  it("renders strip cells, a live marker and lane chips; clicking a cell selects the bin", () => {
+    const onSelect = vi.fn();
+    const d = { ...data, strip: [{ project_id: "p1", day: "2026-01-05", kind: "session" as const, count: 3 }], stale: ["p2"],
+      live: [{ project_id: "p1", session_id: "s", cwd: "/c", title: null, started: null, last_seen: "2026-01-10T00:00:00Z" }] };
+    const { container } = render(<Timeline data={d} now={new Date("2026-01-10T00:00:00Z")} range={[new Date("2026-01-01T00:00:00Z"), new Date("2026-02-01T00:00:00Z")]} selected={null} onSelect={onSelect} />);
+    expect(container.querySelectorAll("rect.strip-cell").length).toBe(1);
+    expect(container.querySelector("rect.strip-cell")!.classList.contains("l-2")).toBe(true);
+    expect(container.querySelectorAll("circle.live").length).toBe(1);
+    expect(container.querySelector("g.chip.running text")!.textContent).toBe("● running");
+    expect(container.querySelector("g.chip.stale text")!.textContent).toBe("stale");
+    fireEvent.click(container.querySelector("rect.strip-cell")!);
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ type: "bin", projectId: "p1" }));
+  });
 });

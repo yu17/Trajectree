@@ -4,7 +4,9 @@ import type { TimelineResponse } from "../api/types";
 import { renderTimeline } from "./render";
 import "./timeline.css";
 
-export type Selection = { type: "event" | "todo"; id: string };
+export type Selection =
+  | { type: "event" | "todo"; id: string }
+  | { type: "bin"; projectId: string; start: number; end: number };
 
 export interface TimelineProps {
   data: TimelineResponse;
@@ -31,7 +33,10 @@ export function Timeline({ data, now, range, selected, onSelect, showAllWires = 
   const to = range[1].getTime();
   const nowMs = now.getTime();
   const selType = selected?.type ?? null;
-  const selId = selected?.id ?? null;
+  const selId = selected && selected.type !== "bin" ? selected.id : null;
+  const binProject = selected?.type === "bin" ? selected.projectId : null;
+  const binStart = selected?.type === "bin" ? selected.start : null;
+  const binEnd = selected?.type === "bin" ? selected.end : null;
 
   // Width: measured from the wrapper, kept current with a ResizeObserver when available.
   useLayoutEffect(() => {
@@ -80,14 +85,16 @@ export function Timeline({ data, now, range, selected, onSelect, showAllWires = 
       range: [new Date(from), new Date(to)],
       width,
       transform,
-      selected: selType && selId ? { type: selType, id: selId } : null,
+      selected: selType === "bin" && binProject !== null && binStart !== null && binEnd !== null
+        ? { type: "bin", projectId: binProject, start: binStart, end: binEnd }
+        : selType && selType !== "bin" && selId ? { type: selType, id: selId } : null,
       hovered,
       showAllWires,
       uid,
       onSelect,
       onHover: setHovered,
     });
-  }, [data, nowMs, from, to, width, transform, selType, selId, hovered, showAllWires, uid, onSelect]);
+  }, [data, nowMs, from, to, width, transform, selType, selId, binProject, binStart, binEnd, hovered, showAllWires, uid, onSelect]);
 
   return (
     <div className="tlwrap" ref={wrapRef}>

@@ -11,6 +11,11 @@ vi.mock("../api/client", () => ({ api: {
     txn: { id, ts: "2026-01-08T10:00:00Z", actor_kind: "agent", actor_ref: "run_7", model: "claude-opus-5-5", backend: "claude", tool: "claude", tool_version: null, session_id: null, run_id: "run_7", proposed_by_run: null, intent: "x", review: "pending", review_ts: null, reverts_txn: null, reverted_by: null },
     changes: [],
   })),
+  signals: vi.fn(async () => [{
+    id: "sig1", project_id: "p1", resource_id: null, kind: "session", t_start: "2026-01-05T09:00:00Z", t_end: "2026-01-05T11:00:00Z",
+    payload: { session_id: "abcd1234-ef56-7890-abcd-ef1234567890", cwd: "/home/u/proj", title: "Fix build", git_branch: "main", model: "claude-opus-5-5", prompts: 3, tokens_in: 100, tokens_out: 200, transcript_path: "/t.jsonl", backend: "claude", running: false },
+    dedupe_key: "session:abcd1234", updated_at: "2026-01-05T11:00:00Z",
+  }]),
 } }));
 
 const data: TimelineResponse = {
@@ -71,5 +76,19 @@ describe("DetailsPanel", () => {
     expect(onReview).toHaveBeenCalledWith("txn-pending", "accepted");
     fireEvent.click(screen.getByText("Reject"));
     expect(onReview).toHaveBeenCalledWith("txn-pending", "rejected");
+  });
+  it("lists a bin's sessions and copies the resume command", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const start = Date.UTC(2026, 0, 5);
+    const end = start + 86_400_000;
+    wrap(<DetailsPanel data={data} selected={{ type: "bin", projectId: "p1", start, end }} onReview={() => {}} onRevert={() => {}} />);
+    expect(screen.getByText("Activity")).toBeTruthy();
+    await screen.findByText("Fix build");
+    expect(api.signals).toHaveBeenCalledWith(["p1"], new Date(start), new Date(end));
+    expect(screen.getByText(/3 prompts/)).toBeTruthy();
+    fireEvent.click(screen.getByText("Copy resume command"));
+    expect(writeText).toHaveBeenCalledWith("cd /home/u/proj && claude --resume abcd1234-ef56-7890-abcd-ef1234567890");
+    await screen.findByText("Copied");
   });
 });

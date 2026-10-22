@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { packLane, cullVisible, labelWidth, type LaneItem } from "./layout";
+import { packLane, cullVisible, labelWidth, binStrip, type LaneItem } from "./layout";
 
 const xz = (t: number) => t / 1000; // 1px per second
 const item = (id: string, start: number, title = "t", end: number | null = null): LaneItem => ({ id, start, end, title, kind: "note" });
@@ -47,4 +47,29 @@ describe("cullVisible", () => {
 
 describe("labelWidth", () => {
   it("caps at 170", () => { expect(labelWidth("x".repeat(100))).toBe(170); });
+});
+
+describe("binStrip", () => {
+  const bins = [
+    { project_id: "p", day: "2026-01-05", kind: "session" as const, count: 1 },
+    { project_id: "p", day: "2026-01-06", kind: "session" as const, count: 2 },
+    { project_id: "p", day: "2026-01-06", kind: "commits" as const, count: 5 },
+    { project_id: "p", day: "2026-01-12", kind: "commits" as const, count: 1 },
+  ];
+  it("keeps days apart in day mode and levels by log2", () => {
+    const cells = binStrip(bins, "day");
+    expect(cells.map(c => [c.key, c.sessions, c.commits, c.level])).toEqual([["2026-01-05", 1, 0, 1], ["2026-01-06", 2, 5, 3], ["2026-01-12", 0, 1, 1]]);
+    expect(cells[0].end - cells[0].start).toBe(86_400_000);
+  });
+  it("groups ISO weeks starting Monday", () => {
+    const cells = binStrip(bins, "week");
+    expect(cells.map(c => [c.key, c.total])).toEqual([["2026-W02", 8], ["2026-W03", 1]]);
+    expect(new Date(cells[0].start).toISOString()).toBe("2026-01-05T00:00:00.000Z");
+  });
+  it("groups months and caps the level at 5", () => {
+    const cells = binStrip([...bins, { project_id: "p", day: "2026-01-20", kind: "session" as const, count: 40 }], "month");
+    expect(cells).toHaveLength(1);
+    expect(cells[0].key).toBe("2026-01");
+    expect(cells[0].level).toBe(5);
+  });
 });

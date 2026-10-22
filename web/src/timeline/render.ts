@@ -4,14 +4,16 @@
 // Every call is idempotent: layers are created by keyed joins, never cached.
 import * as d3 from "d3";
 import type { Edge, Event, TimelineResponse, Todo } from "../api/types";
-import { cullVisible, labelWidth, packLane, type LaneItem, type PlacedItem } from "./layout";
+import {
+  binKey, binStrip, cullVisible, labelWidth, packLane, type LaneItem, type PlacedItem, type StripCell,
+} from "./layout";
 import type { Selection } from "./Timeline";
 
 export const GUTTER = 176;
 export const AXIS_H = 34;
 export const ROW_H = 28;
 export const BLOCK_H = 22;
-export const STRIP_SLOT = 18; // reserved below the rows for the activity strip; empty in phase 1
+export const STRIP_SLOT = 18; // below the rows: the activity strip row (STRIP_SLOT - 8 high, 3px down)
 export const PAD = 8;
 export const MIN_W = 16;
 export const MAX_ROWS = 3;
@@ -23,6 +25,9 @@ export const glyph: Record<string, string> = {
 
 const fmtLong = d3.timeFormat("%a %d %b %Y, %H:%M");
 const fmtTime = d3.timeFormat("%H:%M");
+const fmtDate = d3.utcFormat("%d %b %Y"); // strip buckets are UTC days, weeks or months
+const DAY_MS = 86_400_000;
+const STRIP_H = STRIP_SLOT - 8;
 
 export function fmtWhen(start: Date, end: Date | null): string {
   return fmtLong(start) + (end ? " → " + fmtTime(end) : "");
@@ -64,7 +69,12 @@ export interface RenderInput {
   onHover: (id: string | null) => void;
 }
 
-interface Lane { id: string; title: string; kind: string; y: number; h: number; blocks: PlacedBlock[] }
+interface Lane {
+  id: string; title: string; kind: string; y: number; h: number; blocks: PlacedBlock[];
+  stripTop: number; cells: StripCell[]; live: boolean; stale: boolean;
+}
+interface PlacedCell extends StripCell { id: string; laneId: string; y: number }
+interface Chip { kind: "running" | "stale"; text: string; x: number; w: number }
 interface PlacedBlock extends PlacedItem { y: number; ev: Event }
 interface TodoMark { todo: Todo; x: number; y: number }
 
@@ -104,12 +114,14 @@ export function renderTimeline(
     .attr("clip-path", `url(#${clipId})`).attr("transform", `translate(${GUTTER},${AXIS_H})`);
   const future = layer(gPlot, "rect", "future");
   const gGrid = layer(gPlot, "g", "grid");
+  const gStrip = layer(gPlot, "g", "strip");
   const gBlocks = layer(gPlot, "g", "blocks");
   const gTodos = layer(gPlot, "g", "todos");
   const gWires = layer(gPlot, "g", "wires");
   const gNow = layer(gPlot, "g", "now-g");
   const nowLine = layer(gNow, "line", "now");
   const nowLbl = layer(gNow, "text", "now-lbl").attr("y", 12).text("now");
+  const gLive = layer(gPlot, "g", "live-g");
   const gAxis = layer(svg, "g", "axis").attr("transform", `translate(${GUTTER},${AXIS_H})`);
   const gGutter = layer(svg, "g", "gutter");
 
@@ -125,6 +137,9 @@ export function renderTimeline(
     });
     itemsByProject.set(e.project_id, list);
   }
+  const mode = binKey(0, xn(DAY_MS) - xn(0)); // pixel width of one day under the current zoom
+  const liveIds = new Set(data.live.map(s => s.project_id));
+  const staleIds = new Set(data.stale);
   let y = 0;
   const lanes: Lane[] = data.projects.map(p => {
     const vis = cullVisible(itemsByProject.get(p.id) ?? [], xn, plotW);
@@ -135,7 +150,11 @@ export function renderTimeline(
     const blocks = lay.blocks.map(b => ({
       ...b, y: laneY + PAD + b.row * ROW_H + (ROW_H - BLOCK_H) / 2, ev: evById.get(b.id)!,
     }));
-    return { id: p.id, title: p.title, kind: p.kind, y: laneY, h, blocks };
+    const cells = cullVisible(binStrip(data.strip.filter(b => b.project_id === p.id), mode), xn, plotW);
+    return {
+      id: p.id, title: p.title, kind: p.kind, y: laneY, h, blocks,
+      stripTop: laneY + PAD + lay.rows * ROW_H + 3, cells, live: liveIds.has(p.id), stale: staleIds.has(p.id),
+    };
   });
   const plotH = y;
   const totalH = AXIS_H + plotH + 8;
@@ -163,6 +182,25 @@ export function renderTimeline(
   lab.attr("transform", (d: Lane) => `translate(14,${AXIS_H + d.y + PAD + 15})`);
   lab.select(".lbl-name").text((d: Lane) => trunc(d.title, GUTTER - 28));
   lab.select(".lbl-kind").text((d: Lane) => d.kind);
+  const chipsOf = (d: Lane): Chip[] => {
+    const out: Chip[] = [];
+    const add = (kind: Chip["kind"], text: string) => {
+      const prev = out[out.length - 1];
+      out.push({ kind, text, x: prev ? prev.x + prev.w + 6 : 0, w: text.length * 6 + 12 });
+    };
+    if (d.live) add("running", "● running");
+    if (d.stale) add("stale", "stale");
+    return out;
+  };
+  const chip = lab.selectAll<SVGGElement, Chip>("g.chip").data(chipsOf, (c: Chip) => c.kind).join((enter: Sel) => {
+    const g = enter.append("g");
+    g.append("rect").attr("y", 18).attr("height", 14).attr("rx", 7);
+    g.append("text").attr("x", 6).attr("y", 28);
+    return g;
+  });
+  chip.attr("class", (c: Chip) => `chip ${c.kind}`).attr("transform", (c: Chip) => `translate(${c.x},0)`);
+  chip.select("rect").attr("width", (c: Chip) => c.w);
+  chip.select("text").text((c: Chip) => c.text);
 
   // ---- axis, grid, now ----
   const ticks = Math.max(3, Math.floor(plotW / 120));
@@ -185,6 +223,25 @@ export function renderTimeline(
   const hideTip = () => {
     tipEl.style.display = "none";
   };
+
+  // ---- activity strip and live markers ----
+  const selBin = selected?.type === "bin" ? selected : null;
+  const cells: PlacedCell[] = lanes.flatMap(l =>
+    l.cells.map(c => ({ ...c, id: `${l.id}:${c.key}`, laneId: l.id, y: l.stripTop })));
+  gStrip.selectAll<SVGRectElement, PlacedCell>("rect.strip-cell").data(cells, (c: PlacedCell) => c.id).join("rect")
+    .attr("class", (c: PlacedCell) => `strip-cell l-${c.level}`
+      + (selBin && selBin.projectId === c.laneId && selBin.start === c.start && selBin.end === c.end ? " sel" : ""))
+    .attr("x", (c: PlacedCell) => xn(c.start)).attr("y", (c: PlacedCell) => c.y)
+    .attr("width", (c: PlacedCell) => Math.max(2, xn(c.end) - xn(c.start) - 1)).attr("height", STRIP_H).attr("rx", 1)
+    .on("mousemove", (ev: MouseEvent, c: PlacedCell) =>
+      showTip(ev, fmtDate(new Date(c.start)), `${c.sessions} sessions · ${c.commits} commits`))
+    .on("mouseleave", hideTip)
+    .on("click", (ev: MouseEvent, c: PlacedCell) => {
+      ev.stopPropagation();
+      onSelect({ type: "bin", projectId: c.laneId, start: c.start, end: c.end });
+    });
+  gLive.selectAll<SVGCircleElement, Lane>("circle.live").data(lanes.filter(l => l.live), (l: Lane) => l.id).join("circle")
+    .attr("class", "live").attr("r", 4).attr("cx", nowX).attr("cy", (l: Lane) => l.stripTop + STRIP_H / 2);
 
   // ---- blocks ----
   const pos = new Map<string, Box>();
