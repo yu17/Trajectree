@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import Callable, Mapping
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator, Callable, Mapping
 
 import anyio
 import httpx2
@@ -21,7 +22,13 @@ from mcp.types import (
 from trajectree.cli.main import DEFAULT_URL, _token
 
 
-def build_proxy(connect: Callable[[], Client]) -> Server:
+def _root_cause(exc: BaseException) -> BaseException:
+    while isinstance(exc, BaseExceptionGroup) and len(exc.exceptions) == 1:
+        exc = exc.exceptions[0]
+    return exc
+
+
+def build_proxy(connect: Callable[[], Any]) -> Server:
     async def handle_list_tools(
         ctx: ServerRequestContext, params: PaginatedRequestParams | None
     ) -> ListToolsResult:
@@ -29,7 +36,7 @@ def build_proxy(connect: Callable[[], Client]) -> Server:
             async with connect() as remote:
                 return await remote.list_tools()
         except Exception as exc:
-            print(f"trajectree shim: cannot list tools: {exc}", file=sys.stderr)
+            print(f"trajectree shim: cannot list tools: {_root_cause(exc)}", file=sys.stderr)
             return ListToolsResult(tools=[])
 
     async def handle_call_tool(
@@ -41,7 +48,7 @@ def build_proxy(connect: Callable[[], Client]) -> Server:
         except Exception as exc:
             return CallToolResult(
                 is_error=True,
-                content=[TextContent(type="text", text=f"trajectree daemon unreachable: {exc}")],
+                content=[TextContent(type="text", text=f"trajectree daemon unreachable: {_root_cause(exc)}")],
             )
 
     return Server(
@@ -49,16 +56,22 @@ def build_proxy(connect: Callable[[], Client]) -> Server:
     )
 
 
-def remote_connector(url: str, token: str, cwd: str | None) -> Callable[[], Client]:
+def remote_connector(
+    url: str, token: str, cwd: str | None, transport: Any = None
+) -> Callable[[], Any]:
     headers = {
         "Authorization": f"Bearer {token}",
         "X-Trajectree-Client": "shim",
         **({"X-Trajectree-Cwd": cwd} if cwd else {}),
     }
 
-    def connect() -> Client:
-        http = httpx2.AsyncClient(headers=headers, timeout=httpx2.Timeout(30, read=120))
-        return Client(streamable_http_client(url, http_client=http))
+    @asynccontextmanager
+    async def connect() -> AsyncIterator[Client]:
+        async with httpx2.AsyncClient(
+            headers=headers, timeout=httpx2.Timeout(30, read=120), transport=transport
+        ) as http:
+            async with Client(streamable_http_client(url, http_client=http)) as remote:
+                yield remote
 
     return connect
 

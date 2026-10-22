@@ -29,3 +29,29 @@ async def test_proxy_reports_unreachable_daemon():
         assert (await c.list_tools()).tools == []
         r = await c.call_tool("list_projects", {})
         assert r.is_error and "unreachable" in r.content[0].text
+
+
+async def test_remote_connector_sends_headers():
+    import httpx2
+
+    from trajectree.cli.shim import remote_connector
+
+    seen: list[dict[str, str]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(dict(request.headers))
+        return httpx2.Response(500)
+
+    connect = remote_connector(
+        "http://daemon.test/mcp", "tok", "/proj", transport=httpx2.MockTransport(handler)
+    )
+    try:
+        async with connect() as remote:
+            await remote.list_tools()
+    except Exception:
+        pass
+    assert seen
+    h = seen[0]
+    assert h["authorization"] == "Bearer tok"
+    assert h["x-trajectree-client"] == "shim"
+    assert h["x-trajectree-cwd"] == "/proj"
