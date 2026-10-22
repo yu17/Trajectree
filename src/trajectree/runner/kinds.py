@@ -1,0 +1,247 @@
+"""Run kinds: request models, editable prompts, proposal schema and run planning."""
+
+from __future__ import annotations
+
+import re
+import string
+from collections.abc import Mapping
+from datetime import datetime, timedelta, timezone
+from importlib import resources
+from pathlib import Path
+from typing import Any
+
+import apsw
+from pydantic import AwareDatetime, BaseModel, Field
+
+from trajectree.auth.scopes import Scope
+from trajectree.config import Settings
+from trajectree.connectors.paths import to_local
+from trajectree.context.pack import build_context_pack
+from trajectree.models import RUNNER_PATTERN, Run, RunKind
+from trajectree.repo.projects import list_projects, resolve_project_ref
+from trajectree.repo.resources import list_resources
+from trajectree.runner.spec import ToolPolicy
+
+
+
+class SummarizeRequest(BaseModel):
+    project: str
+    runner: str | None = None
+    model: str | None = None
+
+
+class AskRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=4000)
+    projects: list[str] | None = None
+    start: AwareDatetime | None = None
+    end: AwareDatetime | None = None
+    token_budget: int = Field(4000, ge=200, le=100_000)
+    runner: str | None = None
+    model: str | None = None
+
+
+class QuickAddRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+    project: str | None = None
+    runner: str | None = None
+    model: str | None = None
+
+
+RunRequest = SummarizeRequest | AskRequest | QuickAddRequest
+
+KIND_OF: dict[type[BaseModel], RunKind] = {
+    SummarizeRequest: "summarize",
+    AskRequest: "ask",
+    QuickAddRequest: "quick_add",
+}
+_CLASS_OF = {kind: cls for cls, kind in KIND_OF.items()}
+
+
+def request_from_props(kind: RunKind, data: dict[str, Any]) -> RunRequest:
+    return _CLASS_OF[kind].model_validate(data)  # type: ignore[return-value]
+
+
+PROPOSAL_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["answer", "proposals"],
+    "properties": {
+        "answer": {"type": "string"},
+        "proposals": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["kind", "project", "title", "reason"],
+                "properties": {
+                    "kind": {"enum": ["event", "todo"]},
+                    "project": {"type": "string"},
+                    "title": {"type": "string"},
+                    "reason": {"type": "string"},
+                    "event_kind": {"type": "string"},
+                    "when": {"type": "string"},
+                    "due": {"type": "string"},
+                    "body_md": {"type": "string"},
+                    "status": {"enum": ["happened", "planned", "suggested"]},
+                },
+            },
+        },
+    },
+}
+
+SUMMARIZE_SYSTEM = (
+    "You are updating the owner's project tracker. Write through the trajectree MCP tools only: "
+    "exactly one set_project_summary call for project `$project_slug`, nothing else; "
+    "anything else you notice goes into `proposals`."
+)
+READ_ONLY_SYSTEM = (
+    "You are answering from the owner's project tracker. You have read-only access; "
+    "put anything worth recording into `proposals` instead of writing."
+)
+
+_PROMPT_KINDS: tuple[RunKind, ...] = ("summarize", "ask", "quick_add")
+
+
+def ensure_prompts(settings: Settings) -> None:
+    """Create `prompts_dir` and copy each packaged prompt that is missing; never overwrite edits."""
+    settings.prompts_dir.mkdir(parents=True, exist_ok=True)
+    packaged = resources.files("trajectree.runner.prompts")
+    for kind in _PROMPT_KINDS:
+        target = settings.prompts_dir / f"{kind}.md"
+        if not target.exists():
+            target.write_text(packaged.joinpath(f"{kind}.md").read_text(encoding="utf-8"), encoding="utf-8")
+
+
+def load_prompt(settings: Settings, kind: RunKind) -> str:
+    return (settings.prompts_dir / f"{kind}.md").read_text(encoding="utf-8")
+
+
+def render_prompt(template: str, vars: Mapping[str, str]) -> str:
+    return string.Template(template).safe_substitute(vars)
+
+
+def runner_parts(runner: str) -> tuple[str, str]:
+    """Return `(runner, backend)`; accepts exactly what `RUNNER_PATTERN` accepts."""
+    if not re.fullmatch(RUNNER_PATTERN, runner):
+        raise ValueError(f"invalid runner '{runner}'")
+    return runner, runner.removeprefix("ccx:")
+
+
+class RunPlan(BaseModel):
+    prompt: str
+    system_prompt: str
+    cwd: Path
+    tools: ToolPolicy
+    json_schema: dict[str, Any]
+    scope: Scope
+
+
+def _day(moment: datetime) -> str:
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%d")
+
+
+def plan_run(
+    conn: apsw.Connection, settings: Settings, *, run: Run, request: RunRequest, now: datetime
+) -> RunPlan:
+    """Turn a run request into a plan. The caller holds the lock and has seeded the prompts."""
+    if isinstance(request, SummarizeRequest):
+        return _plan_summarize(conn, settings, run, request, now)
+    if isinstance(request, AskRequest):
+        return _plan_ask(conn, settings, run, request, now)
+    return _plan_quick_add(conn, settings, run, request, now)
+
+
+def _plan_summarize(
+    conn: apsw.Connection, settings: Settings, run: Run, request: SummarizeRequest, now: datetime
+) -> RunPlan:
+    project = resolve_project_ref(conn, run.project_id or request.project)
+    since = project.summary_at or now - timedelta(days=90)
+    pack = build_context_pack(
+        conn, project_ids=[project.id], t_from=since, t_to=now + timedelta(days=30), token_budget=6000
+    )
+    prompt = render_prompt(
+        load_prompt(settings, "summarize"),
+        {
+            "project_title": project.title,
+            "project_slug": project.slug,
+            "previous_summary": project.summary_md or "_none yet_",
+            "context_pack": pack.markdown,
+            "since": _day(since),
+            "today": _day(now),
+        },
+    )
+    cwd = settings.runs_dir / run.id
+    for resource in list_resources(conn, project_ids=[project.id], kinds=["folder"]):
+        local = to_local(settings, resource.locator)
+        if local.is_dir():
+            cwd = local
+            break
+    return RunPlan(
+        prompt=prompt,
+        system_prompt=render_prompt(SUMMARIZE_SYSTEM, {"project_slug": project.slug}),
+        cwd=cwd,
+        tools=ToolPolicy(
+            tools=["Read", "Grep", "Glob", "Bash"],
+            allowed=["Read", "Grep", "Glob", "Bash(git log *)", "mcp__trajectree__*"],
+        ),
+        json_schema=PROPOSAL_SCHEMA,
+        scope=Scope(projects=[project.id], tools=["set_project_summary"], write=True),
+    )
+
+
+def _read_only_plan(settings: Settings, run: Run, prompt: str) -> RunPlan:
+    return RunPlan(
+        prompt=prompt,
+        system_prompt=READ_ONLY_SYSTEM,
+        cwd=settings.runs_dir / run.id,
+        tools=ToolPolicy(tools=[], allowed=["mcp__trajectree__*"]),
+        json_schema=PROPOSAL_SCHEMA,
+        scope=Scope(write=False),
+    )
+
+
+def _plan_ask(
+    conn: apsw.Connection, settings: Settings, run: Run, request: AskRequest, now: datetime
+) -> RunPlan:
+    if request.projects:
+        projects = [resolve_project_ref(conn, ref) for ref in request.projects]
+    else:
+        projects = list_projects(conn, status="active")
+    pack = build_context_pack(
+        conn,
+        project_ids=[p.id for p in projects],
+        t_from=request.start or now - timedelta(days=90),
+        t_to=request.end or now + timedelta(days=30),
+        token_budget=request.token_budget,
+        question=request.question,
+    )
+    prompt = render_prompt(
+        load_prompt(settings, "ask"),
+        {
+            "question": request.question,
+            "context_pack": pack.markdown,
+            "projects": ", ".join(p.slug for p in projects),
+            "today": _day(now),
+        },
+    )
+    return _read_only_plan(settings, run, prompt)
+
+
+def _plan_quick_add(
+    conn: apsw.Connection, settings: Settings, run: Run, request: QuickAddRequest, now: datetime
+) -> RunPlan:
+    active = list_projects(conn, status="active")
+    if request.project:
+        default = resolve_project_ref(conn, request.project).slug
+    else:
+        default = active[0].slug if active else "inbox"
+    prompt = render_prompt(
+        load_prompt(settings, "quick_add"),
+        {
+            "text": request.text,
+            "today": _day(now),
+            "projects": "\n".join(f"- {p.slug}: {p.title}" for p in active),
+            "default_project": default,
+        },
+    )
+    return _read_only_plan(settings, run, prompt)

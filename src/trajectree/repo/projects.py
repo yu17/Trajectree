@@ -5,7 +5,7 @@ import apsw
 from trajectree.db.ledger import Ledger
 from trajectree.ids import new_id
 from trajectree.models import Actor, Project, ProjectIn, ProjectPatch
-from trajectree.repo import DuplicateSlug, NotFound
+from trajectree.repo import DuplicateSlug, NotFound, UnknownProject
 from trajectree.repo._rows import dumps_props, row_to_model, select_row, select_rows, update_fields
 from trajectree.timeutil import to_db, utcnow
 
@@ -67,4 +67,16 @@ def update_project(
         raise DuplicateSlug(str(patch.slug)) from exc
     project = get_project(ledger.conn, project_id)
     assert project is not None
+    return project
+
+
+def unknown_project(conn: apsw.Connection, name: str) -> UnknownProject:
+    known = ", ".join(sorted(p.slug for p in list_projects(conn)))
+    return UnknownProject(f"unknown project '{name}'; known projects: {known}")
+
+
+def resolve_project_ref(conn: apsw.Connection, ref: str) -> Project:
+    project = get_project_by_slug(conn, ref) or get_project(conn, ref)
+    if project is None:
+        raise unknown_project(conn, ref)
     return project
