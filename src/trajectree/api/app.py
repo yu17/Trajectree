@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from importlib.metadata import version
 from pathlib import Path
 
@@ -8,6 +10,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Red
 from fastapi.staticfiles import StaticFiles
 
 from trajectree.api.deps import COOKIE_NAME, require_token, token_matches
+from trajectree.api.mcp_mount import mount_mcp, owner_or_token_resolver
 from trajectree.api.routes_context import router as context_router
 from trajectree.api.routes_entities import router as entities_router
 from trajectree.api.routes_ledger import router as ledger_router
@@ -17,6 +20,7 @@ from trajectree.api.routes_timeline import router as timeline_router
 from trajectree.config import Settings, ensure_token
 from trajectree.db.connection import open_db
 from trajectree.db.ledger import AlreadyReverted, Ledger, RevertConflict
+from trajectree.mcpserver.server import build_mcp
 from trajectree.repo import DuplicateEdge, DuplicateSlug, InvalidRange, NotFound
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -38,10 +42,19 @@ def create_app(settings: Settings, *, ledger: Ledger | None = None) -> FastAPI:
     if ledger is None:
         ledger = Ledger(open_db(settings.db_path))
 
-    app = FastAPI(title="Trajectree")
+    # One MCPServer per app: its session manager's run() can be entered only once.
+    mcp = build_mcp(ledger, settings, resolve=owner_or_token_resolver(ledger, token))
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        async with mcp.session_manager.run():
+            yield
+
+    app = FastAPI(title="Trajectree", lifespan=lifespan)
     app.state.settings = settings
     app.state.ledger = ledger
     app.state.token = token
+    app.state.mcp = mcp
 
     app.add_exception_handler(NotFound, _error_handler(404))
     app.add_exception_handler(DuplicateSlug, _error_handler(409))
@@ -69,6 +82,7 @@ def create_app(settings: Settings, *, ledger: Ledger | None = None) -> FastAPI:
     for router in PROTECTED_ROUTERS:
         api_router.include_router(router)
     app.include_router(api_router)
+    mount_mcp(app, mcp, ledger=ledger, owner_token=token)
 
     index = STATIC_DIR / "index.html"
 
@@ -94,7 +108,7 @@ def create_app(settings: Settings, *, ledger: Ledger | None = None) -> FastAPI:
         def spa_fallback(path: str):
             # Registered before the mount so unknown client-side routes get
             # index.html instead of the mount's 404; real asset files win.
-            if path == "api" or path.startswith("api/"):
+            if any(path == p or path.startswith(p + "/") for p in ("api", "mcp")):
                 raise HTTPException(status_code=404, detail="Not Found")
             candidate = (static_root / path).resolve()
             if candidate.is_file() and candidate.is_relative_to(static_root):

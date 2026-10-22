@@ -42,17 +42,24 @@ def app(settings, ledger):
 
 
 @pytest.fixture
-def client(app):
-    from fastapi.testclient import TestClient
-
-    return TestClient(app, headers={"Authorization": f"Bearer {app.state.token}"})
-
-
-@pytest.fixture
 def anon(app):
     from fastapi.testclient import TestClient
 
-    return TestClient(app)
+    # Context-managed so the app lifespan (the MCP session manager) runs.
+    with TestClient(app) as c:
+        yield c
+
+
+@pytest.fixture
+def client(app, anon):
+    from fastapi.testclient import TestClient
+
+    # The MCP session manager starts once per app and serves only the event loop
+    # its lifespan runs on, so this client sends on anon's portal instead of
+    # entering the lifespan a second time.
+    c = TestClient(app, headers={"Authorization": f"Bearer {app.state.token}"})
+    c.portal = anon.portal
+    yield c
 
 
 @pytest.fixture
