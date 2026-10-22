@@ -9,16 +9,19 @@ from fastapi.staticfiles import StaticFiles
 
 from trajectree.api.deps import COOKIE_NAME, require_token, token_matches
 from trajectree.api.routes_entities import router as entities_router
+from trajectree.api.routes_ledger import router as ledger_router
+from trajectree.api.routes_search import router as search_router
+from trajectree.api.routes_timeline import router as timeline_router
 from trajectree.config import Settings, ensure_token
 from trajectree.db.connection import open_db
-from trajectree.db.ledger import Ledger
+from trajectree.db.ledger import AlreadyReverted, Ledger, RevertConflict
 from trajectree.repo import DuplicateEdge, DuplicateSlug, InvalidRange, NotFound
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 # Plain routers (no prefix, no auth). create_app includes each into a fresh
 # /api router that enforces require_token. Later tasks append theirs here.
-PROTECTED_ROUTERS: list[APIRouter] = [entities_router]
+PROTECTED_ROUTERS: list[APIRouter] = [entities_router, timeline_router, ledger_router, search_router]
 
 
 def _error_handler(status: int):
@@ -42,6 +45,19 @@ def create_app(settings: Settings, *, ledger: Ledger | None = None) -> FastAPI:
     app.add_exception_handler(DuplicateSlug, _error_handler(409))
     app.add_exception_handler(DuplicateEdge, _error_handler(409))
     app.add_exception_handler(InvalidRange, _error_handler(422))
+
+    def revert_conflict(request: Request, exc: Exception) -> JSONResponse:
+        assert isinstance(exc, RevertConflict)
+        return JSONResponse(
+            {"detail": "conflict", "conflicts": [c.model_dump(mode="json") for c in exc.conflicts]},
+            status_code=409,
+        )
+
+    def already_reverted(request: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse({"detail": "already reverted"}, status_code=409)
+
+    app.add_exception_handler(RevertConflict, revert_conflict)
+    app.add_exception_handler(AlreadyReverted, already_reverted)
 
     @app.get("/api/health")
     def health() -> dict:
