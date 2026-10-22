@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
 from urllib.parse import urlencode
 
 import httpx
@@ -73,6 +74,13 @@ def _parser() -> argparse.ArgumentParser:
 
     sub.add_parser("ingest", help="run one ingest pass now")
 
+    init = sub.add_parser("init-project", help="register a folder as a project and install guidance")
+    init.add_argument("path")
+    init.add_argument("--slug")
+    init.add_argument("--title")
+    init.add_argument("--kind", choices=["research", "tooling", "routine", "admin"], default="research")
+    init.add_argument("--no-exclude", action="store_true")
+
     sub.add_parser("mcp", help="run the stdio MCP shim that forwards to the daemon")
     return p
 
@@ -128,8 +136,21 @@ def _when(value: str) -> str:
     return value
 
 
-def _run(args: argparse.Namespace, api: _Api) -> None:
+def _run(
+    args: argparse.Namespace, api: _Api, runner: Callable[[list[str]], Any] | None = None
+) -> None:
     cmd = args.cmd
+    if cmd == "init-project":
+        from trajectree.cli.init_project import init_project
+
+        run = runner or (lambda a: subprocess.run(a, capture_output=True, text=True))
+        code = init_project(
+            api, Path(args.path), slug=args.slug, title=args.title, kind=args.kind,
+            runner=run, out=sys.stdout, no_exclude=args.no_exclude,
+        )
+        if code:
+            raise _Fail("", code)
+        return
     if cmd == "projects":
         for p in api.get("/api/projects"):
             print(f"{p['slug']}  {p['title']}  {p['status']}")
@@ -196,7 +217,11 @@ def _run(args: argparse.Namespace, api: _Api) -> None:
 
 
 def main(
-    argv: list[str], *, client: _Client | None = None, env: Mapping[str, str] | None = None
+    argv: list[str],
+    *,
+    client: _Client | None = None,
+    env: Mapping[str, str] | None = None,
+    runner: Callable[[list[str]], Any] | None = None,
 ) -> int:
     env = os.environ if env is None else env
     try:
@@ -218,9 +243,10 @@ def main(
     owned = client is None
     http: Any = httpx.Client(timeout=30) if owned else client
     try:
-        _run(args, _Api(http, base, token))
+        _run(args, _Api(http, base, token), runner)
     except _Fail as exc:
-        print(str(exc), file=sys.stderr)
+        if str(exc):
+            print(str(exc), file=sys.stderr)
         return exc.code
     except httpx.HTTPError as exc:
         print(f"request failed: {exc}", file=sys.stderr)
