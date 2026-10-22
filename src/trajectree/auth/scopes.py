@@ -15,8 +15,12 @@ class Scope(BaseModel):
             return False
         if self.tools is not None and tool not in self.tools:
             return False
-        if project_id is not None and self.projects is not None and project_id not in self.projects:
-            return False
+        if self.projects is not None:
+            if project_id is None:
+                # a project-less (inbox) row is outside every project scope for writes
+                return not write
+            if project_id not in self.projects:
+                return False
         return True
 
 

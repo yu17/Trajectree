@@ -34,6 +34,8 @@ def test_scope_allows_matrix():
     assert not s.allows("add_todo", "p1", write=True)
     assert s.allows("timeline", None, write=False)
     assert not Scope(write=False).allows("record_event", "p1", write=True)
+    assert not Scope(projects=["p1"]).allows("update_todo", None, write=True)
+    assert Scope(projects=["p1"]).allows("list_projects", None, write=False)
 
 def test_owner_principal():
     p = owner_principal("sess-1")

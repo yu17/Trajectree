@@ -40,7 +40,7 @@ from trajectree.models import (
 from trajectree.repo import DuplicateEdge, NotFound, edges, events, projects, resources, todos
 from trajectree.timeutil import utcnow
 
-NO_PROJECT = "(no project)"
+NO_PROJECT = "inbox"
 
 
 def source_for(actor: Actor) -> Source:
@@ -53,7 +53,8 @@ def source_for(actor: Actor) -> Source:
 
 def _require(principal: Principal, tool: str, project_id: str | None, slug: str) -> None:
     if not principal.scope.allows(tool, project_id, write=True):
-        raise ToolError(f"token not permitted: {tool} on {slug}")
+        where = NO_PROJECT if project_id is None else slug
+        raise ToolError(f"token not permitted: {tool} on {where}")
 
 
 @contextmanager
@@ -61,7 +62,9 @@ def _repo_errors() -> Iterator[None]:
     """Turn repository and validation errors into ToolErrors the model can read."""
     try:
         yield
-    except (NotFound, DuplicateEdge, ValueError) as exc:
+    except NotFound as exc:
+        raise ToolError(f"not found: {exc}") from exc
+    except (DuplicateEdge, ValueError) as exc:
         raise ToolError(str(exc)) from exc
 
 
@@ -73,15 +76,15 @@ def _slug_of(conn: apsw.Connection, project_id: str | None) -> str:
 
 
 def _endpoint_project(conn: apsw.Connection, kind: EntityType, ref: str) -> str | None:
-    """The project an edge endpoint belongs to (a project is its own); NotFound if missing."""
+    """The project an edge endpoint belongs to (a project is its own); ToolError if missing."""
     if kind == "project":
         if projects.get_project(conn, ref) is None:
-            raise NotFound(ref)
+            raise ToolError(f"link: {kind} '{ref}' not found")
         return ref
     getter = {"event": events.get_event, "todo": todos.get_todo, "resource": resources.get_resource}
     entity = getter[kind](conn, ref)
     if entity is None:
-        raise NotFound(ref)
+        raise ToolError(f"link: {kind} '{ref}' not found")
     return entity.project_id
 
 
@@ -104,7 +107,7 @@ def register_write_tools(mcp: MCPServer, deps: ToolDeps) -> None:
             p = resolve_project(conn, project, deps.cwd_of(ctx))
         _require(principal, tool, p.id, p.slug)
         t_start = parse_when(when, utcnow())
-        t_end = parse_when(end, t_start) if end else None
+        t_end = parse_when(end, t_start) if end is not None else None
         with _repo_errors():
             data = EventIn(
                 project_id=p.id,
@@ -162,12 +165,6 @@ def register_write_tools(mcp: MCPServer, deps: ToolDeps) -> None:
         """Change the given fields of an event; omitted fields stay as they are. `intent` is a
         one-line reason recorded in the ledger, and the write lands pending the owner's review."""
         principal = deps.resolve(ctx)
-        with deps.ledger.locked() as conn:
-            current = events.get_event(conn, event_id)
-            if current is None:
-                raise ToolError(str(NotFound(event_id)))
-            slug = _slug_of(conn, current.project_id)
-        _require(principal, "update_event", current.project_id, slug)
         fields: dict[str, object] = {
             k: v
             for k, v in {"title": title, "body_md": body_md, "kind": kind, "status": status}.items()
@@ -177,9 +174,18 @@ def register_write_tools(mcp: MCPServer, deps: ToolDeps) -> None:
             fields["t_start"] = parse_when(when, utcnow())
         if end is not None:
             fields["t_end"] = parse_when(end, utcnow())
-        with _repo_errors():
-            patch = EventPatch(**fields)
-            return events.update_event(deps.ledger, principal.actor, event_id, patch, intent=intent)
+        # one lock across check and write, so the row cannot change project in between
+        with deps.ledger.locked() as conn:
+            current = events.get_event(conn, event_id)
+            if current is None:
+                raise ToolError(f"event '{event_id}' not found")
+            slug = _slug_of(conn, current.project_id)
+            _require(principal, "update_event", current.project_id, slug)
+            with _repo_errors():
+                patch = EventPatch(**fields)
+                return events.update_event(
+                    deps.ledger, principal.actor, event_id, patch, intent=intent
+                )
 
     @mcp.tool()
     async def add_todo(
@@ -219,12 +225,6 @@ def register_write_tools(mcp: MCPServer, deps: ToolDeps) -> None:
         `intent` is a one-line reason recorded in the ledger, and the write lands pending the
         owner's review."""
         principal = deps.resolve(ctx)
-        with deps.ledger.locked() as conn:
-            current = todos.get_todo(conn, todo_id)
-            if current is None:
-                raise ToolError(str(NotFound(todo_id)))
-            slug = _slug_of(conn, current.project_id)
-        _require(principal, "update_todo", current.project_id, slug)
         fields: dict[str, object] = {
             k: v
             for k, v in {
@@ -234,9 +234,18 @@ def register_write_tools(mcp: MCPServer, deps: ToolDeps) -> None:
         }
         if due is not None:
             fields["due"] = parse_when(due, utcnow())
-        with _repo_errors():
-            patch = TodoPatch(**fields)
-            return todos.update_todo(deps.ledger, principal.actor, todo_id, patch, intent=intent)
+        # one lock across check and write, so the row cannot change project in between
+        with deps.ledger.locked() as conn:
+            current = todos.get_todo(conn, todo_id)
+            if current is None:
+                raise ToolError(f"todo '{todo_id}' not found")
+            slug = _slug_of(conn, current.project_id)
+            _require(principal, "update_todo", current.project_id, slug)
+            with _repo_errors():
+                patch = TodoPatch(**fields)
+                return todos.update_todo(
+                    deps.ledger, principal.actor, todo_id, patch, intent=intent
+                )
 
     @mcp.tool()
     async def link(
@@ -251,31 +260,27 @@ def register_write_tools(mcp: MCPServer, deps: ToolDeps) -> None:
         """Link two entities with a relation such as `caused`, `blocks` or `relates`. `intent` is
         a one-line reason recorded in the ledger, and the write lands pending the owner's review."""
         principal = deps.resolve(ctx)
-        with deps.ledger.locked() as conn, _repo_errors():
-            ends = [
-                (pid, _slug_of(conn, pid))
-                for pid in (
-                    _endpoint_project(conn, src_type, src_id),
-                    _endpoint_project(conn, dst_type, dst_id),
+        # one lock across check and write, so an endpoint cannot change project in between
+        with deps.ledger.locked() as conn:
+            for kind, ref in ((src_type, src_id), (dst_type, dst_id)):
+                project_id = _endpoint_project(conn, kind, ref)
+                _require(principal, "link", project_id, _slug_of(conn, project_id))
+            with _repo_errors():
+                data = EdgeIn(
+                    src_type=src_type, src_id=src_id, dst_type=dst_type, dst_id=dst_id, rel=rel
                 )
-            ]
-        for project_id, slug in ends:
-            _require(principal, "link", project_id, slug)
-        with _repo_errors():
-            data = EdgeIn(
-                src_type=src_type, src_id=src_id, dst_type=dst_type, dst_id=dst_id, rel=rel
-            )
-            return edges.create_edge(deps.ledger, principal.actor, data, intent=intent)
+                return edges.create_edge(deps.ledger, principal.actor, data, intent=intent)
 
     @mcp.tool()
     async def unlink(edge_id: str, intent: str, ctx: Context) -> str:
         """Delete an edge (owner sessions only). `intent` is a one-line reason recorded in the
         ledger, and the write lands pending the owner's review."""
         principal = deps.resolve(ctx)
-        if principal.token_id is not None:
-            raise ToolError("unlink is owner-only")
-        with _repo_errors():
-            edges.delete_edge(deps.ledger, principal.actor, edge_id, intent=intent)
+        with deps.ledger.locked():
+            if principal.token_id is not None:
+                raise ToolError("unlink is owner-only")
+            with _repo_errors():
+                edges.delete_edge(deps.ledger, principal.actor, edge_id, intent=intent)
         return f"unlinked {edge_id}"
 
     def _patch_project(

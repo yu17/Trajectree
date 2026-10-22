@@ -3,11 +3,12 @@ import pytest
 from mcp import Client
 from trajectree.auth.scopes import Principal, Scope, owner_principal
 from trajectree.mcpserver.server import build_mcp
-from trajectree.models import Actor, EventIn, ProjectIn, ResourceIn
+from trajectree.models import Actor, EventIn, ProjectIn, ResourceIn, TodoIn
 from trajectree.repo.edges import list_edges
-from trajectree.repo.events import create_event
+from trajectree.repo.events import create_event, get_event
 from trajectree.repo.projects import create_project, get_project
 from trajectree.repo.resources import upsert_resource
+from trajectree.repo.todos import create_todo, get_todo
 
 UTC = timezone.utc
 pytestmark = pytest.mark.anyio
@@ -98,3 +99,48 @@ async def test_todo_round_trip_and_bad_range(ledger, settings, human):
         assert bad.is_error
         missing = await c.call_tool("update_event", {"event_id": "nope", "title": "x", "intent": "i"})
         assert missing.is_error
+
+def scoped(project_ids):
+    return Principal(actor=Actor(kind="agent", ref="run_s", tool="mcp"),
+                     scope=Scope(projects=project_ids), token_id="tok")
+
+async def test_scoped_token_cannot_touch_inbox_todo(ledger, settings, human):
+    a, _ = two_projects(ledger, human)
+    todo = create_todo(ledger, human, TodoIn(project_id=None, title="loose"))
+    n = len(ledger.list_txns())
+    async with Client(build_mcp(ledger, settings, resolve=lambda ctx: scoped([a.id]))) as c:
+        r = await c.call_tool("update_todo", {"todo_id": todo.id, "state": "done", "intent": "i"})
+        assert r.is_error and "not permitted: update_todo on inbox" in r.content[0].text
+    after = get_todo(ledger.conn, todo.id)
+    assert (after.state, after.title) == ("open", "loose") and len(ledger.list_txns()) == n
+
+async def test_link_denied_when_one_endpoint_outside_scope(ledger, settings, human):
+    a, b = two_projects(ledger, human)
+    e1 = create_event(ledger, human, EventIn(project_id=a.id, kind="note", title="1", t_start=datetime(2026, 1, 1, tzinfo=UTC)))
+    e2 = create_event(ledger, human, EventIn(project_id=b.id, kind="note", title="2", t_start=datetime(2026, 1, 2, tzinfo=UTC)))
+    async with Client(build_mcp(ledger, settings, resolve=lambda ctx: scoped([a.id]))) as c:
+        r = await c.call_tool("link", {"src_type": "event", "src_id": e1.id, "dst_type": "event", "dst_id": e2.id, "rel": "caused", "intent": "l"})
+        assert r.is_error and "not permitted: link on b" in r.content[0].text
+    assert list_edges(ledger.conn) == []
+
+async def test_update_event_denied_by_row_project(ledger, settings, human):
+    a, b = two_projects(ledger, human)
+    e = create_event(ledger, human, EventIn(project_id=a.id, kind="note", title="orig", t_start=datetime(2026, 1, 1, tzinfo=UTC)))
+    async with Client(build_mcp(ledger, settings, resolve=lambda ctx: scoped([b.id]))) as c:
+        r = await c.call_tool("update_event", {"event_id": e.id, "title": "changed", "intent": "i"})
+        assert r.is_error and "not permitted: update_event on a" in r.content[0].text
+    assert get_event(ledger.conn, e.id).title == "orig"
+
+async def test_not_found_messages_name_the_entity(ledger, settings, human):
+    a, _ = two_projects(ledger, human)
+    async with Client(owner_mcp(ledger, settings)) as c:
+        r = await c.call_tool("update_event", {"event_id": "nope", "title": "x", "intent": "i"})
+        assert r.is_error and "event 'nope' not found" in r.content[0].text
+        r = await c.call_tool("update_todo", {"todo_id": "nope", "title": "x", "intent": "i"})
+        assert r.is_error and "todo 'nope' not found" in r.content[0].text
+        r = await c.call_tool("link", {"src_type": "event", "src_id": "nope", "dst_type": "project", "dst_id": a.id, "rel": "r", "intent": "i"})
+        assert r.is_error and "link: event 'nope' not found" in r.content[0].text
+        r = await c.call_tool("unlink", {"edge_id": "nope", "intent": "i"})
+        assert r.is_error and "not found: nope" in r.content[0].text
+        r = await c.call_tool("record_event", {"project": "a", "title": "x", "end": "", "intent": "i"})
+        assert r.is_error and "ISO 8601" in r.content[0].text
