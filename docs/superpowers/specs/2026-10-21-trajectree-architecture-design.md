@@ -6,7 +6,7 @@ Date: 2026-10-21. Status: draft for approval. Author: brainstormed with the proj
 
 Trajectree is a self-hosted, single-user tracker for everything a PhD student has in flight: research projects, tooling side projects, recurring routines such as organizing the group meeting, and one-off tasks. It keeps the history of each project, its current status, and suggested next steps, and shows all of it on one horizontal timeline with one lane per project and wires between related blocks across projects.
 
-An LLM agent maintains the record. It runs headless on schedules (nightly digest, weekly review, meeting prep) and on demand (ask a question about selected projects, parse a quick note into structured entries, draft a report). Every change it makes is recorded as a transaction that can be inspected and reverted, so a wrong write is traceable and cheap to undo.
+LLM sessions maintain the record from two sides. The owner's own Claude Code sessions in project folders log decisions, milestones and todos through Trajectree's MCP tools, guided by a short CLAUDE.md section. The daemon runs headless LLM jobs on request: per-project summary regeneration, cross-project reviews, meeting prep, decks, ask, and quick capture. Ingestion from folders, repos, sessions and the cluster is scheduled and needs no LLM. Every LLM write is recorded as a transaction that can be inspected and reverted, so a wrong write is traceable and cheap to undo.
 
 Why this exists: the owner has many concurrent projects and no centralized track record. Existing tools cover pieces (markdown vaults, team PM Gantts, agent-memory layers, Claude Code transcript viewers) but nothing combines self-hosted, LLM-maintained, timeline-first, cross-project links. Research summary in Appendix A.
 
@@ -69,7 +69,8 @@ Components
 - HTTP API and SSE: JSON API used by the web UI, the CLI, and the host-side MCP shim; SSE stream for live updates (new events, run progress, session start/stop).
 - MCP server: the agent's only data access and the integration surface for external LLM sessions and chatmaid. Read tools and write tools are separate; write tools carry an `intent` string that becomes the transaction's intent.
 - Runner: spawns a headless CLI per run with a prompt, a working directory, a tool policy, caps, and a per-run MCP config pointing back at the daemon with a scoped token. Parses the JSON result for text, session id, usage, cost.
-- Scheduler: routines and runs tables in the same database, an asyncio loop with cron expressions, serial execution of LLM runs, retries for infrastructure errors only, manual trigger, caps.
+- Scheduler: routines and runs tables in the same database, an asyncio loop with cron expressions for ingestion and staleness checks; LLM routines run on request by default and may be scheduled; serial execution of scheduled LLM runs, retries for infrastructure errors only, caps.
+- Project-session guidance: a managed CLAUDE.md section plus MCP configuration installed by `trajectree init-project`, so the owner's interactive Claude Code sessions in a project folder record outcomes through the MCP write tools. These sessions are the primary per-project writers.
 - Connectors: pull or receive from one source each and write provenance-tagged signals and resources. Signals feed the activity strip; agent routines condense them into events.
 - Context compiler: builds a token-budgeted markdown context pack for a selection; used by ask, routines, reports, and exported through MCP and CLI.
 - Report builder: drafts Marp-flavored markdown decks and memos from a context pack; editable in the UI; exported to HTML, and to PDF or PPTX when the Chromium layer is present.
@@ -90,7 +91,7 @@ Core tables
 - `report`: id, title, kind (deck, memo), scope JSON (projects, range), source_md, props, created_at, updated_at. Each save is a ledger transaction, so reports are versioned.
 - `routine`: id, name, trigger (a cron expression, or an event kind such as `session_end` with a debounce window), tz, enabled, runner (claude, ccx:<backend>, codex), prompt_ref (a prompt file under /data/prompts or a skill name), scope (projects, lookback days), cwd_mode (project_folder, data_dir), tool_policy (allowed tools list), caps (usd_per_run, turns, usd_per_day), write_mode (direct, propose), delivery (none, inbox, chatmaid), next_fire.
 - `run`: id, routine_id nullable, kind (routine, ask, quick_add, report, summarize), started, finished, status (queued, running, ok, failed, capped, cancelled), runner, backend, model, session_id, tokens_in, tokens_out, tokens_cache, est_usd, turns, duration_ms, txn_ids JSON, result_md, error, log_path.
-- `txn`: id, ts, actor_kind (human, agent, connector), actor_ref (user, run id, connector name), model, backend, tool, tool_version, session_id, run_id nullable, proposed_by_run nullable (set when a human applied a proposal an interactive run produced; model and backend are copied from that run), intent, changeset BLOB, review (none, pending, accepted, rejected), review_ts nullable, reverts_txn nullable, reverted_by nullable.
+- `txn`: id, ts, actor_kind (human, agent, session, connector), actor_ref (user, run id, session id, connector name), model, backend, tool, tool_version, session_id, run_id nullable, proposed_by_run nullable (set when a human applied a proposal an interactive run produced; model and backend are copied from that run), intent, changeset BLOB, review (none, pending, accepted, rejected), review_ts nullable, reverts_txn nullable, reverted_by nullable.
 - `change`: txn_id, table_name, op (insert, update, delete), pk, old JSON, new JSON. Materialized from the changeset at commit time so the UI diff view and search over history do not need to decode blobs.
 - `setting`: key, value JSON (tokens, caps, feature flags).
 
@@ -101,7 +102,7 @@ Derived indexes
 Transactions and revert
 - One ledger call wraps one SQLite transaction with a Session attached to the base tables. On commit the changeset and the materialized change rows are stored with the metadata above. Write MCP tools, API mutations, and CLI commands all go through this call.
 - Revert of transaction T: invert T's changeset, apply with a conflict handler that aborts and reports the conflicting rows, and record the result as a new transaction with `reverts_txn = T`. Later unrelated changes survive. Conflicts surface in the UI instead of being overwritten.
-- Review is per transaction, not per row (my call: one agent action touches several rows, and reject is a revert, which is transaction-level). Transactions by agent actors, and by connectors other than the recurrence materializer, start `pending`; human transactions are `accepted`. The inbox lists pending transactions with their change rows. Accept sets the review fields on the transaction; reject reverts it. The timeline shows the amber dot on a block whose latest touching transaction is pending; the same rule badges todos, edges, resources and summaries.
+- Review is per transaction, not per row (my call: one agent action touches several rows, and reject is a revert, which is transaction-level). Transactions by agent and session actors, and by connectors other than the recurrence materializer, start `pending`; human transactions are `accepted`. The nightly ingestion job writes no ledger transactions. The inbox lists pending transactions with their change rows. Accept sets the review fields on the transaction; reject reverts it. The timeline shows the amber dot on a block whose latest touching transaction is pending; the same rule badges todos, edges, resources and summaries.
 - Agents never get delete or merge tools in v1. Destructive changes are human-only, so "propose" mode for routines reduces to writing a todo in the inbox describing the proposed change.
 - FTS and vector tables are not tracked by the Session extension; after a revert the triggers and the embedding job resync them from base rows.
 
@@ -126,18 +127,25 @@ Usage monitor and caps
 MCP tools (v1)
 - Read: list_projects, get_project, timeline (projects, from, to, kinds), search (FTS, optional vector), list_todos, get_signals (project, from, to), get_context_pack (projects, from, to, token_budget), get_run.
 - Write (each takes `intent`): record_event, update_event, add_todo, update_todo, link (src, dst, rel), unlink, set_project_status, set_project_summary, upsert_resource, save_report_draft, add_note. There is no create_project tool; projects are created by the owner, with connector discovery feeding suggestions to the inbox.
-- Scope: a run-scoped token limits write tools to the routine's projects and write mode. Interactive runs (ask, quick-add, report-draft) get read-only tokens. The owner's token (host shim, chatmaid) has full scope.
+- Scope: a run-scoped token limits write tools to the routine's projects and write mode. Interactive runs ask and quick-add get read-only tokens; regenerate-summary gets a token limited to `set_project_summary` for its project; report-draft gets `save_report_draft` only. The owner's token (host shim, chatmaid) has full scope.
 - External use: host Claude Code sessions reach the same endpoint through a stdio shim command (`trajectree mcp`) that forwards to HTTP with the owner's token, or through a direct streamable-HTTP MCP config. This is how a session in a project folder logs a decision or pulls context for related projects.
 
-Routines (v1 set; prompts live under /data/prompts and are editable)
-- nightly-digest: one run per active project that has new signals since the last run (my call: per-project working directory, per-project caps, and projects with nothing new cost nothing). It reads the daemon's pre-digested view of commits, sessions, file changes and job states, rewrites the project summary through `set_project_summary`, records at most a few events for things that look like decisions or milestones, and adds todos for obvious follow-ups. All of it lands pending. Runner default claude; a cheap backend is acceptable.
-- weekly-review: cross-project; stale projects, overdue todos, suggested next steps as `suggested` events in the future zone; lint for contradictions, orphans, duplicates.
-- meeting-prep: for each routine project whose next planned instance falls within its lead time, draft an agenda from the last two weeks of events across projects; delivery to inbox, later chatmaid.
-- Session summaries: folded into nightly-digest by default (my call: a heavy Claude Code user produces dozens of sessions a day, and one run each would consume the same subscription window the owner is using interactively). The daemon pre-digests each transcript into user prompts, assistant text, tool names and the final message, capped in size, so raw JSONL never enters a prompt. A per-session summarize button in the UI runs one on demand. The `session_end` trigger with a debounce window exists in the routine model for owners who want same-day summaries; it is off by default.
-- On demand: ask (question plus context pack), quick-add (natural language to structured entries), report-draft. These runs are read-only (my call: interactive runs never hold write tokens, and the owner is present to confirm). They return answer text plus structured proposals via the CLI's JSON-schema output; the UI shows proposals with accept buttons, and accepting applies them through the API as a human transaction that records `proposed_by_run`, model and backend, so attribution survives.
+Routines (v1 set; prompts live under /data/prompts and are editable). Owner's decision after the builder check: the daemon's scheduled work is ingestion without an LLM; LLM runs are on request, per project or cross-project.
+- nightly-ingest (no LLM): polls every connector, computes per-project staleness (signals or events newer than the summary beyond a threshold the builder sets), renders each SUMMARY.md status block, and materializes recurrence instances. Cheap enough to run more often than nightly; the cron is configurable.
+- regenerate-summary (interactive, per project, on request from the stale chip, the project page, or the CLI): reads the context pack plus the daemon's pre-digested view of commits, sessions, file changes and job states since the last summary, and rewrites the summary through `set_project_summary`, which lands pending (owner's decision: the owner clicked the button, so this run holds a write token scoped to that one tool and project). Events and todos it spots come back as proposals, like other interactive runs.
+- cross-project-review (daemon-side, on request, optionally scheduled): stale projects, overdue todos, suggested next steps as `suggested` events in the future zone, lint for contradictions, orphans, duplicates. Writes through the MCP tools, pending.
+- meeting-prep (daemon-side, on request, optionally scheduled with a lead time before the next planned instance): drafts an agenda from recent events across projects; delivery to inbox, later chatmaid.
+- report-draft (daemon-side, on request): section 8.
+- Session summaries: a per-session summarize button in the UI runs one on demand; otherwise sessions are covered by regenerate-summary and by project sessions logging their own outcomes (next subsection). The daemon pre-digests each transcript into user prompts, assistant text, tool names and the final message, capped in size, so raw JSONL never enters a prompt. The `session_end` trigger with a debounce window exists in the routine model; it is off by default.
+- ask and quick-add: read-only (my call: interactive runs hold no write tokens beyond the regenerate-summary exception, and the owner is present to confirm). They return answer text plus structured proposals via the CLI's JSON-schema output; the UI shows proposals with accept buttons, and accepting applies them through the API as a human transaction that records `proposed_by_run`, model and backend, so attribution survives.
+
+Project sessions as writers (owner's decision after the builder check)
+- The owner's interactive Claude Code sessions in a project folder are the primary per-project writers. `trajectree init-project <path>` registers the folder as a resource of a project (creating the project if needed), installs a managed, idempotent guidance section delimited by markers (in CLAUDE.md, or as a `.claude/rules/trajectree.md` file; builder's choice, updatable in place), and makes sure the MCP server is configured once at user scope through the stdio shim.
+- The guidance tells a session when to write (a decision taken, a milestone reached, a blocker found, a follow-up owed, a relation to another project noticed), to keep entries short with a stated intent, and to fetch the context pack when the owner asks about related projects. The shim passes its working directory, so write tools default the project from cwd.
+- These writes carry actor_kind `session`, the session id the daemon correlates from its running-session registry (hooks), and the model where known. They start pending like other LLM writes (my call: consistent with direct-write-with-review; the inbox offers bulk accept).
 
 Scheduler
-- Tables above; a loop wakes every 30 seconds, computes next fires from cron expressions and event triggers, enqueues runs. Two execution slots (my call): scheduled routines run serially in one slot, interactive runs (ask, quick-add, report-draft, per-session summarize) run in a second slot so they never wait behind a digest. Caps apply to both. Infrastructure failures retry with backoff up to three times; content failures do not retry. Missed fires run once if within a grace window, else skip. Manual trigger from UI, API, and CLI.
+- Tables above; a loop wakes every 30 seconds, computes next fires from cron expressions and event triggers, enqueues runs. Two execution slots (my call): scheduled or requested cross-project routines run serially in one slot, interactive runs (ask, quick-add, regenerate-summary, report-draft, per-session summarize) run in a second slot so they never wait behind a review. Caps apply to both. Infrastructure failures retry with backoff up to three times; content failures do not retry. Missed fires run once if within a grace window, else skip. Manual trigger from UI, API, and CLI.
 
 ## 7. Connectors
 
@@ -163,7 +171,7 @@ Reports and decks
 ## 9. Web UI
 
 Timeline (lane model A, chosen from the clickable mock)
-- Lanes are projects, ordered by kind then recency, collapsible and pinnable. Lane identity is position and label, not color.
+- Lanes are projects, ordered by kind then recency, collapsible and pinnable. Lane identity is position and label, not color. The lane label carries chips for a running session and for a stale summary; the stale chip opens regenerate-summary.
 - Blocks are curated events. Kind color uses three validated hues (decision blue, meeting orange, milestone aqua); idea and note use a neutral pill shape; task due markers are neutral. The timeline endpoint returns events plus a small list of live sessions for the strip markers; signals never become blocks. Status: happened solid, planned dashed, suggested dotted and italic. Agent writes pending review carry a small amber dot. Text always uses ink tokens, never the kind color. The palette passed the colorblind and contrast validator in light and dark mode; dark mode is a separate validated set, not an inversion.
 - Each lane has a thin activity strip under its blocks, built from signals, binned per day, week, or month depending on zoom, with hover showing the day's digest. Clicking a bin opens its sessions, commits and jobs in the details panel, including the copy-resume-command action for sessions; a running session shows as a live marker at the now line.
 - Semantic zoom on time only: wheel zooms from days to years, drag pans, lane heights are fixed per row count. Row packing per lane with per-block label fallback and viewport culling, as prototyped.
@@ -172,8 +180,8 @@ Timeline (lane model A, chosen from the clickable mock)
 - Details panel on click: title, body, status, kind, project, when, recorded, author (you, agent run with model and routine, or connector), transaction id, wires, and actions (accept, revert transaction, edit, add wire, copy resume command for sessions).
 
 Other views
-- Project page: summary, events list, todos, resources with live status (dirty tree, running session, running jobs), routines touching it.
-- Inbox: unreviewed agent writes, open todos by due date, proposals.
+- Project page: summary with a stale chip and a Regenerate summary button when activity postdates it, events list, todos, resources with live status (dirty tree, running session, running jobs), routines touching it.
+- Inbox: unreviewed LLM writes (agent runs and project sessions) with bulk accept, open todos by due date, proposals.
 - Ledger: transactions newest first with actor, intent, cost, diff view per row, revert button with conflict preview.
 - Routines and usage: schedules, run history, spend charts, caps, pause switch.
 - Reports: list, editor with preview, export buttons.
@@ -183,7 +191,7 @@ Other views
 
 ## 10. CLI
 
-`trajectree` on the host (thin, talks HTTP): `note "..."`, `todo "..."`, `event ...`, `run <routine>`, `revert <txn>`, `context <projects...>`, `mcp` (stdio shim), `login` helper that runs the CLI login inside the container, `backends sync` to copy ccx profiles into the container-private config volume (settings and onboarding files copied, symlinked rules and skills resolved to copies, session stores not copied).
+`trajectree` on the host (thin, talks HTTP): `init-project <path>` (register the folder, install the guidance section, configure MCP), `note "..."`, `todo "..."`, `event ...`, `summarize <project>` (regenerate-summary), `review` (cross-project review), `run <routine>`, `revert <txn>`, `context <projects...>`, `mcp` (stdio shim), `login` helper that runs the CLI login inside the container, `backends sync` to copy ccx profiles into the container-private config volume (settings and onboarding files copied, symlinked rules and skills resolved to copies, session stores not copied).
 
 ## 11. Deployment and security
 
@@ -216,9 +224,9 @@ Other views
 ## 14. Phasing (for the implementation plan)
 
 1. Scaffold, ledger with transactions and revert, HTTP API, minimal timeline with manual events and structured quick capture, Docker image and volumes.
-2. claude-sessions and local-git connectors, activity strip, details panel, ledger view, inbox with review actions.
-3. Runner, MCP server with scoped tokens, nightly-digest and ask, usage page and caps, host shim and hooks.
-4. Folders, GitHub and GitLab, Slurm, weekly-review and meeting-prep, reports and decks, chatmaid contract and inbox delivery.
+2. MCP server with scoped tokens, host shim, init-project guidance, claude-sessions and local-git connectors, nightly-ingest with staleness, activity strip, details panel, ledger view, inbox with review actions.
+3. Runner, regenerate-summary, ask, quick-add proposals, usage page and caps, hooks for live sessions.
+4. Folders, GitHub and GitLab, Slurm, cross-project review and meeting-prep, reports and decks, chatmaid contract and inbox delivery.
 
 ## 15. Builder check outcome
 
@@ -226,12 +234,18 @@ A fresh reviewer read the draft and raised eight questions. All are settled in t
 
 1. Review is per transaction; all agent transactions and non-deterministic connector transactions start pending; badges on rows derive from the latest touching transaction.
 2. Project summaries are agent-authored prose in `project.summary_md`, written through `set_project_summary`, reviewable; SUMMARY.md is rendered by the daemon.
-3. Session summaries are folded into the nightly digest, with daemon-side transcript pre-digestion, a per-session on-demand button, and an off-by-default `session_end` trigger; nightly-digest is one run per project with new signals.
+3. Session summaries: a per-session on-demand button, coverage by regenerate-summary and by project sessions logging their own outcomes, daemon-side transcript pre-digestion, and an off-by-default `session_end` trigger. (This superseded an earlier call that folded summaries into an LLM nightly digest; see the owner's changes below.)
 4. Interactive runs are read-only and return structured proposals the UI applies on confirmation, recording the originating run, model and backend on the transaction.
 5. Routine projects carry an RRULE; a daemon-side materializer creates their planned instances.
 6. Running sessions are strip markers and lane chips, never blocks.
 7. ccx is the owner's own launcher; its contract is in Appendix B.
 8. Two execution slots: scheduled routines serial, interactive runs separate.
+
+Changes requested by the owner after reading the reviewed draft (2026-10-21):
+- The owner's project sessions are the primary per-project writers through the MCP write tools, with guidance installed by `trajectree init-project`.
+- The nightly job is ingestion plus a staleness check with no LLM call.
+- Summary regeneration is an on-request interactive run per project, triggered from the stale chip or the CLI, allowed to write `set_project_summary` directly as pending; other findings come back as proposals.
+- Cross-project reviews, meeting prep and decks stay daemon-side on request.
 
 ## Appendix B: ccx contract (from /mnt/Apps/Projects/ccx, read 2026-10-21)
 
