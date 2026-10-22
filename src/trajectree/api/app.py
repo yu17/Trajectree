@@ -11,6 +11,7 @@ from trajectree.api.deps import COOKIE_NAME, require_token, token_matches
 from trajectree.api.routes_entities import router as entities_router
 from trajectree.api.routes_ledger import router as ledger_router
 from trajectree.api.routes_search import router as search_router
+from trajectree.api.routes_resources import router as resources_router
 from trajectree.api.routes_timeline import router as timeline_router
 from trajectree.config import Settings, ensure_token
 from trajectree.db.connection import open_db
@@ -21,7 +22,7 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 # Plain routers (no prefix, no auth). create_app includes each into a fresh
 # /api router that enforces require_token. Later tasks append theirs here.
-PROTECTED_ROUTERS: list[APIRouter] = [entities_router, timeline_router, ledger_router, search_router]
+PROTECTED_ROUTERS: list[APIRouter] = [entities_router, timeline_router, ledger_router, search_router, resources_router]
 
 
 def _error_handler(status: int):
