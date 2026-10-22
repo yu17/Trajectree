@@ -118,10 +118,19 @@ _V2_STATEMENTS: list[str] = [
     "CREATE TABLE token (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, label TEXT NOT NULL, scope TEXT NOT NULL, actor TEXT NOT NULL, expires_at TEXT, created_at TEXT NOT NULL)",
 ]
 
+_V3_STATEMENTS: list[str] = [
+    "CREATE TABLE run (id TEXT PRIMARY KEY, kind TEXT NOT NULL, project_id TEXT, status TEXT NOT NULL, runner TEXT NOT NULL, backend TEXT NOT NULL, model TEXT, session_id TEXT, started TEXT, finished TEXT, tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0, tokens_cache INTEGER NOT NULL DEFAULT 0, est_usd REAL NOT NULL DEFAULT 0, turns INTEGER NOT NULL DEFAULT 0, duration_ms INTEGER NOT NULL DEFAULT 0, result_md TEXT NOT NULL DEFAULT '', proposals TEXT NOT NULL DEFAULT '[]', error TEXT, log_path TEXT, token_id TEXT, props TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL)",
+    "CREATE INDEX run_created ON run(created_at)",
+    "CREATE INDEX run_status ON run(status)",
+    "CREATE TABLE session (id TEXT PRIMARY KEY, cwd TEXT NOT NULL, project_id TEXT, transcript_path TEXT, backend TEXT NOT NULL DEFAULT 'claude', started_at TEXT NOT NULL, last_seen TEXT NOT NULL, ended_at TEXT, end_reason TEXT, source TEXT)",
+    "CREATE INDEX session_cwd ON session(cwd)",
+]
+
 # Ordered migration steps; a later schema version appends (version, statements).
 MIGRATIONS: list[tuple[int, list[str]]] = [
     (1, _V1_STATEMENTS),
     (2, _V2_STATEMENTS),
+    (3, _V3_STATEMENTS),
 ]
 
 SCHEMA_VERSION: int = MIGRATIONS[-1][0]

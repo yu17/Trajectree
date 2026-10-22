@@ -276,3 +276,85 @@ class Conflict(BaseModel):
     old: dict[str, Any] | None = None
     new: dict[str, Any] | None = None
     conflict_row: dict[str, Any] | None = None
+
+
+# --- phase 3: runs, sessions, caps ------------------------------------------
+
+RunKind = Literal["summarize", "ask", "quick_add"]
+RunStatus = Literal["queued", "running", "ok", "failed", "capped", "cancelled"]
+RUNNER_PATTERN = r"^(claude|codex|ccx:[A-Za-z0-9][A-Za-z0-9._-]*)$"
+ProposalKind = Literal["event", "todo"]
+
+
+class Proposal(BaseModel):
+    kind: ProposalKind
+    project: str
+    title: str
+    reason: str
+    event_kind: str = "note"
+    when: str | None = None
+    due: str | None = None
+    body_md: str = ""
+    status: Literal["happened", "planned", "suggested"] = "happened"
+    applied_txn: str | None = None
+    applied_id: str | None = None
+
+
+class Run(BaseModel):
+    id: str
+    kind: RunKind
+    project_id: str | None
+    status: RunStatus
+    runner: str = Field(pattern=RUNNER_PATTERN)
+    backend: str
+    model: str | None
+    session_id: str | None
+    started: AwareDatetime | None
+    finished: AwareDatetime | None
+    tokens_in: int = 0
+    tokens_out: int = 0
+    tokens_cache: int = 0
+    est_usd: float = 0.0
+    turns: int = 0
+    duration_ms: int = 0
+    result_md: str = ""
+    proposals: list[Proposal] = Field(default_factory=list)
+    error: str | None = None
+    log_path: str | None = None
+    token_id: str | None = None
+    props: dict[str, Any] = Field(default_factory=dict)
+    created_at: AwareDatetime
+
+
+class SessionRow(BaseModel):
+    id: str
+    cwd: str
+    project_id: str | None
+    transcript_path: str | None
+    backend: str = "claude"
+    started_at: AwareDatetime
+    last_seen: AwareDatetime
+    ended_at: AwareDatetime | None = None
+    end_reason: str | None = None
+    source: str | None = None
+
+
+class Caps(BaseModel):
+    usd_per_run: float = Field(1.0, gt=0, le=100)
+    usd_per_day: float = Field(5.0, gt=0, le=1000)
+    timeout_s: int = Field(600, ge=1, le=7200)
+    paused: bool = False
+
+
+class UsageDay(BaseModel):
+    day: str
+    est_usd: float
+    runs: int
+    tokens_in: int
+    tokens_out: int
+
+
+class UsageSlice(BaseModel):
+    key: str
+    est_usd: float
+    runs: int

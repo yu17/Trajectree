@@ -185,6 +185,7 @@ class Ledger:
         before: str | None = None,
         review: str | None = None,
         actor_kinds: list[str] | None = None,
+        run_id: str | None = None,
     ) -> list[Txn]:
         """Transactions newest first; `before` pages to ids older than the given one.
 
@@ -201,6 +202,9 @@ class Ledger:
         if actor_kinds is not None:
             clauses.append(f"actor_kind IN ({', '.join('?' * len(actor_kinds))})" if actor_kinds else "0")
             params.extend(actor_kinds)
+        if run_id is not None:
+            clauses.append("run_id = ?")
+            params.append(run_id)
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._lock:
             rows = self.conn.execute(
