@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from trajectree.models import ProjectIn, ProjectPatch, SignalIn
 from trajectree.repo.projects import create_project, update_project
-from trajectree.repo.signals import list_signals, stale_projects, strip_bins, upsert_signals
+from trajectree.repo.signals import latest_signals, list_signals, stale_projects, strip_bins, upsert_signals
 from trajectree.repo.state import get_state, set_state
 from trajectree.timeutil import utcnow
 
@@ -60,3 +60,9 @@ def test_summary_write_stamps_summary_at(ledger, human):
     assert p2.summary_at is not None
     p3 = update_project(ledger, human, p.id, ProjectPatch(title="A2"))
     assert p3.summary_at == p2.summary_at
+
+
+def test_latest_signals_returns_newest_in_ascending_order(conn):
+    upsert_signals(conn, [sig("p1", d) for d in range(1, 13)])
+    rows = latest_signals(conn, project_id="p1", t_from=None, t_to=None, n=10)
+    assert len(rows) == 10 and rows[0].t_start.day == 3 and rows[-1].t_start.day == 12

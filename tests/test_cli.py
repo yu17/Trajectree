@@ -64,3 +64,8 @@ def test_cli_context_prints_pack(app, client, anon, capsys):
     assert main(["context", "clmi", "--days", "30"], client=anon, env=env_for(app)) == 0
     out = capsys.readouterr().out
     assert out.startswith("# Trajectree context") and "hello" in out
+
+
+def test_cli_context_rejects_bad_budget(app, anon, capsys):
+    assert main(["context", "clmi", "--budget", "5"], client=anon, env=env_for(app)) == 2
+    assert "invalid budget" in capsys.readouterr().err

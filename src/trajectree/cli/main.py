@@ -164,6 +164,8 @@ def _run(args: argparse.Namespace, api: _Api) -> None:
     elif cmd == "revert":
         print(api.post(f"/api/ledger/txns/{args.txn_id}/revert", {})["id"])
     elif cmd == "context":
+        if not 200 <= args.budget <= 100000:
+            raise _Fail("invalid budget: must be between 200 and 100000", 2)
         now = utcnow()
         query = {
             "projects": ",".join(args.projects),

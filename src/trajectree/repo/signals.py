@@ -78,6 +78,28 @@ def list_signals(
     return out
 
 
+def latest_signals(
+    conn: apsw.Connection,
+    *,
+    project_id: str,
+    t_from: datetime | None,
+    t_to: datetime | None,
+    n: int,
+) -> list[Signal]:
+    """The newest `n` signals of one project in the window, returned oldest first."""
+    where, params = _where([project_id], t_from, t_to)
+    cols = table_columns(conn, "signal")
+    sql = f"SELECT {', '.join(cols)} FROM signal WHERE {' AND '.join(where)}"
+    sql += " ORDER BY t_start DESC, id DESC LIMIT ?"
+    out = []
+    for row in conn.execute(sql, [*params, n]):
+        data = dict(zip(cols, row))
+        data["payload"] = json.loads(data["payload"])
+        out.append(Signal.model_validate(data))
+    out.reverse()
+    return out
+
+
 def strip_bins(
     conn: apsw.Connection,
     *,

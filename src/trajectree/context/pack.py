@@ -23,6 +23,7 @@ HEADINGS = {
 OPEN_STATES = ["open", "doing"]
 ACTIVITY_LINES = 10
 HIT_LINES = 20
+MIN_BUDGET = 200
 
 
 class ContextPack(BaseModel):
@@ -93,7 +94,9 @@ def project_section(
     conn: apsw.Connection, p: Project, share: int, t_from: datetime, t_to: datetime
 ) -> tuple[str, list[str]]:
     caps = {name: share * pct // 100 for name, pct in SHARES.items()}
-    recent = signals.list_signals(conn, project_ids=[p.id], t_from=t_from, t_to=t_to)
+    recent = signals.latest_signals(
+        conn, project_id=p.id, t_from=t_from, t_to=t_to, n=ACTIVITY_LINES
+    )
     bodies = {
         "summary": summary_body(p.summary_md, caps["summary"]),
         "events": newest_body(
@@ -108,7 +111,7 @@ def project_section(
             [resource_line(r) for r in resources.list_resources(conn, project_ids=[p.id])],
             caps["resources"],
         ),
-        "activity": newest_body([activity_line(s) for s in recent[-ACTIVITY_LINES:]], caps["activity"]),
+        "activity": newest_body([activity_line(s) for s in recent], caps["activity"]),
     }
     parts = [f"## {p.title} ({p.slug}) — {p.status}"]
     dropped: list[str] = []
@@ -136,6 +139,8 @@ def build_context_pack(
     token_budget: int = 4000,
     question: str | None = None,
 ) -> ContextPack:
+    if token_budget < MIN_BUDGET:
+        raise ValueError(f"token_budget must be at least {MIN_BUDGET}")
     found = [p for p in (projects.get_project(conn, pid) for pid in project_ids) if p is not None]
     share = token_budget * CHARS_PER_TOKEN // max(1, len(project_ids))
     blocks = [f"# Trajectree context ({_day(t_from)} to {_day(t_to)})"]

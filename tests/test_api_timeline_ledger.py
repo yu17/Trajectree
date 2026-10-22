@@ -84,3 +84,5 @@ def test_context_route(client):
     p, e = seed(client)
     r = client.get("/api/context", params={"projects": p["slug"], "from": "2026-01-01T00:00:00Z", "to": "2026-02-01T00:00:00Z"})
     assert r.status_code == 200 and "Freeze" in r.json()["markdown"]
+    assert client.get("/api/context", params={"projects": "ghost"}).status_code == 404
+    assert client.get("/api/context", params={"projects": p["slug"], "budget": 5}).status_code == 422

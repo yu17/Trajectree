@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from typing import Annotated
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from trajectree.context.pack import ContextPack, build_context_pack
 from trajectree.db import fts
@@ -118,7 +119,7 @@ def register_read_tools(mcp: MCPServer, deps: ToolDeps) -> None:
         projects: list[str] | None = None,
         start: str | None = None,
         end: str | None = None,
-        token_budget: int = 4000,
+        token_budget: Annotated[int, Field(ge=200, le=100_000)] = 4000,
         question: str | None = None,
     ) -> ContextPack:
         """Return a token-budgeted markdown digest (summary, events, open todos, resources, recent
