@@ -1,0 +1,199 @@
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Mapping, Protocol
+
+import httpx
+
+from trajectree.timeutil import to_db, utcnow
+
+DEFAULT_URL = "http://127.0.0.1:8742"
+
+
+class _Client(Protocol):
+    def get(self, url: str, **kwargs: Any) -> Any: ...
+
+    def post(self, url: str, **kwargs: Any) -> Any: ...
+
+
+class _Fail(Exception):
+    def __init__(self, message: str, code: int = 1) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def _parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="trajectree")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("projects", help="list projects")
+
+    proj = sub.add_parser("project", help="project commands")
+    proj_sub = proj.add_subparsers(dest="sub", required=True)
+    add = proj_sub.add_parser("add", help="create a project")
+    add.add_argument("slug")
+    add.add_argument("title")
+    add.add_argument("--kind", required=True)
+
+    ev = sub.add_parser("event", help="create an event")
+    ev.add_argument("project")
+    ev.add_argument("title")
+    ev.add_argument("--kind", default="note")
+    ev.add_argument("--at", default="now")
+    ev.add_argument("--end")
+    ev.add_argument("--status", default="happened")
+    ev.add_argument("--body", default="")
+    ev.add_argument("--intent")
+
+    todo = sub.add_parser("todo", help="create a todo ('-' for no project)")
+    todo.add_argument("project")
+    todo.add_argument("title")
+    todo.add_argument("--due")
+
+    note = sub.add_parser("note", help="create a note event at now")
+    note.add_argument("project")
+    note.add_argument("text")
+
+    rev = sub.add_parser("revert", help="revert a transaction")
+    rev.add_argument("txn_id")
+
+    txns = sub.add_parser("txns", help="list recent transactions")
+    txns.add_argument("--limit", type=int, default=20)
+    return p
+
+
+def _token(env: Mapping[str, str]) -> str | None:
+    token = env.get("TRAJECTREE_TOKEN")
+    if token:
+        return token.strip()
+    home = env.get("HOME") if env is not os.environ else None
+    base = Path(home) if home else Path.home()
+    path = base / ".config" / "trajectree" / "token"
+    try:
+        return path.read_text().strip() or None
+    except OSError:
+        return None
+
+
+class _Api:
+    def __init__(self, client: _Client, base: str, token: str) -> None:
+        self.client = client
+        self.base = base.rstrip("/")
+        self.headers = {"Authorization": f"Bearer {token}", "X-Trajectree-Client": "cli"}
+
+    def _handle(self, resp: Any) -> Any:
+        if resp.status_code >= 400:
+            try:
+                detail = resp.json().get("detail", resp.text)
+            except Exception:
+                detail = getattr(resp, "text", "") or f"HTTP {resp.status_code}"
+            raise _Fail(str(detail))
+        return resp.json()
+
+    def get(self, path: str) -> Any:
+        return self._handle(self.client.get(self.base + path, headers=self.headers))
+
+    def post(self, path: str, body: dict[str, Any]) -> Any:
+        return self._handle(self.client.post(self.base + path, json=body, headers=self.headers))
+
+    def project_id(self, slug: str) -> str:
+        for p in self.get("/api/projects"):
+            if p["slug"] == slug:
+                return p["id"]
+        raise _Fail(f"unknown project: {slug}")
+
+
+def _when(value: str) -> str:
+    if value == "now":
+        return to_db(utcnow())
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise _Fail(f"invalid datetime: {value}", 2)
+    return value
+
+
+def _run(args: argparse.Namespace, api: _Api) -> None:
+    cmd = args.cmd
+    if cmd == "projects":
+        for p in api.get("/api/projects"):
+            print(f"{p['slug']}  {p['title']}  {p['status']}")
+    elif cmd == "project":
+        created = api.post(
+            "/api/projects", {"slug": args.slug, "title": args.title, "kind": args.kind}
+        )
+        print(created["id"])
+    elif cmd in ("event", "note"):
+        pid = api.project_id(args.project)
+        if cmd == "note":
+            body: dict[str, Any] = {
+                "project_id": pid, "kind": "note", "title": args.text, "t_start": _when("now"),
+            }
+        else:
+            body = {
+                "project_id": pid,
+                "kind": args.kind,
+                "title": args.title,
+                "body_md": args.body,
+                "t_start": _when(args.at),
+                "status": args.status,
+            }
+            if args.end:
+                body["t_end"] = _when(args.end)
+            if args.intent:
+                body["intent"] = args.intent
+        print(api.post("/api/events", body)["id"])
+    elif cmd == "todo":
+        body = {"title": args.title}
+        if args.project != "-":
+            body["project_id"] = api.project_id(args.project)
+        if args.due:
+            body["due"] = _when(args.due)
+        print(api.post("/api/todos", body)["id"])
+    elif cmd == "revert":
+        print(api.post(f"/api/ledger/txns/{args.txn_id}/revert", {})["id"])
+    elif cmd == "txns":
+        for t in api.get(f"/api/ledger/txns?limit={args.limit}"):
+            print(
+                f"{t['id']}  {t['ts']}  {t['actor_kind']}/{t['actor_ref']}  {t['review']}  {t['intent']}"
+            )
+
+
+def main(
+    argv: list[str], *, client: _Client | None = None, env: Mapping[str, str] | None = None
+) -> int:
+    env = os.environ if env is None else env
+    try:
+        args = _parser().parse_args(argv)
+    except SystemExit as exc:
+        return exc.code if isinstance(exc.code, int) else 2
+    token = _token(env)
+    if token is None:
+        print(
+            "no token: set TRAJECTREE_TOKEN or write it to ~/.config/trajectree/token",
+            file=sys.stderr,
+        )
+        return 2
+    base = env.get("TRAJECTREE_URL", DEFAULT_URL)
+    owned = client is None
+    http: Any = httpx.Client(timeout=30) if owned else client
+    try:
+        _run(args, _Api(http, base, token))
+    except _Fail as exc:
+        print(str(exc), file=sys.stderr)
+        return exc.code
+    except httpx.HTTPError as exc:
+        print(f"request failed: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        if owned:
+            http.close()
+    return 0
+
+
+def entry() -> None:
+    sys.exit(main(sys.argv[1:]))
