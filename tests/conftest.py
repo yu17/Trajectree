@@ -31,7 +31,10 @@ def agent():
 def settings(tmp_path):
     from trajectree.config import Settings
 
-    return Settings(data_dir=tmp_path / "data")
+    # Null the transcript roots so no test ever reads the developer's real ~/.claude.
+    return Settings(
+        data_dir=tmp_path / "data", claude_home=None, backends_root=None, ingest_interval_s=0
+    )
 
 
 @pytest.fixture
