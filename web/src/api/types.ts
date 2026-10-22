@@ -129,11 +129,12 @@ export interface Signal {
   updated_at: string;
 }
 
-// One day's signal count for a project lane's activity strip; `day` is "YYYY-MM-DD".
+// One day's activity for a project lane's activity strip; `day` is "YYYY-MM-DD".
 export interface StripBin {
   project_id: string;
   day: string;
   kind: SignalKind;
+  // commits for the commits kind; signals otherwise
   count: number;
 }
 

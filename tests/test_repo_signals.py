@@ -33,6 +33,13 @@ def test_strip_bins_group_by_day_and_kind(conn):
     assert all(b.day == "2026-01-05" and b.project_id == "p1" for b in bins)
     assert len(strip_bins(conn, project_ids=None, t_from=datetime(2026, 1, 1, tzinfo=UTC), t_to=datetime(2026, 2, 1, tzinfo=UTC))) == 3
 
+def test_strip_bins_sum_commit_counts(conn):
+    a = sig("p1", 5, kind="commits", key="git:r1:2026-01-05").model_copy(update={"payload": {"count": 5}})
+    b = sig("p1", 5, kind="commits", key="git:r2:2026-01-05", hour=15).model_copy(update={"payload": {"count": 3}})
+    upsert_signals(conn, [a, b])
+    bins = strip_bins(conn, project_ids=["p1"], t_from=datetime(2026, 1, 1, tzinfo=UTC), t_to=datetime(2026, 2, 1, tzinfo=UTC))
+    assert [(b.day, b.kind, b.count) for b in bins] == [("2026-01-05", "commits", 8)]
+
 def test_state_round_trip(conn):
     assert get_state(conn, "k") is None
     set_state(conn, "k", {"offset": 10})

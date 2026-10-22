@@ -15,7 +15,7 @@ def test_timeline_includes_strip_live_and_stale(client, app):
     set_state(conn, "live_sessions", [{"project_id": p["id"], "session_id": "x", "cwd": "/c", "title": None, "started": None, "last_seen": "2026-01-05T12:00:00Z"},
                                       {"project_id": "other", "session_id": "y", "cwd": "/d", "title": None, "started": None, "last_seen": "2026-01-05T12:00:00Z"}])
     tl = client.get("/api/timeline", params={"from": "2026-01-01T00:00:00Z", "to": "2026-02-01T00:00:00Z"}).json()
-    assert sorted((b["kind"], b["count"]) for b in tl["strip"]) == [("commits", 1), ("session", 1)]
+    assert sorted((b["kind"], b["count"]) for b in tl["strip"]) == [("commits", 3), ("session", 1)]  # commits bins sum payload counts
     assert tl["stale"] == [p["id"]] and [l["session_id"] for l in tl["live"]] == ["x"]
 
 def test_signals_route_filters_and_limits(client, app):

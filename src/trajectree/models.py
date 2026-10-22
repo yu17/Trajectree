@@ -220,7 +220,9 @@ class StripBin(BaseModel):
     project_id: str
     day: str
     kind: SignalKind
-    count: int
+    count: int = Field(
+        description="Commits for the commits kind (summed from payload counts); signals otherwise"
+    )
 
 
 class Edge(BaseModel):

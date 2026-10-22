@@ -107,8 +107,14 @@ def strip_bins(
     t_from: datetime,
     t_to: datetime,
 ) -> list[StripBin]:
+    """Per (project, UTC day, kind) counts: commits for `commits` signals, signals otherwise."""
     where, params = _where(project_ids, t_from, t_to)
-    sql = "SELECT project_id, substr(t_start, 1, 10) AS day, kind, count(*) FROM signal"
+    sql = (
+        "SELECT project_id, substr(t_start, 1, 10) AS day, kind,"
+        " CASE WHEN kind = 'commits' THEN SUM(COALESCE(json_extract(payload, '$.count'), 1))"
+        " ELSE COUNT(*) END"
+        " FROM signal"
+    )
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " GROUP BY project_id, day, kind ORDER BY day, project_id, kind"

@@ -76,7 +76,10 @@ and `TRAJECTREE_BACKENDS_ROOT`, and the git history of each project's
 `git_local` resources. A transcript is attached to the project whose resource
 locator equals the transcript's `cwd` (a host path).
 
-- `TRAJECTREE_INGEST_EVERY` sets the loop period in seconds (900; 0 disables).
+- `TRAJECTREE_INGEST_EVERY` sets the loop period in seconds (300; 0 disables).
+- The live marker is derived at scan time, so `TRAJECTREE_LIVE_WINDOW` must be
+  at least `TRAJECTREE_INGEST_EVERY` plus a margin, otherwise running sessions
+  are missed between scans.
 - In Docker, the git connector reads the repositories through
   `TRAJECTREE_PATH_MAP`, which compose sets to
   `$TRAJECTREE_PROJECTS_ROOT=/projects`: host paths under that root are read
@@ -94,8 +97,8 @@ locator equals the transcript's `cwd` (a host path).
 | `TRAJECTREE_CLAUDE_HOME` | `~/.claude` if it exists (`/host/claude` in Docker) | Claude Code home to scan for transcripts; empty string disables |
 | `TRAJECTREE_BACKENDS_ROOT` | `~/.config/claude-backends` if it exists (`/host/claude-backends` in Docker) | Extra Claude homes to scan; empty string disables |
 | `TRAJECTREE_PATH_MAP` | none | `host=container;host2=container2`: where host paths live in the container |
-| `TRAJECTREE_INGEST_EVERY` | `900` | Seconds between ingest passes; `0` disables the loop |
-| `TRAJECTREE_LIVE_WINDOW` | `600` | Seconds since the last transcript activity during which a session counts as live |
+| `TRAJECTREE_INGEST_EVERY` | `300` | Seconds between ingest passes; `0` disables the loop |
+| `TRAJECTREE_LIVE_WINDOW` | `900` | Seconds since the last transcript activity during which a session counts as live |
 | `TRAJECTREE_STALE_SETTLE_H` | `24` | Hours after a project's first activity since its last summary before it is flagged stale (summary due) |
 | `TRAJECTREE_SCAN_SINCE_DAYS` | `365` | Ignore transcripts and commits older than this many days |
 | `TRAJECTREE_PROJECTS_ROOT` | none (required by compose) | Host folder mounted read-only at `/projects`; used by compose only |

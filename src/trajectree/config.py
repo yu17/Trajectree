@@ -14,8 +14,8 @@ class Settings(BaseModel):
     claude_home: Path | None = None
     backends_root: Path | None = None
     path_map: list[tuple[str, str]] = []
-    ingest_interval_s: int = 900
-    live_window_s: int = 600
+    ingest_interval_s: int = 300
+    live_window_s: int = 900
     stale_settle_h: int = 24
     scan_since_days: int = 365
 

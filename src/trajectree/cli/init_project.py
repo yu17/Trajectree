@@ -29,8 +29,20 @@ def _git_dir(path: Path) -> Path | None:
     return path / first[7:].strip()  # an absolute pointer replaces the base
 
 
-def _add_exclude(git_dir: Path) -> None:
-    exclude = git_dir / "info" / "exclude"
+def _exclude_file(git_dir: Path) -> Path:
+    """`info/exclude` of the common dir: a linked worktree's gitdir names it in `commondir`."""
+    commondir = git_dir / "commondir"
+    if commondir.is_file():
+        try:
+            first = commondir.read_text(encoding="utf-8").splitlines()[0].strip()
+        except (UnicodeDecodeError, IndexError):
+            first = ""
+        if first:
+            return git_dir / first / "info" / "exclude"  # an absolute path replaces the base
+    return git_dir / "info" / "exclude"
+
+
+def _add_exclude(exclude: Path) -> None:
     exclude.parent.mkdir(parents=True, exist_ok=True)
     existing = exclude.read_text() if exclude.exists() else ""
     if EXCLUDE_LINE in existing.splitlines():
@@ -101,8 +113,9 @@ def init_project(
             if git_dir is None:
                 note = " (exclude skipped: unreadable .git pointer)"
             else:
-                target = git_dir / "info" / "exclude"
-                _add_exclude(git_dir)
+                target = git_dir / "commondir"  # named in the error if reading it fails
+                target = _exclude_file(git_dir)
+                _add_exclude(target)
     except OSError as exc:
         print(
             f"cannot write {target}: {exc} (project and resources were registered)",

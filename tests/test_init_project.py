@@ -58,6 +58,7 @@ def test_init_project_twice_is_idempotent(tmp_path, client, app, capsys):
     assert len(client.get("/api/projects").json()) == 1 and len(client.get("/api/resources").json()) == 2
     assert (repo / ".git" / "info" / "exclude").read_text().count(".claude/rules/trajectree.md") == 1
     assert (repo / ".claude" / "rules" / "trajectree.md").read_text() != "edited"
+    assert (repo / ".claude" / "rules" / "trajectree.md").read_text().startswith("<!-- managed by trajectree init-project; edits are overwritten -->")
     assert fake.calls[-1] == ["claude", "mcp", "get", "trajectree"]
 
 
@@ -109,3 +110,22 @@ def test_init_project_handles_git_file_pointer(tmp_path, client, app, capsys):
     assert len(out) == 4 and out[1] == "resources: folder, git_local"
     assert (gitdir / "info" / "exclude").read_text().count(".claude/rules/trajectree.md") == 1
     assert "git_local" in {r["kind"] for r in client.get("/api/resources").json()}
+
+
+def test_init_project_worktree_exclude_goes_to_common_dir(tmp_path, client, app, capsys):
+    common = tmp_path / "main" / ".git"
+    gitdir = common / "worktrees" / "wt"
+    gitdir.mkdir(parents=True)
+    (gitdir / "commondir").write_text("../..\n")
+    folder = tmp_path / "wt"
+    folder.mkdir()
+    (folder / ".git").write_text(f"gitdir: {gitdir}\n")
+    assert main(["init-project", str(folder)], client=client, env=env_for(app), runner=FakeClaude()) == 0
+    assert (common / "info" / "exclude").read_text().count(".claude/rules/trajectree.md") == 1
+    assert not (gitdir / "info" / "exclude").exists()
+    # an absolute commondir works too
+    other = tmp_path / "other-common"
+    other.mkdir()
+    (gitdir / "commondir").write_text(f"{other}\n")
+    assert main(["init-project", str(folder)], client=client, env=env_for(app), runner=FakeClaude()) == 0
+    assert (other / "info" / "exclude").read_text().count(".claude/rules/trajectree.md") == 1
