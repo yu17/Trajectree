@@ -47,3 +47,15 @@ async def test_get_context_pack_tool(ledger, settings, human):
     async with Client(mcp) as c:
         r = await c.call_tool("get_context_pack", {"projects": ["a"], "start": "2026-01-01T00:00:00Z", "end": "2026-02-01T00:00:00Z"})
         assert r.structured_content["markdown"].startswith("# Trajectree context") and r.structured_content["projects"] == ["a"]
+
+
+def test_budget_cut_keeps_newest_events(ledger, human):
+    p = seed(ledger, human, n_events=200)
+    pack = build_context_pack(ledger.conn, project_ids=[p.id], t_from=FROM, t_to=TO, token_budget=600)
+    md = pack.markdown
+    assert "Event 199 (" in md and "Event 0 (" not in md
+    section = md.split("### Events\n")[1].split("\n\n")[0]
+    lines = [l for l in section.splitlines() if l.startswith("- ")]
+    dates = [l.split()[1] for l in lines]
+    nums = [int(l.split("] Event ")[1].split(" ")[0]) for l in lines]
+    assert dates == sorted(dates) and nums == sorted(nums) and nums[-1] == 199

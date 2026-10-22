@@ -61,6 +61,15 @@ def list_body(lines: list[str], cap: int) -> tuple[str, int]:
     return "\n".join(kept), n
 
 
+def newest_body(lines: list[str], cap: int) -> tuple[str, int]:
+    """Oldest-first `lines`: the newest that fit stay, in order, after a leading drop marker."""
+    kept, n = cut_lines(lines[::-1], cap)
+    kept.reverse()
+    if n:
+        kept.insert(0, f"(dropped {n} more)")
+    return "\n".join(kept), n
+
+
 def event_line(e: Event) -> str:
     return f"- {_day(e.t_start)} [{e.kind}/{e.status}] {e.title} ({e.id})"
 
@@ -87,7 +96,7 @@ def project_section(
     recent = signals.list_signals(conn, project_ids=[p.id], t_from=t_from, t_to=t_to)
     bodies = {
         "summary": summary_body(p.summary_md, caps["summary"]),
-        "events": list_body(
+        "events": newest_body(
             [event_line(e) for e in events.list_events(conn, project_ids=[p.id], t_from=t_from, t_to=t_to)],
             caps["events"],
         ),
@@ -99,7 +108,7 @@ def project_section(
             [resource_line(r) for r in resources.list_resources(conn, project_ids=[p.id])],
             caps["resources"],
         ),
-        "activity": list_body([activity_line(s) for s in recent[-ACTIVITY_LINES:]], caps["activity"]),
+        "activity": newest_body([activity_line(s) for s in recent[-ACTIVITY_LINES:]], caps["activity"]),
     }
     parts = [f"## {p.title} ({p.slug}) — {p.status}"]
     dropped: list[str] = []
