@@ -195,7 +195,10 @@ export function renderTimeline(
   }
   const selEvent = selected?.type === "event" ? selected.id : null;
   const selTodo = selected?.type === "todo" ? selected.id : null;
-  const focus = hovered ?? selEvent;
+  // A hovered block that has since left the view must not keep the focus or the tooltip.
+  const hoverLive = hovered !== null && pos.has(hovered) ? hovered : null;
+  if (hovered !== null && hoverLive === null) hideTip();
+  const focus = hoverLive ?? selEvent;
   const visEdges = data.edges.filter(e =>
     e.src_type === "event" && e.dst_type === "event" && pos.has(e.src_id) && pos.has(e.dst_id)
     && (showAllWires || e.src_id === focus || e.dst_id === focus));

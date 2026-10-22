@@ -149,6 +149,7 @@ export interface EventIn {
   status?: EventStatus;
   source?: Source;
   props?: Record<string, unknown>;
+  intent?: string;
 }
 
 export interface TodoIn {
@@ -159,6 +160,7 @@ export interface TodoIn {
   state?: TodoState;
   priority?: number;
   props?: Record<string, unknown>;
+  intent?: string;
 }
 
 export interface EdgeIn {
