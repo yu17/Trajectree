@@ -27,3 +27,22 @@ def test_token_file_created_with_mode_600(settings):
 
     t = ensure_token(settings)
     assert len(t) >= 43 and oct(settings.token_path.stat().st_mode)[-3:] == "600"
+
+
+def test_two_apps_do_not_duplicate_routes(settings, ledger):
+    from trajectree.api.app import create_app
+
+    first = create_app(settings, ledger=ledger)
+    second = create_app(settings, ledger=ledger)
+    assert len(second.routes) == len(first.routes)
+    assert list(second.openapi()["paths"]).count("/api/projects") == 1
+
+
+def test_empty_static_dir_is_not_mounted(settings, ledger, tmp_path, monkeypatch):
+    from trajectree.api import app as app_module
+
+    empty = tmp_path / "static"
+    empty.mkdir()
+    monkeypatch.setattr(app_module, "STATIC_DIR", empty)
+    built = app_module.create_app(settings, ledger=ledger)
+    assert not any(getattr(r, "name", "") == "static" for r in built.routes)

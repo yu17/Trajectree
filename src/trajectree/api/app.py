@@ -14,18 +14,18 @@ from trajectree.db.ledger import Ledger
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
-# Every protected /api route lives on this router (auth is applied once here).
-# Later tasks: build a module-level `router = APIRouter()` of plain routes and
-# call `api_router.include_router(router)` below (see PROTECTED_ROUTERS).
-api_router = APIRouter(prefix="/api", dependencies=[Depends(require_token)])
+# Later tasks: write a module-level `router = APIRouter()` of plain routes (no
+# prefix, no auth) and append it to PROTECTED_ROUTERS. create_app includes each
+# into a fresh /api router that enforces require_token.
+_placeholder = APIRouter()
 
 
-@api_router.get("/projects")
+@_placeholder.get("/projects")
 def list_projects_placeholder() -> list:
     return []  # replaced in Task 10
 
 
-PROTECTED_ROUTERS: list[APIRouter] = []
+PROTECTED_ROUTERS: list[APIRouter] = [_placeholder]
 
 
 def create_app(settings: Settings, *, ledger: Ledger | None = None) -> FastAPI:
@@ -42,6 +42,7 @@ def create_app(settings: Settings, *, ledger: Ledger | None = None) -> FastAPI:
     def health() -> dict:
         return {"ok": True, "version": version("trajectree")}
 
+    api_router = APIRouter(prefix="/api", dependencies=[Depends(require_token)])
     for router in PROTECTED_ROUTERS:
         api_router.include_router(router)
     app.include_router(api_router)
@@ -62,7 +63,7 @@ def create_app(settings: Settings, *, ledger: Ledger | None = None) -> FastAPI:
             return FileResponse(index)
         return PlainTextResponse("Trajectree API")
 
-    if STATIC_DIR.is_dir():
+    if index.exists():
         app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
 
     return app
