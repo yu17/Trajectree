@@ -48,7 +48,7 @@ describe("RunsView", () => {
     expect(api.setCaps).not.toHaveBeenCalled();
   });
   it("lists runs and expands one with its proposals", async () => {
-    const r1 = run("r1", { proposals: [{ kind: "todo", project: "clmi", title: "Email Bob", reason: "owed", event_kind: "note", when: null, due: null, body_md: "", status: "happened", applied_txn: null, applied_id: null }] });
+    const r1 = run("r1", { proposals: [{ kind: "todo", project: "clmi", title: "Email Bob", reason: "owed", event_kind: "note", when: null, due: null, body_md: "", status: "happened", applied_txn: null, applied_id: null, dismissed: false }] });
     api.runs.mockResolvedValue([r1]);
     api.run.mockResolvedValue({ run: r1, txn_ids: ["t1"] });
     const { container } = wrap(<RunsView />);

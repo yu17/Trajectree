@@ -19,7 +19,7 @@ describe("InboxView", () => {
   it("lists runs with open proposals", async () => {
     api.txns.mockResolvedValue([]);
     api.runs.mockResolvedValue([{ id: "r1", kind: "quick_add", status: "ok", result_md: "Found one.", error: null, created_at: "2026-01-05T10:00:00Z",
-      proposals: [{ kind: "todo", project: "clmi", title: "Email Bob", reason: "asked", event_kind: "", when: null, due: null, body_md: "", status: "suggested", applied_txn: null, applied_id: null }] }]);
+      proposals: [{ kind: "todo", project: "clmi", title: "Email Bob", reason: "asked", event_kind: "", when: null, due: null, body_md: "", status: "suggested", applied_txn: null, applied_id: null, dismissed: false }] }]);
     wrap(<InboxView />);
     expect(await screen.findByText("Email Bob")).toBeTruthy();
     expect(screen.getAllByRole("heading", { name: "Proposals" }).length).toBeGreaterThan(0);

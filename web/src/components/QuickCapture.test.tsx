@@ -13,7 +13,7 @@ const render = (ui: ReactElement) =>
 describe("QuickCapture", () => {
   it("parses free text into proposals", async () => {
     const base = { id: "r9", kind: "quick_add", status: "ok", result_md: "Found one.", error: null, project_id: null, created_at: "2026-01-05T10:00:00Z" };
-    const proposal = { kind: "todo", project: "clmi", title: "Email Bob", reason: "asked", event_kind: "", when: null, due: null, body_md: "", status: "suggested", applied_txn: null, applied_id: null };
+    const proposal = { kind: "todo", project: "clmi", title: "Email Bob", reason: "asked", event_kind: "", when: null, due: null, body_md: "", status: "suggested", applied_txn: null, applied_id: null, dismissed: false };
     (api.quickAdd as any).mockResolvedValue({ ...base, status: "queued", proposals: [] });
     (api.run as any).mockResolvedValue({ run: { ...base, proposals: [proposal] }, txn_ids: [] });
     render(<QuickCapture projects={[{ id: "p1", slug: "clmi", title: "CLMI" } as any]} onCreated={vi.fn()} />);

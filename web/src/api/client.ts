@@ -122,6 +122,8 @@ export const api = {
   quickAdd: (body: QuickAddRequest) => request<Run>("POST", "/api/quick-add", body),
   acceptProposal: (runId: string, index: number) =>
     request<Run>("POST", `/api/runs/${encodeURIComponent(runId)}/proposals/${index}/accept`),
+  dismissProposal: (runId: string, index: number) =>
+    request<Run>("POST", `/api/runs/${encodeURIComponent(runId)}/proposals/${index}/dismiss`),
   usage: (days = 30) => request<UsageReport>("GET", `/api/usage?days=${days}`),
   caps: () => request<Caps>("GET", "/api/caps"),
   setCaps: (caps: Caps) => request<Caps>("PUT", "/api/caps", caps),

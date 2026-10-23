@@ -197,6 +197,7 @@ export interface Proposal {
   status: "happened" | "planned" | "suggested";
   applied_txn: string | null;
   applied_id: string | null;
+  dismissed: boolean;
 }
 
 export interface Run {
