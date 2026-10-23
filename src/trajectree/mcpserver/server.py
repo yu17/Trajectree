@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import apsw
 from mcp.server import MCPServer
@@ -19,6 +19,8 @@ from trajectree.db.ledger import Ledger
 from trajectree.models import Project
 from trajectree.repo.projects import get_project_by_slug, list_projects
 from trajectree.repo.resources import project_for_path
+from trajectree.repo.sessions import session_for_cwd
+from trajectree.timeutil import utcnow
 
 CWD_HEADER = "x-trajectree-cwd"
 SESSION_HEADER = "x-trajectree-session"
@@ -60,7 +62,12 @@ def _cwd_from_headers(ctx: Context) -> str | None:
 
 
 def principal_from_headers(
-    headers: Mapping[str, str] | None, *, owner_token: str, conn: apsw.Connection
+    headers: Mapping[str, str] | None,
+    *,
+    owner_token: str,
+    conn: apsw.Connection,
+    now: datetime | None = None,
+    live_window_s: int = 900,
 ) -> Principal:
     """Authenticate a request by its bearer token: the owner's token or a live scoped token."""
     if headers is None:
@@ -70,7 +77,13 @@ def principal_from_headers(
     if scheme.lower() != "bearer" or not token:
         raise ToolError("unauthorized")
     if token_matches(token, owner_token):
-        return owner_principal(_header(headers, SESSION_HEADER))
+        session = _header(headers, SESSION_HEADER)
+        cwd = _header(headers, CWD_HEADER)
+        if session is None and cwd:
+            since = (now or utcnow()) - timedelta(seconds=live_window_s)
+            running = session_for_cwd(conn, cwd=cwd, since=since)
+            session = running.id if running is not None else None
+        return owner_principal(session)
     principal = resolve_token(conn, token)
     if principal is None:
         raise ToolError("unauthorized")

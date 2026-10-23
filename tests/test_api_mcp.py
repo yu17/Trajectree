@@ -43,3 +43,15 @@ def test_mcp_owner_write_over_http_uses_cwd_header(client, app):
 
 def test_spa_fallback_does_not_shadow_mcp(client):
     assert client.get("/mcp/anything").status_code in (404, 405)
+
+
+def test_owner_mcp_write_carries_session_id_from_header_or_cwd(client):
+    p = mk_project(client)
+    client.post("/api/resources", json={"project_id": p["id"], "kind": "folder", "locator": "/home/u/proj"})
+    client.post("/mcp", json=call("add_note", {"project": p["slug"], "text": "a", "intent": "i"}), headers={**HDR, "X-Trajectree-Session": "sess-9"})
+    t = client.get("/api/ledger/txns", params={"review": "pending"}).json()[0]
+    assert t["session_id"] == "sess-9" and t["actor_ref"] == "sess-9" and t["actor_kind"] == "session"
+    client.post("/api/hooks/claude", json={"session_id": "live-1", "cwd": "/home/u/proj", "hook_event_name": "SessionStart", "transcript_path": "/t"})
+    client.post("/mcp", json=call("add_note", {"text": "b", "intent": "i"}), headers={**HDR, "X-Trajectree-Cwd": "/home/u/proj"})
+    t = client.get("/api/ledger/txns", params={"review": "pending"}).json()[0]
+    assert t["session_id"] == "live-1" and t["actor_ref"] == "live-1"

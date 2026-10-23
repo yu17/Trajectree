@@ -62,12 +62,16 @@ class BearerGate:
         await self.handler(scope, receive, send)
 
 
-def owner_or_token_resolver(ledger: Ledger, owner_token: str) -> Callable[[Context], Principal]:
+def owner_or_token_resolver(
+    ledger: Ledger, owner_token: str, *, live_window_s: int
+) -> Callable[[Context], Principal]:
     """The production resolver: authenticate each tool call by the request's bearer header."""
 
     def resolve(ctx: Context) -> Principal:
         with ledger.locked() as conn:
-            return principal_from_headers(ctx.headers, owner_token=owner_token, conn=conn)
+            return principal_from_headers(
+                ctx.headers, owner_token=owner_token, conn=conn, live_window_s=live_window_s
+            )
 
     return resolve
 

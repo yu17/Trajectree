@@ -1,19 +1,20 @@
 from __future__ import annotations
 
-from typing import Any
-
 from fastapi import APIRouter, Depends, Query
-from pydantic import AwareDatetime, BaseModel, ValidationError
+from pydantic import AwareDatetime, BaseModel
 
-from trajectree.api.deps import get_ledger
+from trajectree.api.deps import get_ledger, get_settings
 from trajectree.api.routes_entities import _csv
+from trajectree.config import Settings
 from trajectree.connectors.claude_sessions import LiveSession
 from trajectree.db.ledger import Ledger
 from trajectree.models import Edge, Event, Project, StripBin, Todo
 from trajectree.repo import edges, events, projects, todos
 from trajectree.repo.review import pending_txns
+from trajectree.repo.sessions import live_sessions
 from trajectree.repo.signals import strip_bins
 from trajectree.repo.state import get_state
+from trajectree.timeutil import utcnow
 
 router = APIRouter()
 
@@ -31,25 +32,13 @@ class TimelineResponse(BaseModel):
     stale: list[str]
 
 
-def _live_from_state(raw: Any, shown: set[str]) -> list[LiveSession]:
-    """Stop-gap: validate stored live sessions, skipping malformed entries."""
-    live: list[LiveSession] = []
-    for entry in raw or []:
-        try:
-            session = LiveSession.model_validate(entry)
-        except ValidationError:
-            continue
-        if session.project_id in shown:
-            live.append(session)
-    return live
-
-
 @router.get("/timeline",response_model=TimelineResponse)
 def timeline(
     t_from: AwareDatetime = Query(alias="from"),
     t_to: AwareDatetime = Query(alias="to"),
     project_filter: str | None = Query(default=None, alias="projects"),
     ledger: Ledger = Depends(get_ledger),
+    settings: Settings = Depends(get_settings),
 ):
     ids = _csv(project_filter)
     with ledger.locked() as conn:
@@ -74,7 +63,13 @@ def timeline(
         }
         shown = {p.id for p in project_rows}
         strip = strip_bins(conn, project_ids=ids, t_from=t_from, t_to=t_to)
-        live = _live_from_state(get_state(conn, "live_sessions"), shown)
+        live = live_sessions(
+            conn,
+            scan_live=get_state(conn, "live_sessions"),
+            shown=shown,
+            now=utcnow(),
+            window_s=settings.live_window_s,
+        )
         stale = [pid for pid in (get_state(conn, "stale_projects") or []) if pid in shown]
     return TimelineResponse(
         projects=project_rows,

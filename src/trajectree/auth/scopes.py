@@ -31,9 +31,9 @@ class Principal(BaseModel):
 
 
 def owner_principal(session_ref: str | None = None) -> Principal:
-    """Principal for the owner's own session: full scope, no token row."""
+    """Principal for the owner's own session (`session_ref` when known): full scope, no token row."""
     return Principal(
-        actor=Actor(kind="session", ref=session_ref or "owner", tool="mcp"),
+        actor=Actor(kind="session", ref=session_ref or "owner", session_id=session_ref, tool="mcp"),
         scope=Scope(),
         token_id=None,
     )

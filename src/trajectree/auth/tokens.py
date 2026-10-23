@@ -1,6 +1,7 @@
 """Short-lived scoped tokens, stored only as SHA-256 hashes."""
 
 import hashlib
+import json
 import secrets
 from datetime import datetime, timedelta
 
@@ -48,5 +49,18 @@ def resolve_token(conn, secret: str, *, now: datetime | None = None) -> Principa
     )
 
 
-def revoke_token(conn, token_id: str) -> None:
+def list_tokens(conn) -> list[dict]:
+    """Every token row, expired ones included, newest first; the secret and hash are never returned."""
+    rows = conn.execute(
+        "SELECT id, label, scope, expires_at, created_at FROM token ORDER BY created_at DESC, id"
+    ).fetchall()
+    return [
+        {"id": i, "label": label, "scope": json.loads(scope), "expires_at": exp, "created_at": created}
+        for i, label, scope, exp, created in rows
+    ]
+
+
+def revoke_token(conn, token_id: str) -> bool:
+    """Delete a token; False when no such token existed."""
     conn.execute("DELETE FROM token WHERE id = ?", (token_id,))
+    return conn.changes() > 0

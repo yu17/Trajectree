@@ -1,10 +1,12 @@
 """Session repository: registry of running Claude Code sessions, kept outside the ledger."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import apsw
+from pydantic import ValidationError
 
+from trajectree.connectors.claude_sessions import LiveSession
 from trajectree.db.schema import table_columns
 from trajectree.models import SessionRow
 from trajectree.repo._rows import select_row, select_rows
@@ -64,7 +66,7 @@ def touch_session(
 
 
 def end_session(
-    conn: apsw.Connection, *, session_id: str, reason: str, now: datetime
+    conn: apsw.Connection, *, session_id: str, reason: str | None, now: datetime
 ) -> SessionRow | None:
     if select_row(conn, "session", session_id) is None:
         return None
@@ -91,6 +93,39 @@ def session_for_cwd(conn: apsw.Connection, *, cwd: str, since: datetime) -> Sess
         "last_seen DESC, id LIMIT 1",
     )
     return _to_session(conn, rows[0]) if rows else None
+
+
+def live_sessions(
+    conn: apsw.Connection, *, scan_live: Any, shown: set[str] | None, now: datetime, window_s: int
+) -> list[LiveSession]:
+    """Running registry sessions plus scanned ones the registry does not already know or end."""
+    live = [
+        LiveSession(
+            project_id=s.project_id,
+            session_id=s.id,
+            cwd=s.cwd,
+            title=None,
+            started=s.started_at,
+            last_seen=s.last_seen,
+        )
+        for s in running_sessions(conn, since=now - timedelta(seconds=window_s))
+        if s.project_id is not None
+    ]
+    scanned: list[LiveSession] = []
+    for entry in scan_live or []:
+        try:
+            scanned.append(LiveSession.model_validate(entry))
+        except ValidationError:
+            continue
+    ended = ended_session_ids(conn, [s.session_id for s in scanned])
+    known = {s.session_id for s in live}
+    for s in scanned:
+        if s.session_id not in known and s.session_id not in ended:
+            live.append(s)
+            known.add(s.session_id)
+    if shown is not None:
+        live = [s for s in live if s.project_id in shown]
+    return sorted(live, key=lambda s: s.last_seen, reverse=True)
 
 
 def ended_session_ids(conn: apsw.Connection, ids: list[str]) -> set[str]:

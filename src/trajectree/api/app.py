@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from trajectree.api.deps import COOKIE_NAME, require_token, token_matches
 from trajectree.api.mcp_mount import mount_mcp, owner_or_token_resolver
+from trajectree.api.routes_hooks import router as hooks_router
 from trajectree.api.routes_context import router as context_router
 from trajectree.api.routes_entities import router as entities_router
 from trajectree.api.routes_ledger import router as ledger_router
@@ -20,6 +21,7 @@ from trajectree.api.routes_resources import router as resources_router
 from trajectree.api.routes_runs import router as runs_router
 from trajectree.api.routes_signals import router as signals_router
 from trajectree.api.routes_timeline import router as timeline_router
+from trajectree.api.routes_tokens import router as tokens_router
 from trajectree.config import Settings, ensure_token
 from trajectree.db.connection import open_db
 from trajectree.db.ledger import AlreadyReverted, Ledger, RevertConflict
@@ -34,7 +36,7 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 # Plain routers (no prefix, no auth). create_app includes each into a fresh
 # /api router that enforces require_token. Later tasks append theirs here.
-PROTECTED_ROUTERS: list[APIRouter] = [entities_router, timeline_router, ledger_router, search_router, resources_router, context_router, signals_router, runs_router]
+PROTECTED_ROUTERS: list[APIRouter] = [entities_router, timeline_router, ledger_router, search_router, resources_router, context_router, signals_router, runs_router, tokens_router]
 
 
 def _error_handler(status: int):
@@ -50,7 +52,7 @@ def create_app(settings: Settings, *, ledger: Ledger | None = None) -> FastAPI:
         ledger = Ledger(open_db(settings.db_path))
 
     # One MCPServer per app: its session manager's run() can be entered only once.
-    mcp = build_mcp(ledger, settings, resolve=owner_or_token_resolver(ledger, token))
+    mcp = build_mcp(ledger, settings, resolve=owner_or_token_resolver(ledger, token, live_window_s=settings.live_window_s))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -116,6 +118,7 @@ def create_app(settings: Settings, *, ledger: Ledger | None = None) -> FastAPI:
     for router in PROTECTED_ROUTERS:
         api_router.include_router(router)
     app.include_router(api_router)
+    app.include_router(hooks_router)
     mount_mcp(app, mcp, ledger=ledger, owner_token=token)
 
     index = STATIC_DIR / "index.html"

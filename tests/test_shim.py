@@ -43,7 +43,7 @@ async def test_remote_connector_sends_headers():
         return httpx2.Response(500)
 
     connect = remote_connector(
-        "http://daemon.test/mcp", "tok", "/proj", transport=httpx2.MockTransport(handler)
+        "http://daemon.test/mcp", "tok", "/proj", session_id="sess-1", transport=httpx2.MockTransport(handler)
     )
     try:
         async with connect() as remote:
@@ -55,3 +55,4 @@ async def test_remote_connector_sends_headers():
     assert h["authorization"] == "Bearer tok"
     assert h["x-trajectree-client"] == "shim"
     assert h["x-trajectree-cwd"] == "/proj"
+    assert h["x-trajectree-session"] == "sess-1"

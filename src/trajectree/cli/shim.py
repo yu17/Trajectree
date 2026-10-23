@@ -57,12 +57,13 @@ def build_proxy(connect: Callable[[], Any]) -> Server:
 
 
 def remote_connector(
-    url: str, token: str, cwd: str | None, transport: Any = None
+    url: str, token: str, cwd: str | None, session_id: str | None = None, transport: Any = None
 ) -> Callable[[], Any]:
     headers = {
         "Authorization": f"Bearer {token}",
         "X-Trajectree-Client": "shim",
         **({"X-Trajectree-Cwd": cwd} if cwd else {}),
+        **({"X-Trajectree-Session": session_id} if session_id else {}),
     }
 
     @asynccontextmanager
@@ -86,7 +87,7 @@ def run_shim(env: Mapping[str, str]) -> int:
         return 2
     url = env.get("TRAJECTREE_URL", DEFAULT_URL).rstrip("/") + "/mcp"
     cwd = env.get("CLAUDE_PROJECT_DIR") or os.getcwd()
-    server = build_proxy(remote_connector(url, token, cwd))
+    server = build_proxy(remote_connector(url, token, cwd, env.get("CLAUDE_CODE_SESSION_ID")))
 
     async def serve() -> None:
         async with stdio_server() as (read, write):

@@ -4,6 +4,7 @@ import secrets
 
 from fastapi import HTTPException, Request
 
+from trajectree.config import Settings
 from trajectree.db.ledger import Ledger
 from trajectree.models import Actor
 
@@ -29,6 +30,10 @@ def require_token(request: Request) -> None:
 
 def get_ledger(request: Request) -> Ledger:
     return request.app.state.ledger
+
+
+def get_settings(request: Request) -> Settings:
+    return request.app.state.settings
 
 
 def actor_from_request(request: Request) -> Actor:
