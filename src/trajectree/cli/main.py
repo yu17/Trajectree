@@ -27,6 +27,8 @@ class _Client(Protocol):
 
     def put(self, url: str, **kwargs: Any) -> Any: ...
 
+    def delete(self, url: str, **kwargs: Any) -> Any: ...
+
 
 class _Fail(Exception):
     def __init__(self, message: str, code: int = 1) -> None:
@@ -137,6 +139,15 @@ def _parser() -> argparse.ArgumentParser:
     rn = sub.add_parser("runner", help="runner commands")
     rn_sub = rn.add_subparsers(dest="sub", required=True)
     rn_sub.add_parser("status", help="runner availability")
+
+    hk = sub.add_parser("hooks", help="Claude Code hook commands")
+    hk_sub = hk.add_subparsers(dest="sub", required=True)
+    hk_install = hk_sub.add_parser("install", help="merge Trajectree hooks into Claude Code settings")
+    hk_install.add_argument("--yes", action="store_true")
+    for name, help_ in (("uninstall", "remove Trajectree hooks"), ("show", "show hook status")):
+        hk_sub.add_parser(name, help=help_)
+    for sp in hk_sub.choices.values():
+        sp.add_argument("--settings-file")
     return p
 
 
@@ -166,7 +177,7 @@ class _Api:
             except Exception:
                 detail = getattr(resp, "text", "") or f"HTTP {resp.status_code}"
             raise _Fail(str(detail))
-        return resp.json()
+        return None if resp.status_code == 204 else resp.json()
 
     def get(self, path: str) -> Any:
         return self._handle(self.client.get(self.base + path, headers=self.headers))
@@ -176,6 +187,9 @@ class _Api:
 
     def put(self, path: str, body: dict[str, Any]) -> Any:
         return self._handle(self.client.put(self.base + path, json=body, headers=self.headers))
+
+    def delete(self, path: str) -> None:
+        self._handle(self.client.delete(self.base + path, headers=self.headers))
 
     def project_id(self, slug: str) -> str:
         for p in self.get("/api/projects"):
@@ -341,6 +355,7 @@ def _run(
     api: _Api,
     runner: Callable[[list[str]], Any] | None = None,
     stdin: TextIO | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> None:
     cmd = args.cmd
     simple: dict[str, Callable[[argparse.Namespace, _Api], None]] = {
@@ -358,6 +373,20 @@ def _run(
         return
     if cmd == "runner":
         _cmd_runner_status(api)
+        return
+    if cmd == "hooks":
+        from trajectree.cli import hooks
+
+        env = os.environ if env is None else env
+        settings_file = Path(args.settings_file) if args.settings_file else None
+        if args.sub == "install":
+            code = hooks.install(api, env, out=sys.stdout, yes=args.yes, settings_file=settings_file)
+        elif args.sub == "uninstall":
+            code = hooks.uninstall(api, env, out=sys.stdout, settings_file=settings_file)
+        else:
+            code = hooks.show(api, env, out=sys.stdout, settings_file=settings_file)
+        if code:
+            raise _Fail("", code)
         return
     if cmd == "init-project":
         from trajectree.cli.init_project import init_project
@@ -463,7 +492,7 @@ def main(
     owned = client is None
     http: Any = httpx.Client(timeout=30) if owned else client
     try:
-        _run(args, _Api(http, base, token), runner, stdin)
+        _run(args, _Api(http, base, token), runner, stdin, env)
     except _Fail as exc:
         if str(exc):
             print(str(exc), file=sys.stderr)
