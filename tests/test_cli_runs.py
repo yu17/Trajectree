@@ -1,0 +1,50 @@
+import io, json
+import pytest
+from tests.test_cli import env_for
+from trajectree.cli import main as cli
+from trajectree.runner.credentials import store_oauth_token
+
+STRUCTURED = json.dumps({"answer": "Parsed", "proposals": [{"kind": "todo", "project": "clmi", "title": "Email Bob", "reason": "owed"}]})
+
+@pytest.fixture(autouse=True)
+def fast(monkeypatch, settings):
+    monkeypatch.setattr(cli, "_sleep", lambda s: None)
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "ok")
+    monkeypatch.setenv("FAKE_CLAUDE_STRUCTURED", STRUCTURED)
+    store_oauth_token(settings, "fake")
+
+def test_cli_add_waits_prints_proposals_and_accept(app, client, anon, capsys):
+    client.post("/api/projects", json={"slug": "clmi", "title": "CLMI", "kind": "research"})
+    assert cli.main(["add", "email Bob about slides"], client=anon, env=env_for(app)) == 0
+    out = capsys.readouterr().out
+    assert "run " in out and " ok " in out and "[1] todo · clmi · Email Bob (owed)" in out and "accept with: trajectree accept" in out
+    run_id = out.split("run ")[1].split()[0]
+    assert cli.main(["accept", run_id, "1"], client=anon, env=env_for(app)) == 0
+    assert capsys.readouterr().out.startswith("applied: todo ")
+    assert client.get("/api/todos").json()[0]["title"] == "Email Bob"
+    assert cli.main(["accept", run_id, "1"], client=anon, env=env_for(app)) == 1
+    assert cli.main(["accept", run_id, "0"], client=anon, env=env_for(app)) == 2
+
+def test_cli_summarize_no_wait_and_runs_listing(app, client, anon, capsys):
+    client.post("/api/projects", json={"slug": "clmi", "title": "CLMI", "kind": "research"})
+    assert cli.main(["summarize", "clmi", "--no-wait"], client=anon, env=env_for(app)) == 0
+    assert capsys.readouterr().out.endswith(" queued\n")
+    assert cli.main(["runs", "--limit", "5"], client=anon, env=env_for(app)) == 0
+    line = capsys.readouterr().out.splitlines()[0]
+    assert "summarize" in line and line.endswith("clmi")
+
+def test_cli_caps_usage_login_and_status(app, anon, capsys):
+    assert cli.main(["caps", "--usd-per-day", "2", "--pause"], client=anon, env=env_for(app)) == 0
+    assert capsys.readouterr().out.strip() == "caps: run $1.0 · day $2.0 · timeout 600s · paused yes"
+    assert cli.main(["ask", "q"], client=anon, env=env_for(app)) == 1   # paused → 409
+    assert cli.main(["caps", "--resume"], client=anon, env=env_for(app)) == 0
+    capsys.readouterr()
+    assert cli.main(["usage"], client=anon, env=env_for(app)) == 0
+    assert capsys.readouterr().out.startswith("today: $0.0000 of $2.0 · paused: no")
+    assert cli.main(["login"], client=anon, env=env_for(app), stdin=io.StringIO("sk-ant-oat01-x\n")) == 0
+    assert capsys.readouterr().out.strip() == "stored"
+    assert cli.main(["login"], client=anon, env=env_for(app), stdin=io.StringIO("\n")) == 2
+    assert cli.main(["runner", "status"], client=anon, env=env_for(app)) == 0
+    assert "claude:" in capsys.readouterr().out
+    assert cli.main(["backends", "sync"], client=anon, env=env_for(app)) == 0
+    assert capsys.readouterr().out.strip() == "synced: none"
