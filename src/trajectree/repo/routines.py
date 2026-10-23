@@ -1,0 +1,146 @@
+"""Routine repository: scheduled agent routines, kept outside the ledger like `run`."""
+
+import json
+from datetime import datetime, timezone
+from typing import Any
+from zoneinfo import ZoneInfo
+
+import apsw
+from croniter import croniter
+
+from trajectree.db.schema import table_columns
+from trajectree.ids import new_id
+from trajectree.models import Routine, RoutineIn, RoutinePatch
+from trajectree.repo import DuplicateRoutine, NotFound
+from trajectree.repo._rows import select_row, select_rows, update_fields
+from trajectree.timeutil import to_db
+
+_DATETIME_FIELDS = ("next_fire", "last_fired", "paused_until")
+_STATE_FIELDS = ("next_fire", "last_fired", "last_run_id", "last_error", "paused_until")
+_JSON_FIELDS = ("scope", "tool_policy", "caps", "props")
+
+
+def _to_routine(conn: apsw.Connection, row: tuple[Any, ...]) -> Routine:
+    data = dict(zip(table_columns(conn, "routine"), row))
+    for name in _JSON_FIELDS:
+        data[name] = json.loads(data[name])
+    data["enabled"] = bool(data["enabled"])
+    return Routine.model_validate(data)
+
+
+def compute_next_fire(trigger: str, tz: str, *, after: datetime) -> datetime | None:
+    """The next UTC fire time of `trigger` (evaluated in `tz`) after `after`; None for session_end."""
+    if trigger == "session_end":
+        return None
+    nxt = croniter(trigger, after.astimezone(ZoneInfo(tz))).get_next(datetime)
+    return nxt.astimezone(timezone.utc)
+
+
+def get_routine(conn: apsw.Connection, routine_id: str) -> Routine | None:
+    row = select_row(conn, "routine", routine_id)
+    return None if row is None else _to_routine(conn, row)
+
+
+def get_routine_by_name(conn: apsw.Connection, name: str) -> Routine | None:
+    rows = select_rows(conn, "routine", ["name = ?"], [name], "id LIMIT 1")
+    return _to_routine(conn, rows[0]) if rows else None
+
+
+def resolve_routine_ref(conn: apsw.Connection, ref: str) -> Routine:
+    """Look a routine up by id, then by name."""
+    routine = get_routine(conn, ref) or get_routine_by_name(conn, ref)
+    if routine is None:
+        raise NotFound(f"routine {ref} not found")
+    return routine
+
+
+def list_routines(conn: apsw.Connection) -> list[Routine]:
+    return [_to_routine(conn, r) for r in select_rows(conn, "routine", [], [], "name")]
+
+
+def create_routine(conn: apsw.Connection, data: RoutineIn, *, now: datetime) -> Routine:
+    routine_id = new_id()
+    next_fire = compute_next_fire(data.trigger, data.tz, after=now) if data.enabled else None
+    stamp = to_db(now)
+    try:
+        conn.execute(
+            "INSERT INTO routine (id, name, trigger, tz, enabled, runner, model, prompt_ref, scope,"
+            " cwd_mode, tool_policy, caps, write_mode, delivery, next_fire, props, created_at,"
+            " updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                routine_id, data.name, data.trigger, data.tz, int(data.enabled), data.runner,
+                data.model, data.prompt_ref, data.scope.model_dump_json(), data.cwd_mode,
+                json.dumps(data.tool_policy), data.caps.model_dump_json(), data.write_mode,
+                data.delivery, to_db(next_fire) if next_fire else None, json.dumps(data.props),
+                stamp, stamp,
+            ),
+        )
+    except apsw.ConstraintError:
+        raise DuplicateRoutine(data.name) from None
+    routine = get_routine(conn, routine_id)
+    assert routine is not None
+    return routine
+
+
+def update_routine(
+    conn: apsw.Connection, routine_id: str, patch: RoutinePatch, *, now: datetime
+) -> Routine:
+    current = get_routine(conn, routine_id)
+    if current is None:
+        raise NotFound(f"routine {routine_id} not found")
+    changes = patch.model_dump(exclude_unset=True, mode="json")
+    fields: dict[str, Any] = {}
+    for name, value in changes.items():
+        if name in _JSON_FIELDS:
+            value = json.dumps(value)
+        elif name == "enabled":
+            value = int(value)
+        fields[name] = value
+    if {"trigger", "tz", "enabled"} & changes.keys():
+        merged = current.model_copy(update={k: v for k, v in changes.items() if k in ("trigger", "tz", "enabled")})
+        nxt = compute_next_fire(merged.trigger, merged.tz, after=now) if merged.enabled else None
+        fields["next_fire"] = to_db(nxt) if nxt else None
+    fields["updated_at"] = to_db(now)
+    try:
+        update_fields(conn, "routine", routine_id, fields)
+    except apsw.ConstraintError:
+        raise DuplicateRoutine(changes.get("name", current.name)) from None
+    routine = get_routine(conn, routine_id)
+    assert routine is not None
+    return routine
+
+
+def set_run_state(conn: apsw.Connection, routine_id: str, **fields: Any) -> Routine:
+    """Record scheduler state (`next_fire`, `last_fired`, `last_run_id`, `last_error`, `paused_until`)."""
+    unknown = set(fields) - set(_STATE_FIELDS)
+    if unknown:
+        raise ValueError(f"not a run-state field: {sorted(unknown)}")
+    if select_row(conn, "routine", routine_id) is None:
+        raise NotFound(f"routine {routine_id} not found")
+    stored = {
+        name: to_db(value) if name in _DATETIME_FIELDS and value is not None else value
+        for name, value in fields.items()
+    }
+    update_fields(conn, "routine", routine_id, stored)
+    routine = get_routine(conn, routine_id)
+    assert routine is not None
+    return routine
+
+
+def due_routines(conn: apsw.Connection, *, now: datetime) -> list[Routine]:
+    """Enabled, time-triggered routines whose `next_fire` has passed and that are not paused."""
+    stamp = to_db(now)
+    rows = select_rows(
+        conn,
+        "routine",
+        [
+            "enabled = 1",
+            "trigger != 'session_end'",
+            "next_fire IS NOT NULL",
+            "next_fire <= ?",
+            "(paused_until IS NULL OR paused_until <= ?)",
+        ],
+        [stamp, stamp],
+        "next_fire, name",
+    )
+    return [_to_routine(conn, r) for r in rows]

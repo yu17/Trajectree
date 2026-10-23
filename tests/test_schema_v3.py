@@ -1,12 +1,12 @@
 import apsw
 from trajectree.db.connection import open_db
-from trajectree.db.schema import LEDGER_TABLES, MIGRATIONS, table_columns
+from trajectree.db.schema import LEDGER_TABLES, MIGRATIONS, SCHEMA_VERSION, table_columns
 
 def test_v3_tables(conn):
     names = {r[0] for r in conn.execute("select name from sqlite_master where type='table'")}
     assert {"run", "session"} <= names
     assert "proposals" in table_columns(conn, "run") and "ended_at" in table_columns(conn, "session")
-    assert conn.execute("pragma user_version").fetchone()[0] == 3
+    assert conn.execute("pragma user_version").fetchone()[0] == SCHEMA_VERSION
     assert "run" not in LEDGER_TABLES and "session" not in LEDGER_TABLES
 
 def test_migrates_v2_database(tmp_path):
@@ -18,4 +18,4 @@ def test_migrates_v2_database(tmp_path):
     c.execute("pragma user_version = 2")
     c.close()
     conn = open_db(path)
-    assert conn.execute("pragma user_version").fetchone()[0] == 3
+    assert conn.execute("pragma user_version").fetchone()[0] == SCHEMA_VERSION

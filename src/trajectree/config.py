@@ -23,6 +23,9 @@ class Settings(BaseModel):
     codex_bin: str = "codex"
     default_runner: str = "claude"
     run_env_passthrough: list[str] = []
+    tz: str = "UTC"
+    scheduler_interval_s: int = 30
+    scheduler_grace_s: int = 3600
 
     @property
     def cfg_root(self) -> Path:
@@ -91,6 +94,8 @@ _INT_ENV = {
     "TRAJECTREE_LIVE_WINDOW": "live_window_s",
     "TRAJECTREE_STALE_SETTLE_H": "stale_settle_h",
     "TRAJECTREE_SCAN_SINCE_DAYS": "scan_since_days",
+    "TRAJECTREE_SCHEDULER_EVERY": "scheduler_interval_s",
+    "TRAJECTREE_SCHEDULER_GRACE_S": "scheduler_grace_s",
 }
 
 
@@ -98,6 +103,7 @@ _STR_ENV = {
     "TRAJECTREE_CLAUDE_BIN": "claude_bin",
     "TRAJECTREE_CODEX_BIN": "codex_bin",
     "TRAJECTREE_DEFAULT_RUNNER": "default_runner",
+    "TRAJECTREE_TZ": "tz",
 }
 
 

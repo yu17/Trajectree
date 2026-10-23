@@ -1,8 +1,10 @@
 """Pydantic domain models shared by the ledger, repositories and API."""
 
 from typing import Any, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import AwareDatetime, BaseModel, Field, model_validator
+from croniter import croniter
+from pydantic import AwareDatetime, BaseModel, Field, field_validator, model_validator
 
 ProjectKind = Literal["research", "tooling", "routine", "admin", "inbox"]
 ProjectStatus = Literal["active", "paused", "done", "archived"]
@@ -12,7 +14,7 @@ TodoState = Literal["open", "doing", "done", "dropped"]
 Review = Literal["none", "pending", "accepted", "rejected"]
 ActorKind = Literal["human", "agent", "session", "connector"]
 EntityType = Literal["project", "event", "todo", "resource"]
-SignalKind = Literal["commits", "session", "files_changed", "job_state", "message"]
+SignalKind = Literal["commits", "session", "files_changed", "job_state", "message", "remote"]
 ResourceKind = Literal[
     "folder", "git_local", "git_remote", "claude_session", "slurm_job", "url", "doc"
 ]
@@ -280,7 +282,16 @@ class Conflict(BaseModel):
 
 # --- phase 3: runs, sessions, caps ------------------------------------------
 
-RunKind = Literal["summarize", "ask", "quick_add"]
+RunKind = Literal["summarize", "ask", "quick_add", "summarize_session", "routine", "report"]
+RunSlot = Literal["interactive", "scheduled"]
+SLOT_OF: dict[str, RunSlot] = {
+    "summarize": "interactive",
+    "ask": "interactive",
+    "quick_add": "interactive",
+    "summarize_session": "interactive",
+    "routine": "scheduled",
+    "report": "interactive",
+}
 RunStatus = Literal["queued", "running", "ok", "failed", "capped", "cancelled"]
 RUNNER_PATTERN = r"^(claude|codex|ccx:[A-Za-z0-9][A-Za-z0-9._-]*)$"
 ProposalKind = Literal["event", "todo"]
@@ -324,6 +335,9 @@ class Run(BaseModel):
     log_path: str | None = None
     token_id: str | None = None
     props: dict[str, Any] = Field(default_factory=dict)
+    routine_id: str | None = None
+    slot: RunSlot = "interactive"
+    attempt: int = 1
     created_at: AwareDatetime
 
 
@@ -365,3 +379,124 @@ class UsageSlice(BaseModel):
     key: str
     est_usd: float
     runs: int
+
+
+# --- phase 4: routines and reports ------------------------------------------
+
+WriteMode = Literal["direct", "propose"]
+Delivery = Literal["none", "inbox", "log", "chatmaid"]
+CwdMode = Literal["project_folder", "data_dir"]
+ReportKind = Literal["deck", "memo"]
+
+ROUTINE_NAME_PATTERN = r"^[a-z0-9][a-z0-9-]{0,63}$"
+PROMPT_REF_PATTERN = r"^[a-z0-9_-]+\.md$"
+
+
+def _check_trigger(value: str | None) -> str | None:
+    if value is not None and value != "session_end" and not croniter.is_valid(value):
+        raise ValueError("trigger must be a cron expression or 'session_end'")
+    return value
+
+
+def _check_tz(value: str | None) -> str | None:
+    if value is not None:
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ValueError("unknown timezone") from None
+    return value
+
+
+class RoutineScope(BaseModel):
+    projects: list[str] | None = None
+    lookback_days: int = Field(14, ge=1, le=365)
+
+
+class RoutineCaps(BaseModel):
+    usd_per_run: float = Field(1.0, gt=0, le=100)
+    usd_per_day: float = Field(2.0, gt=0, le=1000)
+
+    @model_validator(mode="after")
+    def _run_within_day(self) -> "RoutineCaps":
+        if self.usd_per_run > self.usd_per_day:
+            raise ValueError("usd_per_run must not exceed usd_per_day")
+        return self
+
+
+class RoutineIn(BaseModel):
+    name: str = Field(pattern=ROUTINE_NAME_PATTERN)
+    trigger: str
+    tz: str = "UTC"
+    enabled: bool = False
+    runner: str | None = Field(None, pattern=RUNNER_PATTERN)
+    model: str | None = None
+    prompt_ref: str = Field(pattern=PROMPT_REF_PATTERN)
+    scope: RoutineScope = RoutineScope()
+    cwd_mode: CwdMode = "data_dir"
+    tool_policy: list[str] = []
+    caps: RoutineCaps = RoutineCaps()
+    write_mode: WriteMode = "propose"
+    delivery: Delivery = "none"
+    props: dict[str, Any] = {}
+
+    _valid_trigger = field_validator("trigger")(_check_trigger)
+    _valid_tz = field_validator("tz")(_check_tz)
+
+
+class RoutinePatch(BaseModel):
+    name: str | None = Field(None, pattern=ROUTINE_NAME_PATTERN)
+    trigger: str | None = None
+    tz: str | None = None
+    enabled: bool | None = None
+    runner: str | None = Field(None, pattern=RUNNER_PATTERN)
+    model: str | None = None
+    prompt_ref: str | None = Field(None, pattern=PROMPT_REF_PATTERN)
+    scope: RoutineScope | None = None
+    cwd_mode: CwdMode | None = None
+    tool_policy: list[str] | None = None
+    caps: RoutineCaps | None = None
+    write_mode: WriteMode | None = None
+    delivery: Delivery | None = None
+    props: dict[str, Any] | None = None
+
+    _valid_trigger = field_validator("trigger")(_check_trigger)
+    _valid_tz = field_validator("tz")(_check_tz)
+
+
+class Routine(RoutineIn):
+    id: str
+    next_fire: AwareDatetime | None = None
+    last_fired: AwareDatetime | None = None
+    last_run_id: str | None = None
+    last_error: str | None = None
+    paused_until: AwareDatetime | None = None
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
+
+
+class ReportScope(BaseModel):
+    projects: list[str] = []
+    start: AwareDatetime | None = None
+    end: AwareDatetime | None = None
+
+
+class ReportIn(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    kind: ReportKind
+    scope: ReportScope = ReportScope()
+    source_md: str = ""
+    props: dict[str, Any] = {}
+
+
+class ReportPatch(BaseModel):
+    title: str | None = Field(None, min_length=1, max_length=200)
+    kind: ReportKind | None = None
+    scope: ReportScope | None = None
+    source_md: str | None = None
+    props: dict[str, Any] | None = None
+
+
+class Report(ReportIn):
+    id: str
+    created_at: AwareDatetime
+    updated_at: AwareDatetime

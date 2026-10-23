@@ -45,11 +45,18 @@ def list_events(
 
 
 def create_event(
-    ledger: Ledger, actor: Actor, data: EventIn, *, intent: str | None = None
+    ledger: Ledger,
+    actor: Actor,
+    data: EventIn,
+    *,
+    intent: str | None = None,
+    auto_accept: bool = False,
 ) -> Event:
     event_id = new_id()
     now = to_db(utcnow())
-    with ledger.transaction(actor, intent or f"record event: {data.title}") as h:
+    with ledger.transaction(
+        actor, intent or f"record event: {data.title}", auto_accept=auto_accept
+    ) as h:
         if h.conn.execute("SELECT 1 FROM project WHERE id = ?", (data.project_id,)).fetchone() is None:
             raise NotFound(data.project_id)
         h.conn.execute(
@@ -68,7 +75,13 @@ def create_event(
 
 
 def update_event(
-    ledger: Ledger, actor: Actor, event_id: str, patch: EventPatch, *, intent: str | None = None
+    ledger: Ledger,
+    actor: Actor,
+    event_id: str,
+    patch: EventPatch,
+    *,
+    intent: str | None = None,
+    auto_accept: bool = False,
 ) -> Event:
     changes = patch.model_dump(exclude_unset=True)
     fields: dict[str, Any] = dict(changes)
@@ -78,7 +91,9 @@ def update_event(
     if "props" in fields:
         fields["props"] = dumps_props(fields["props"])
     fields["updated_at"] = to_db(utcnow())
-    with ledger.transaction(actor, intent or f"update event {event_id}") as h:
+    with ledger.transaction(
+        actor, intent or f"update event {event_id}", auto_accept=auto_accept
+    ) as h:
         row = select_row(h.conn, "event", event_id)
         if row is None:
             raise NotFound(event_id)

@@ -6,7 +6,7 @@ import apsw
 
 from trajectree.db import fts
 
-LEDGER_TABLES: tuple[str, ...] = ("project", "event", "todo", "resource", "edge")
+LEDGER_TABLES: tuple[str, ...] = ("project", "event", "todo", "resource", "edge", "report")
 
 _V1_STATEMENTS: list[str] = [
     """CREATE TABLE project (
@@ -126,11 +126,54 @@ _V3_STATEMENTS: list[str] = [
     "CREATE INDEX session_cwd ON session(cwd)",
 ]
 
+_V4_STATEMENTS: list[str] = [
+    """CREATE TABLE routine (
+        id TEXT PRIMARY KEY,
+        name TEXT UNIQUE NOT NULL,
+        trigger TEXT NOT NULL,
+        tz TEXT NOT NULL DEFAULT 'UTC',
+        enabled INTEGER NOT NULL DEFAULT 0,
+        runner TEXT,
+        model TEXT,
+        prompt_ref TEXT NOT NULL,
+        scope TEXT NOT NULL DEFAULT '{}',
+        cwd_mode TEXT NOT NULL DEFAULT 'data_dir',
+        tool_policy TEXT NOT NULL DEFAULT '[]',
+        caps TEXT NOT NULL DEFAULT '{}',
+        write_mode TEXT NOT NULL DEFAULT 'propose',
+        delivery TEXT NOT NULL DEFAULT 'none',
+        next_fire TEXT,
+        last_fired TEXT,
+        last_run_id TEXT,
+        last_error TEXT,
+        paused_until TEXT,
+        props TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )""",
+    "ALTER TABLE run ADD COLUMN routine_id TEXT",
+    "ALTER TABLE run ADD COLUMN slot TEXT NOT NULL DEFAULT 'interactive'",
+    "ALTER TABLE run ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1",
+    "CREATE INDEX run_routine ON run(routine_id, created_at)",
+    "CREATE INDEX run_slot_status ON run(slot, status)",
+    """CREATE TABLE report (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        scope TEXT NOT NULL DEFAULT '{}',
+        source_md TEXT NOT NULL DEFAULT '',
+        props TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )""",
+]
+
 # Ordered migration steps; a later schema version appends (version, statements).
 MIGRATIONS: list[tuple[int, list[str]]] = [
     (1, _V1_STATEMENTS),
     (2, _V2_STATEMENTS),
     (3, _V3_STATEMENTS),
+    (4, _V4_STATEMENTS),
 ]
 
 SCHEMA_VERSION: int = MIGRATIONS[-1][0]

@@ -22,3 +22,14 @@ def test_project_slug_pattern():
 def test_edge_type_restricted():
     with pytest.raises(ValidationError):
         EdgeIn(src_type="thing", src_id="a", dst_type="event", dst_id="b", rel="relates_to")
+
+def test_routine_in_defaults():
+    from trajectree.models import RoutineIn
+    r = RoutineIn(name="a", trigger="@daily", prompt_ref="a.md")
+    assert r.write_mode == "propose" and r.delivery == "none" and r.caps.usd_per_day == 2.0
+    assert r.enabled is False and r.tz == "UTC" and r.scope.lookback_days == 14 and r.cwd_mode == "data_dir"
+
+def test_routine_caps_run_within_day():
+    from trajectree.models import RoutineCaps
+    with pytest.raises(ValidationError):
+        RoutineCaps(usd_per_run=3, usd_per_day=2)

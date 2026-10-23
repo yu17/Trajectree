@@ -48,3 +48,36 @@ def test_get_caps_keeps_paused_when_invalid(conn, caplog):
         caps = get_caps(conn)
     assert caps.paused is True and caps.usd_per_run == Caps().usd_per_run
     assert any(r.name == "trajectree.caps" for r in caplog.records)
+
+
+def test_oldest_queued_by_slot_and_spent_by_routine(conn):
+    NOW = datetime(2026, 1, 5, 10, tzinfo=UTC)
+    a = create_run(conn, kind="ask", runner="claude", backend="claude", model=None, project_id=None)
+    b = create_run(conn, kind="routine", runner="claude", backend="claude", model=None, project_id=None, routine_id="r1", slot="scheduled")
+    assert oldest_queued(conn, slot="scheduled").id == b.id and oldest_queued(conn, slot="interactive").id == a.id
+    assert oldest_queued(conn).id == a.id and b.slot == "scheduled" and b.routine_id == "r1" and b.attempt == 1
+    update_run(conn, b.id, est_usd=0.5, started=NOW)
+    update_run(conn, a.id, est_usd=0.25, started=NOW)
+    assert spent_usd(conn, day=NOW.strftime("%Y-%m-%d"), routine_id="r1") == 0.5
+    assert spent_usd(conn, day=NOW.strftime("%Y-%m-%d")) == 0.75
+    assert [r.id for r in list_runs(conn, routine_id="r1")] == [b.id]
+    by = {s.key: s.est_usd for s in usage_by(conn, field="routine_id", since=datetime(2026, 1, 1, tzinfo=UTC))}
+    assert by["r1"] == 0.5
+
+
+def test_failed_retry_candidates(conn):
+    from trajectree.repo.runs import failed_retry_candidates
+    now = datetime(2026, 1, 5, 10, tzinfo=UTC)
+
+    def mk(status="failed", kind="routine", **props):
+        r = create_run(conn, kind=kind, runner="claude", backend="claude", model=None, project_id=None, routine_id="r1", slot="scheduled")
+        return update_run(conn, r.id, status=status, props=props)
+
+    ok = mk(failure="infra", retry_at="2026-01-05T09:00:00Z")
+    mk(failure="infra", retry_at="2026-01-05T11:00:00Z")  # not yet
+    mk(failure="infra", retry_at="2026-01-05T09:00:00Z", retried="x")  # already retried
+    mk(failure="logic", retry_at="2026-01-05T09:00:00Z")  # not infra
+    mk(status="ok", failure="infra", retry_at="2026-01-05T09:00:00Z")
+    mk(kind="ask", failure="infra", retry_at="2026-01-05T09:00:00Z")
+    mk(failure="infra")  # no retry_at
+    assert [r.id for r in failed_retry_candidates(conn, now=now)] == [ok.id]

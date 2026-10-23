@@ -13,6 +13,10 @@ dependencies = [
     "httpx",
     "httpx2>=2.16.0",
     "mcp>=2.3.0",
+    "croniter>=6.2.4",
+    "python-dateutil>=3.0.0",
+    "pathspec>=1.1.1",
+    "markdown-it-py>=4.2.0",
 ]
 
 [project.scripts]

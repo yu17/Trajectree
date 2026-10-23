@@ -56,6 +56,18 @@ def _where(
     return where, params
 
 
+def get_signal_by_key(conn: apsw.Connection, dedupe_key: str) -> Signal | None:
+    cols = table_columns(conn, "signal")
+    row = conn.execute(
+        f"SELECT {', '.join(cols)} FROM signal WHERE dedupe_key = ?", (dedupe_key,)
+    ).fetchone()
+    if row is None:
+        return None
+    data = dict(zip(cols, row))
+    data["payload"] = json.loads(data["payload"])
+    return Signal.model_validate(data)
+
+
 def list_signals(
     conn: apsw.Connection,
     *,

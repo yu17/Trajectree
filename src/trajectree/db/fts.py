@@ -6,11 +6,12 @@ Virtual tables cannot be session-attached, so the ledger's changesets never cont
 import apsw
 from pydantic import BaseModel
 
-# (source table, title column, body column, kind, project_id column)
+# (source table, title column, body column, kind, project_id column or the literal NULL)
 _SOURCES: tuple[tuple[str, str, str, str, str], ...] = (
     ("event", "title", "body_md", "event", "project_id"),
     ("todo", "title", "body_md", "todo", "project_id"),
     ("project", "title", "summary_md", "project", "id"),
+    ("report", "title", "source_md", "report", "NULL"),
 )
 
 
@@ -25,7 +26,7 @@ class SearchHit(BaseModel):
 def _insert_sql(title: str, body: str, kind: str, pid: str) -> str:
     return (
         "INSERT INTO search_fts(id, kind, project_id, title, body) "
-        f"VALUES (new.id, '{kind}', new.{pid}, new.{title}, new.{body});"
+        f"VALUES (new.id, '{kind}', {'NULL' if pid == 'NULL' else 'new.' + pid}, new.{title}, new.{body});"
     )
 
 

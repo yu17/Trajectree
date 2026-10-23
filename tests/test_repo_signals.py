@@ -83,3 +83,9 @@ def test_strip_bins_tolerate_non_numeric_counts(conn):
                           SignalIn(project_id="p", kind="commits", t_start=datetime(2026, 1, 5, 1, tzinfo=UTC), dedupe_key="b", payload={"count": 2})])
     bins = strip_bins(conn, project_ids=["p"], t_from=datetime(2026, 1, 1, tzinfo=UTC), t_to=datetime(2026, 2, 1, tzinfo=UTC))
     assert bins[0].count == 3
+
+def test_get_signal_by_key(conn):
+    from trajectree.repo.signals import get_signal_by_key
+    upsert_signals(conn, [SignalIn(project_id="p", kind="remote", t_start=datetime(2026, 1, 5, tzinfo=UTC), dedupe_key="k1", payload={"a": 1})])
+    got = get_signal_by_key(conn, "k1")
+    assert got.kind == "remote" and got.payload == {"a": 1} and get_signal_by_key(conn, "nope") is None

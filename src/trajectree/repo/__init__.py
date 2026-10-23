@@ -17,5 +17,9 @@ class DuplicateEdge(Exception):
     """An edge with the same endpoints and relation already exists."""
 
 
+class DuplicateRoutine(Exception):
+    """A routine with this name already exists."""
+
+
 class InvalidRange(ValueError):
     """An update would leave an event ending before it starts."""
