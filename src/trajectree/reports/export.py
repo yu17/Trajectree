@@ -11,6 +11,7 @@ import re
 import secrets
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Literal
 
@@ -142,9 +143,14 @@ def export_report(
     argv = [marp, str(md_path), "-o", str(tmp_out)]
     if settings.chrome_bin:
         argv += ["--browser-path", settings.chrome_bin]
+    # marp-cli leaves its Chromium profile (about 2 MB) in TMPDIR after every export; in the
+    # container /tmp is a tmpfs counted against the memory limit, so give each run its own TMPDIR
+    # and remove it afterwards.
+    scratch = tempfile.mkdtemp(prefix="trajectree-marp-")
+    env = {**os.environ, "TMPDIR": scratch}
     try:
         try:
-            result = run(argv, capture_output=True, text=True, timeout=MARP_TIMEOUT_S, cwd=out_dir)
+            result = run(argv, capture_output=True, text=True, timeout=MARP_TIMEOUT_S, cwd=out_dir, env=env)
         except subprocess.TimeoutExpired:
             raise RuntimeError(f"marp timed out after {MARP_TIMEOUT_S}s") from None
         except OSError as exc:
@@ -156,6 +162,7 @@ def export_report(
         os.replace(tmp_out, out_path)
     finally:
         tmp_out.unlink(missing_ok=True)
+        shutil.rmtree(scratch, ignore_errors=True)
     return out_path
 
 

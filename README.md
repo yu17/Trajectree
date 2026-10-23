@@ -372,6 +372,7 @@ your Codex `auth.json` to `cfg/codex/auth.json`, then use `--runner codex`.
 | Container, `./cfg/connectors/` | `<name>_token` for `github`, `gitlab` and `chatmaid` (0600), written by `trajectree connectors login` |
 | Container, `./data/exports/reports/` | `<id>.md`, `<id>.html`, `<id>.pdf`, `<id>.pptx`, written on export |
 | Container, `./cfg/home/.ssh/` | `known_hosts`: the Slurm login node's host key, accepted on first connect |
+| Container, `./cfg/home/.config/chromium/`, `./cfg/home/.local/share/pki/` | `reports` image only: Chromium's `Crash Reports/` settings and an empty NSS database, created on the first PDF/PPTX export (a few KB). Chromium's per-export profile goes to a private temporary directory under `/tmp` that is removed after the export |
 | Host CLI, `init-project` | `<project>/.claude/rules/trajectree.md`, `<project>/.git/info/exclude`, Claude Code's user MCP config via `claude mcp add` |
 | Host CLI, `hooks install` | `~/.claude/settings.json` after confirmation, with `settings.json.trajectree.bak` |
 | Host, anything else | Nothing |

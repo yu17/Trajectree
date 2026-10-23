@@ -28,6 +28,7 @@ def test_export_with_marp_invokes_cli(settings, ledger, human, tmp_path):
         calls.append(argv)
         kwargs.append(kw)
         Path(argv[argv.index("-o") + 1]).write_bytes(b"%PDF")
+        (Path(kw["env"]["TMPDIR"]) / "marp-cli-profile").mkdir()  # what marp leaves behind
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     s = settings.model_copy(update={"marp_bin": "/opt/marp", "chrome_bin": "/usr/bin/chromium"})
@@ -39,6 +40,10 @@ def test_export_with_marp_invokes_cli(settings, ledger, human, tmp_path):
     assert tmp_out.parent == s.reports_dir and tmp_out.suffix == ".pdf" and tmp_out != out and not tmp_out.exists()
     assert kwargs[0]["timeout"] == 120 and kwargs[0]["cwd"] == s.reports_dir and out == s.reports_dir / f"{report.id}.pdf"
     assert out.read_bytes() == b"%PDF" and sorted(p.name for p in s.reports_dir.iterdir()) == [f"{report.id}.md", f"{report.id}.pdf"]
+    # each marp run gets its own TMPDIR (Chromium's profile lands there), removed afterwards
+    scratch = Path(kwargs[0]["env"]["TMPDIR"])
+    assert scratch.name.startswith("trajectree-marp-") and not scratch.exists()
+    assert kwargs[0]["env"]["PATH"]  # the rest of the environment is inherited
 
 
 def test_export_marp_failure_and_md(settings, ledger, human):
