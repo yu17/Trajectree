@@ -51,11 +51,16 @@ def list_resources(
 
 
 def upsert_resource(
-    ledger: Ledger, actor: Actor, data: ResourceIn, *, intent: str | None = None
+    ledger: Ledger,
+    actor: Actor,
+    data: ResourceIn,
+    *,
+    intent: str | None = None,
+    auto_accept: bool = False,
 ) -> Resource:
     now = to_db(utcnow())
     with ledger.transaction(
-        actor, intent or f"upsert resource {data.kind} {data.locator}"
+        actor, intent or f"upsert resource {data.kind} {data.locator}", auto_accept=auto_accept
     ) as h:
         existing = find_resource(h.conn, data.project_id, data.kind, data.locator)
         if existing is None:

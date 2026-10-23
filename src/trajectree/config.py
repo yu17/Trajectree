@@ -30,6 +30,11 @@ class Settings(BaseModel):
     folders_scan_every_h: int = 24
     folders_big_dir_mb: int = 500
     remote_every_m: int = 30
+    slurm_host: str | None = None
+    slurm_user: str | None = None
+    slurm_key: Path | None = None
+    slurm_every_m: int = 15
+    ssh_bin: str = "ssh"
 
     @property
     def connectors_dir(self) -> Path:
@@ -108,6 +113,7 @@ _INT_ENV = {
     "TRAJECTREE_FOLDERS_EVERY_H": "folders_scan_every_h",
     "TRAJECTREE_BIG_DIR_MB": "folders_big_dir_mb",
     "TRAJECTREE_REMOTE_EVERY_M": "remote_every_m",
+    "TRAJECTREE_SLURM_EVERY_M": "slurm_every_m",
 }
 
 
@@ -116,6 +122,7 @@ _STR_ENV = {
     "TRAJECTREE_CODEX_BIN": "codex_bin",
     "TRAJECTREE_DEFAULT_RUNNER": "default_runner",
     "TRAJECTREE_TZ": "tz",
+    "TRAJECTREE_SSH_BIN": "ssh_bin",
 }
 
 
@@ -139,6 +146,12 @@ def load_settings() -> Settings:
     for var, field in _STR_ENV.items():
         if var in os.environ:
             values[field] = os.environ[var]
+    if os.environ.get("TRAJECTREE_SLURM_HOST"):
+        values["slurm_host"] = os.environ["TRAJECTREE_SLURM_HOST"]
+    if os.environ.get("TRAJECTREE_SLURM_USER"):
+        values["slurm_user"] = os.environ["TRAJECTREE_SLURM_USER"]
+    if os.environ.get("TRAJECTREE_SLURM_KEY"):
+        values["slurm_key"] = Path(os.environ["TRAJECTREE_SLURM_KEY"]).expanduser()
     if "TRAJECTREE_RUN_ENV_PASSTHROUGH" in os.environ:
         values["run_env_passthrough"] = [
             item.strip()

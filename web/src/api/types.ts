@@ -191,6 +191,13 @@ export interface MaterializeReport {
   errors: string[];
 }
 
+export interface SlurmReport {
+  jobs: number;
+  resources: number;
+  signals_written: number;
+  errors: string[];
+}
+
 export interface IngestReport {
   started: string;
   duration_ms: number;
@@ -198,6 +205,7 @@ export interface IngestReport {
   git: GitReport;
   folders?: FoldersReport | null;
   remote?: RemoteReport | null;
+  slurm?: SlurmReport | null;
   recurrence?: MaterializeReport | null;
   stale: string[];
   exports_written: number;

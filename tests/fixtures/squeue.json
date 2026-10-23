@@ -1,0 +1,26 @@
+{
+  "jobs": [
+    {
+      "job_id": 123,
+      "name": "train-model",
+      "job_state": "RUNNING",
+      "current_working_directory": "/home/u/proj",
+      "partition": "gpu",
+      "user_name": "u",
+      "submit_time": 1767603600,
+      "start_time": 1767607200,
+      "end_time": 0
+    },
+    {
+      "job_id": 124,
+      "name": "other-job",
+      "job_state": ["PENDING"],
+      "current_working_directory": "/home/u/other",
+      "partition": "cpu",
+      "user_name": "u",
+      "submit_time": {"set": true, "infinite": false, "number": 1767610000},
+      "start_time": {"set": false, "infinite": false, "number": 0},
+      "end_time": {"set": false, "infinite": false, "number": 0}
+    }
+  ]
+}

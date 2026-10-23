@@ -1,0 +1,17 @@
+{
+  "jobs": [
+    {
+      "job_id": 99,
+      "name": "preprocess",
+      "state": {"current": ["COMPLETED"], "reason": "None"},
+      "working_directory": "/home/u/proj",
+      "partition": "cpu",
+      "user": "u",
+      "time": {
+        "submission": 1767520000,
+        "start": {"set": true, "infinite": false, "number": 1767520100},
+        "end": {"set": true, "infinite": false, "number": 1767523700}
+      }
+    }
+  ]
+}

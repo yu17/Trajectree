@@ -34,6 +34,7 @@ from trajectree.connectors.remote import (
     remote_due,
     write_remote,
 )
+from trajectree.connectors.slurm import SlurmReport, collect_slurm, slurm_due, write_slurm
 from trajectree.db.ledger import Ledger
 from trajectree.ingest.exports import render_exports, write_files
 from trajectree.models import Actor, ResourceIn
@@ -59,6 +60,7 @@ class IngestReport(BaseModel):
     git: GitReport
     folders: FoldersReport | None = None
     remote: RemoteReport | None = None
+    slurm: SlurmReport | None = None
     recurrence: MaterializeReport | None = None
     stale: list[str]
     exports_written: int
@@ -81,6 +83,7 @@ def run_ingest(ledger: Ledger, settings: Settings, *, now: datetime | None = Non
         git: GitReport | None = None
         folders: FoldersReport | None = None
         remote: RemoteReport | None = None
+        slurm: SlurmReport | None = None
         recurrence: MaterializeReport | None = None
         stale: list[str] = []
         exports_written = 0
@@ -150,6 +153,15 @@ def run_ingest(ledger: Ledger, settings: Settings, *, now: datetime | None = Non
                     milestones_created=remote_milestones,
                     errors=remote_collection.errors,
                 )
+            # slurm: ssh runs with no lock; only when a login host is configured and due
+            if settings.slurm_host:
+                with ledger.locked() as conn:
+                    slurm_run = slurm_due(conn, now=now, every_m=settings.slurm_every_m)
+                if slurm_run:
+                    slurm_collection = collect_slurm(
+                        settings, since=now - timedelta(days=settings.scan_since_days)
+                    )
+                    slurm = write_slurm(ledger, settings, slurm_collection, now=now)
             # folders: same three phases, the walk runs with no lock; skipped until due
             with ledger.locked() as conn:
                 due = folders_due(conn, now=now, every_h=settings.folders_scan_every_h)
@@ -188,6 +200,7 @@ def run_ingest(ledger: Ledger, settings: Settings, *, now: datetime | None = Non
                 git=git,
                 folders=folders,
                 remote=remote,
+                slurm=slurm,
                 recurrence=recurrence,
                 stale=stale,
                 exports_written=exports_written,

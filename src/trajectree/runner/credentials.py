@@ -35,6 +35,7 @@ def ensure_cfg_dirs(settings: Settings) -> None:
         settings.claude_config_dir,
         settings.run_home,
         settings.backends_cfg_dir,
+        settings.run_home / ".ssh",  # ssh's accept-new writes known_hosts under HOME=<run_home>
     ):
         _private_dir(d)
 

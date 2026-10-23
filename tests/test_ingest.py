@@ -202,3 +202,22 @@ def test_ingest_remote_phase_runs_when_due(ledger, human, settings, monkeypatch)
     first = run_ingest(ledger, settings, now=now)
     assert first.remote.repos == 1 and first.remote.errors == ["boom"] and calls == [["https://github.com/o/r"]]
     assert run_ingest(ledger, settings, now=now).remote is None and len(calls) == 1
+
+
+def test_ingest_slurm_phase_when_configured(ledger, human, settings, monkeypatch):
+    from pathlib import Path
+
+    fixtures = Path(__file__).parent / "fixtures"
+    p = create_project(ledger, human, ProjectIn(slug="proj", title="Proj", kind="research"))
+    upsert_resource(ledger, human, ResourceIn(project_id=p.id, kind="folder", locator="/home/u/proj"))
+    monkeypatch.setenv("FAKE_SSH_SQUEUE", str(fixtures / "squeue.json"))
+    monkeypatch.setenv("FAKE_SSH_SACCT", str(fixtures / "sacct.json"))
+    now = datetime(2026, 1, 6, 12, tzinfo=UTC)
+    assert run_ingest(ledger, settings, now=now).slurm is None  # not configured
+    s = settings.model_copy(
+        update={"slurm_host": "login.hpc", "ssh_bin": str(Path(__file__).parent / "bin" / "fake-ssh")}
+    )
+    first = run_ingest(ledger, s, now=now)
+    assert first.slurm.jobs == 3 and first.slurm.resources == 2 and first.slurm.errors == []
+    assert get_state(ledger.conn, "ingest:last")["slurm"]["jobs"] == 3
+    assert run_ingest(ledger, s, now=now).slurm is None  # not due yet
