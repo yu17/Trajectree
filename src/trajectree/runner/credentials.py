@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from trajectree.config import Settings
 
 OAUTH_FILE = "oauth_token"
+_BACKEND_KEYS = ("env", "model", "apiKeyHelper")
 
 _versions: dict[str, str | None] = {}
 
@@ -88,14 +89,20 @@ def sync_backends(settings: Settings) -> list[str]:
         onboarding = profile / ".claude.json"
         try:
             # Read everything first so an unreadable file leaves no half-copied profile.
-            settings_bytes = src.read_bytes()
+            source = json.loads(src.read_bytes())
+            if not isinstance(source, dict):
+                continue
+            # Only what selects the backend: hooks, permissions, status lines and the rest of
+            # the owner's settings must not run or apply inside the daemon's runs.
+            kept = {key: source[key] for key in _BACKEND_KEYS if key in source}
+            settings_bytes = json.dumps(kept, indent=2).encode()
             onboarding_bytes = onboarding.read_bytes() if onboarding.is_file() else None
             _private_dir(settings.backends_cfg_dir)
             _private_dir(dest)
             _write_secret(dest / "settings.json", settings_bytes)
             if onboarding_bytes is not None:
                 _write_secret(dest / ".claude.json", onboarding_bytes)
-        except OSError:
+        except (OSError, ValueError):
             continue
         names.append(profile.name)
     return sorted(names)

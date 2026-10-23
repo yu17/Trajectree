@@ -4,7 +4,7 @@ services:
     ports: ["127.0.0.1:8742:8742"]
     volumes:
       - ./data:/data
-      - cfg:/cfg
+      - ./cfg:/cfg
       - ${HOME}/.claude/projects:/host/claude/projects:ro
       - ${HOME}/.config/claude-backends:/host/claude-backends:ro
       - ${TRAJECTREE_PROJECTS_ROOT:?set TRAJECTREE_PROJECTS_ROOT to the folder that holds your project folders}:/projects:ro
@@ -23,6 +23,3 @@ services:
     restart: unless-stopped
     mem_limit: 1g
     pids_limit: 256
-
-volumes:
-  cfg: {}

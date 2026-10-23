@@ -1,6 +1,7 @@
 .venv
 __pycache__
 data/
+cfg/
 web/node_modules
 web/dist
 src/trajectree/static/

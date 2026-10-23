@@ -44,6 +44,26 @@ def test_sync_backends_copies_only_config(settings, tmp_path):
     assert sync_backends(settings) == []
 
 
+def test_sync_backends_keeps_only_env_model_and_api_key_helper(settings, tmp_path):
+    root = tmp_path / "backends"
+    full = {"env": {"ANTHROPIC_AUTH_TOKEN": "k"}, "model": "kimi-k2", "apiKeyHelper": "/bin/key",
+            "permissions": {"allow": ["Bash(*)"]}, "hooks": {"Stop": []}, "statusLine": {"type": "command", "command": "x"}}
+    for name, data in (("full", full), ("envonly", {k: full[k] for k in ("env", "permissions", "hooks", "statusLine")})):
+        (root / name).mkdir(parents=True)
+        (root / name / "settings.json").write_text(json.dumps(data))
+        (root / name / ".claude.json").write_text('{"hasCompletedOnboarding": true, "x": 1}')
+    for name, text in (("broken", "{not json"), ("alist", "[1, 2]")):
+        (root / name).mkdir(parents=True)
+        (root / name / "settings.json").write_text(text)
+    s = settings.model_copy(update={"backends_root": root})
+    assert sync_backends(s) == ["envonly", "full"]
+    out = s.backends_cfg_dir
+    assert json.loads((out / "full" / "settings.json").read_text()) == {"env": {"ANTHROPIC_AUTH_TOKEN": "k"}, "model": "kimi-k2", "apiKeyHelper": "/bin/key"}
+    assert json.loads((out / "envonly" / "settings.json").read_text()) == {"env": {"ANTHROPIC_AUTH_TOKEN": "k"}}
+    assert (out / "full" / ".claude.json").read_text() == '{"hasCompletedOnboarding": true, "x": 1}'   # copied as is
+    assert not (out / "broken").exists() and not (out / "alist").exists()
+
+
 def test_runner_status_and_version_cache(settings):
     reset_version_cache()
     calls = []

@@ -5,10 +5,11 @@ Self-hosted project tracker (Python backend, React frontend).
 ## Run with Docker
 
 ```bash
-# Create the data dir first: if Docker creates it, it is root-owned and the
-# non-root container cannot write to it. UID/GID are not exported by bash
-# by default, so `export UID GID=$(id -g)` or put them in a .env file.
-mkdir -p data
+# Create the data and cfg dirs yourself first: if Docker creates them, they are
+# root-owned and the non-root container cannot write to them. cfg holds the
+# runner's credentials, so keep it private to you. UID/GID are not exported by
+# bash by default, so `export UID GID=$(id -g)` or put them in a .env file.
+mkdir -p data cfg && chmod 700 cfg
 
 # Folder that holds your project folders; mounted read-only at /projects.
 # docker compose refuses to start while this is unset.
@@ -25,8 +26,8 @@ mkdir -p ~/.config/trajectree && cp data/token ~/.config/trajectree/token
 The container runs as a non-root user with a read-only root filesystem, and
 publishes port 8742 on 127.0.0.1 only. It mounts `~/.claude/projects` (only the
 transcripts, not the rest of the Claude home), `~/.config/claude-backends` and
-`$TRAJECTREE_PROJECTS_ROOT` read-only, `./data` read-write, and a private named
-volume `cfg` at `/cfg` for the runner's Claude Code config and credentials.
+`$TRAJECTREE_PROJECTS_ROOT` read-only, `./data` read-write, and `./cfg`
+read-write at `/cfg` for the runner's Claude Code config and credentials.
 The image includes Claude Code (installed natively, auto-update disabled).
 
 The `trajectree` CLI and the `trajectree mcp` shim run on the host. Install
@@ -129,11 +130,13 @@ trajectree login          # paste the token when asked
 trajectree runner status  # shows whether the runner is ready
 ```
 
-The token is stored in the `cfg` volume (`/cfg/claude/oauth_token`), never in
-`./data`. To run through your ccx backends (`CLAUDE_CONFIG_DIR=<profile>
+The token is stored in `./cfg` (`/cfg/claude/oauth_token` in the container),
+never in `./data`. To run through your ccx backends (`CLAUDE_CONFIG_DIR=<profile>
 claude ...`), run `trajectree backends sync`: it copies each backend's
-`settings.json` and `.claude.json` from `~/.config/claude-backends` into
-`/cfg/backends/<name>/`, and runs then use `--runner ccx:<backend>`.
+`.claude.json` and the `env`, `model` and `apiKeyHelper` keys of its
+`settings.json` (nothing else, so no hooks, permissions or status line) from
+`~/.config/claude-backends` into `/cfg/backends/<name>/`, and runs then use
+`--runner ccx:<backend>`.
 
 Codex is optional: install the binary into the image yourself and set
 `TRAJECTREE_CODEX_BIN`.
@@ -160,8 +163,8 @@ cannot read or write the tracker. `show` prints the hooks currently installed;
 
 | Where | What |
 | --- | --- |
-| Container, `./data` | `trajectree.db`, `token`, `exports/` (project summaries), `runs/*.log` and `runs/<run_id>/` (run logs and working files), `prompts/*.md` (editable prompts) |
-| Container, `cfg` volume (`/cfg`) | Claude Code config for the runner, `claude/oauth_token`, `claude/settings.json`, `claude/.claude.json`, backend profile copies in `backends/<name>/`, `home/` (the run home), `codex/` |
+| Container, `./data` | `trajectree.db`, `token`, `exports/` (project summaries), `runs/*.log` and `runs/<run_id>/` (run logs and working files; `runs/<run_id>/mcp.json` holds the run's MCP token, 0600, only while the run is running), `prompts/*.md` (editable prompts) |
+| Container, `./cfg` (`/cfg`) | Claude Code config for the runner, `claude/oauth_token`, `claude/settings.json`, `claude/.claude.json`, backend profile copies in `backends/<name>/`, `home/` (the run home), `codex/` |
 | Host CLI, `init-project` | `<project>/.claude/rules/trajectree.md`, `<project>/.git/info/exclude`, Claude Code's user MCP config via `claude mcp add` |
 | Host CLI, `hooks install` | `~/.claude/settings.json` after confirmation, with `settings.json.trajectree.bak` |
 | Host, anything else | Nothing |
@@ -183,7 +186,7 @@ of it. The project folders mount read-only.
 | `TRAJECTREE_LIVE_WINDOW` | `900` | Seconds since the last transcript activity during which a session counts as live |
 | `TRAJECTREE_STALE_SETTLE_H` | `24` | Hours after a project's first activity since its last summary before it is flagged stale (summary due) |
 | `TRAJECTREE_SCAN_SINCE_DAYS` | `365` | Ignore transcripts and commits older than this many days |
-| `TRAJECTREE_CFG_DIR` | `<data dir>/cfg` (`/cfg` volume in Docker) | Container-private runner config: OAuth token, synced backend profiles, runner home |
+| `TRAJECTREE_CFG_DIR` | `<data dir>/cfg` (`/cfg`, bind-mounted from `./cfg`, in Docker) | Container-private runner config: OAuth token, synced backend profiles, runner home |
 | `TRAJECTREE_CLAUDE_BIN` | `claude` | Claude Code binary the runner spawns |
 | `TRAJECTREE_CODEX_BIN` | `codex` | Codex binary the runner spawns |
 | `TRAJECTREE_DEFAULT_RUNNER` | `claude` | Runner used when none is chosen (`claude`, or `ccx:<backend>`) |

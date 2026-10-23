@@ -28,7 +28,6 @@ ENV TRAJECTREE_DATA_DIR=/data \
     PATH=/opt/claude/.local/bin:/app/.venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1
 VOLUME /data
-VOLUME /cfg
 EXPOSE 8742
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8742/api/health').status==200 else 1)"
 USER trajectree
