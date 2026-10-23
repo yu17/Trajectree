@@ -90,7 +90,10 @@ def connector_status(request: Request) -> list[ConnectorStatus]:
         "local-git": (True, None),
         "folders": (settings.folders_scan_every_h > 0, f"every {settings.folders_scan_every_h} h"),
         "github": (github is not None, "token stored" if github else None),
-        "gitlab": (gitlab is not None, "token stored" if gitlab else None),
+        "gitlab": (
+            gitlab is not None and bool(settings.gitlab_host),
+            f"host {settings.gitlab_host}" if settings.gitlab_host else "set TRAJECTREE_GITLAB_HOST",
+        ),
         "slurm": (bool(settings.slurm_host), f"host {settings.slurm_host}" if settings.slurm_host else None),
         "chatmaid": (
             bool(settings.chatmaid_url) or chatmaid_token is not None,

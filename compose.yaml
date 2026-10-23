@@ -18,6 +18,7 @@ services:
       HOME: /cfg/home
       DISABLE_AUTOUPDATER: "1"
       TRAJECTREE_TZ: ${TZ:-UTC}
+      TRAJECTREE_GITLAB_HOST: ${TRAJECTREE_GITLAB_HOST:-}
     read_only: true
     tmpfs: ["/tmp"]
     cap_drop: [ALL]

@@ -34,10 +34,10 @@ _SCP = re.compile(r"^[\w.-]+@([\w.-]+):(.+)$")
 
 
 class RemoteRepo(BaseModel):
-    kind: Literal["github", "gitlab"]
+    kind: Literal["github", "gitlab", "other"]
     host: str
     path: str
-    api_base: str
+    api_base: str | None  # None for `other`: an unknown host is never polled
     web_url: str
 
 
@@ -74,10 +74,11 @@ class RemoteReport(BaseModel):
     errors: list[str]
 
 
-def parse_remote_url(url: str) -> RemoteRepo | None:
+def parse_remote_url(url: str, *, gitlab_host: str | None = None) -> RemoteRepo | None:
     """The repository behind a git remote URL, or None for local paths and unparsable strings.
 
-    Any host other than github.com is treated as GitLab.
+    github.com is GitHub; the host named by `gitlab_host` (`TRAJECTREE_GITLAB_HOST`) is GitLab;
+    any other host is `other`, which is listed but never polled (no token is ever sent to it).
     """
     url = url.strip()
     if "://" in url:
@@ -105,13 +106,16 @@ def parse_remote_url(url: str) -> RemoteRepo | None:
             kind="github", host=host, path=path,
             api_base="https://api.github.com", web_url=f"https://{host}/{path}",
         )  # fmt: skip
-    return RemoteRepo(
-        kind="gitlab", host=host, path=path,
-        api_base=f"https://{host}/api/v4", web_url=f"https://{host}/{path}",
-    )  # fmt: skip
+    if gitlab_host and host == gitlab_host.strip().lower():
+        return RemoteRepo(
+            kind="gitlab", host=host, path=path,
+            api_base=f"https://{host}/api/v4", web_url=f"https://{host}/{path}",
+        )  # fmt: skip
+    return RemoteRepo(kind="other", host=host, path=path, api_base=None, web_url=f"https://{host}/{path}")
 
 
 def normalize_remote(url: str) -> str | None:
+    """The web URL of a git remote, whatever its host (discovery suggests every remote)."""
     repo = parse_remote_url(url)
     return repo.web_url if repo else None
 
@@ -284,9 +288,12 @@ def collect_remote(
         for resource in resources:
             if resource.kind != "git_remote":
                 continue
-            repo = parse_remote_url(resource.locator)
+            repo = parse_remote_url(resource.locator, gitlab_host=settings.gitlab_host)
             if repo is None:
                 errors.append(f"{resource.locator}: not a recognised git remote URL")
+                continue
+            if repo.kind == "other":
+                errors.append(f"{resource.locator}: unknown host, not polled")
                 continue
             if repo.kind not in tokens:
                 tokens[repo.kind] = load_connector_token(settings, repo.kind)

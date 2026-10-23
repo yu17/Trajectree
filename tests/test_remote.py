@@ -39,12 +39,19 @@ def test_parse_remote_urls():
     )  # fmt: skip
     assert parse_remote_url("https://github.com/o/r").path == "o/r"
     assert parse_remote_url("https://github.com/o/r.git").path == "o/r"
-    assert parse_remote_url("https://gitlab.uni.edu/lab/sub/proj.git").api_base == "https://gitlab.uni.edu/api/v4"
-    assert parse_remote_url("https://gitlab.uni.edu/lab/sub/proj.git").kind == "gitlab"
-    ssh = parse_remote_url("ssh://git@host/g/sub/r.git")
+    lab = parse_remote_url("https://gitlab.uni.edu/lab/sub/proj.git", gitlab_host="gitlab.uni.edu")
+    assert lab.kind == "gitlab" and lab.api_base == "https://gitlab.uni.edu/api/v4"
+    # without a configured GitLab host (or on another host) a non-GitHub remote is `other`
+    unknown = parse_remote_url("https://gitlab.uni.edu/lab/sub/proj.git")
+    assert unknown.kind == "other" and unknown.api_base is None and unknown.web_url == "https://gitlab.uni.edu/lab/sub/proj"
+    assert parse_remote_url("https://evil.example/a/b", gitlab_host="gitlab.uni.edu").kind == "other"
+    assert parse_remote_url("git@github.com:o/r.git", gitlab_host="gitlab.uni.edu").kind == "github"
+    ssh = parse_remote_url("ssh://git@host/g/sub/r.git", gitlab_host="host")
     assert ssh.kind == "gitlab" and ssh.path == "g/sub/r" and ssh.web_url == "https://host/g/sub/r"
-    ported = parse_remote_url("https://gitlab.lab:8443/g/r")
+    ported = parse_remote_url("https://gitlab.lab:8443/g/r", gitlab_host="gitlab.lab:8443")
+    assert ported.kind == "gitlab"
     assert ported.api_base == "https://gitlab.lab:8443/api/v4" and ported.web_url == "https://gitlab.lab:8443/g/r"
+    assert normalize_remote("https://evil.example/a/b.git") == "https://evil.example/a/b"  # still suggested
     assert parse_remote_url("https://h:abc/x") is None and normalize_remote("https://h:abc/x") is None
     assert parse_remote_url("https://[bad/x") is None
     assert parse_remote_url("file:///tmp/x") is None
@@ -122,7 +129,7 @@ def test_fetch_gitlab_uses_private_token_and_encoded_path():
             {"tag_name": "v3", "name": "Three", "released_at": "2026-10-17T00:00:00Z"},
         ])  # fmt: skip
 
-    repo = parse_remote_url("https://gitlab.uni.edu/lab/sub/proj.git")
+    repo = parse_remote_url("https://gitlab.uni.edu/lab/sub/proj.git", gitlab_host="gitlab.uni.edu")
     items = fetch_gitlab(client_for(handler), repo, "glpat", since=datetime(2026, 10, 1, tzinfo=UTC))
     assert len(seen) == 3
     by = {(i.kind, i.number or i.tag): i for i in items}
@@ -179,6 +186,31 @@ def test_collect_remote_isolates_failures(ledger, human, settings):
     assert [r.tag for r in col.releases] == ["v1"] and col.releases[0].resource_id == rok.id
     assert rbad.id not in col.polled and r401.id not in col.polled
     assert "ghp_x" not in joined and all("ghp_x" not in str(s.payload) for s in col.signals)
+
+
+def test_collect_remote_sends_gitlab_token_only_to_the_configured_host(ledger, human, settings):
+    p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    evil = mk_remote(ledger, human, p, "https://evil.example/o/r.git")
+    lab = mk_remote(ledger, human, p, "https://gitlab.uni.edu/lab/proj.git")
+    store_connector_token(settings, "gitlab", "glpat-secret")
+    hosts = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        hosts.append(request.url.host)
+        assert request.url.host == "gitlab.uni.edu" and request.headers["PRIVATE-TOKEN"] == "glpat-secret"
+        return httpx.Response(200, json=[])
+
+    resources = list_resources(ledger.conn, kinds=["git_remote"])
+    configured = settings.model_copy(update={"gitlab_host": "gitlab.uni.edu"})
+    col = collect_remote(configured, resources, {}, now=NOW, since_days=30, client=client_for(handler))
+    assert set(hosts) == {"gitlab.uni.edu"} and len(hosts) == 3
+    assert col.errors == ["https://evil.example/o/r.git: unknown host, not polled"]
+    assert col.polled == [lab.id] and evil.id not in col.polled
+    # with no GitLab host configured, nothing at all is requested
+    hosts.clear()
+    col = collect_remote(settings, resources, {}, now=NOW, since_days=30, client=client_for(handler))
+    assert hosts == [] and col.polled == [] and len(col.errors) == 2
+    assert all(e.endswith(": unknown host, not polled") for e in col.errors)
 
 
 def test_collect_remote_since_uses_cursor_and_caps(ledger, human, settings):

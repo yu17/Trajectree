@@ -235,8 +235,12 @@ trajectree connectors login gitlab
 - The ingest reads the fetch remotes of each `git_local` checkout and suggests
   each one as a `git_remote` resource, pending in the Inbox. A remote is polled
   only after you accept it; a rejected one is not suggested again.
-- `github.com` remotes use the GitHub API; any other host is treated as GitLab
-  (`https://<host>/api/v4`) with the `gitlab` token.
+- `github.com` remotes use the GitHub API with the `github` token. GitLab
+  polling needs `TRAJECTREE_GITLAB_HOST` (for example `gitlab.uni.edu`, with
+  `:<port>` if the remote URL has one): remotes on that host use
+  `https://<host>/api/v4` with the `gitlab` token. Remotes on any other host
+  are still suggested and listed, but never polled (no request, no token); the
+  Settings tab reports them as `unknown host, not polled`.
 - Accepted remotes are polled every `TRAJECTREE_REMOTE_EVERY_M` minutes (30):
   one `remote` signal per repository and day of PR/MR, issue and release
   activity, and a pending `Release <tag>` milestone for each new release.
@@ -392,13 +396,14 @@ of it. The project folders mount read-only.
 | `TRAJECTREE_CODEX_BIN` | `codex` (`/opt/codex/bin/codex` in Docker) | Codex binary the runner spawns |
 | `TRAJECTREE_DEFAULT_RUNNER` | `claude` | Runner used when none is chosen (`claude`, `codex`, or `ccx:<backend>`) |
 | `TRAJECTREE_RUN_ENV_PASSTHROUGH` | none | Comma-separated environment variable names passed through to runner processes |
-| `TRAJECTREE_TZ` | `UTC` (compose: `$TZ`, else `UTC`) | Time zone given to the seeded routines and used to expand recurrence rules |
+| `TRAJECTREE_TZ` | `UTC` (compose: `$TZ`, else `UTC`) | Time zone given to the seeded routines and used to expand recurrence rules; an unknown zone falls back to `UTC` with a warning |
 | `TRAJECTREE_SCHEDULER_EVERY` | `30` | Seconds between scheduler ticks; `0` disables the loop |
 | `TRAJECTREE_SCHEDULER_GRACE_S` | `3600` | A routine fire missed by more than this many seconds is skipped, not run late |
 | `TRAJECTREE_DIGEST_MAX_CHARS` | `12000` | Maximum length of the transcript digest a session summary works from |
 | `TRAJECTREE_FOLDERS_EVERY_H` | `24` | Hours between folder scans; `0` disables them |
 | `TRAJECTREE_BIG_DIR_MB` | `500` | A directory whose own files exceed this many MB is not descended into by the folder scan |
 | `TRAJECTREE_REMOTE_EVERY_M` | `30` | Minutes between GitHub/GitLab polls; `0` disables them |
+| `TRAJECTREE_GITLAB_HOST` | none | The one host polled as GitLab and sent the `gitlab` token (`host` or `host:port`); while unset, no GitLab remote is polled |
 | `TRAJECTREE_SLURM_HOST` | none | Slurm login node; the Slurm connector is off while unset |
 | `TRAJECTREE_SLURM_USER` | none (ssh's default) | User on the login node |
 | `TRAJECTREE_SLURM_KEY` | none (`/run/slurm_key` with `compose.slurm.yaml`) | Private key for ssh to the login node; the overlay reads the host path from this variable |

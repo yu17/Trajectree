@@ -172,7 +172,13 @@ def test_ingest_polls_discovered_remote_only_after_accept(ledger, human, setting
     txn = [t for t in ledger.list_txns(review="pending") if t.intent.startswith("discovered git remote")][0]
     ledger.set_review(txn.id, "accepted", human)
     second = run_ingest(ledger, settings, now=datetime(2026, 10, 22, 13, tzinfo=UTC))
-    assert second.remote.repos == 1 and requests and requests[0].url.host == "evil.example"
+    # accepted, but its host is not TRAJECTREE_GITLAB_HOST: listed, never polled, no token sent
+    assert second.remote.repos == 1 and requests == []
+    assert second.remote.errors == ["https://evil.example/a/b: unknown host, not polled"]
+    settings.gitlab_host = "evil.example"
+    third = run_ingest(ledger, settings, now=datetime(2026, 10, 22, 14, tzinfo=UTC))
+    assert third.remote.errors == [] and requests and requests[0].url.host == "evil.example"
+    assert requests[0].headers["PRIVATE-TOKEN"] == "glpat-secret"
 
 
 def test_rejected_discovery_is_not_suggested_again(ledger, human, settings, tmp_path):

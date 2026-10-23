@@ -68,7 +68,18 @@ def test_connector_status_reports_configuration_without_secrets(client, settings
     assert list(rows) == ["claude-sessions", "local-git", "folders", "github", "gitlab", "slurm", "chatmaid", "recurrence"]
     assert rows["github"]["configured"] is True and rows["slurm"]["configured"] is False
     assert rows["gitlab"]["configured"] is False and rows["local-git"]["configured"] is True
+    assert rows["gitlab"]["detail"] == "set TRAJECTREE_GITLAB_HOST"
     assert "ghp_secret" not in json.dumps(rows)
+
+
+def test_gitlab_status_needs_token_and_host(client, settings):
+    def gitlab():
+        return {r["name"]: r for r in client.get("/api/connectors/status").json()}["gitlab"]
+
+    client.post("/api/connectors/gitlab/credentials", json={"token": "glpat-secret"})
+    assert gitlab()["configured"] is False and gitlab()["detail"] == "set TRAJECTREE_GITLAB_HOST"
+    settings.gitlab_host = "gitlab.uni.edu"
+    assert gitlab() == {**gitlab(), "configured": True, "detail": "host gitlab.uni.edu"}
 
 
 def test_connector_status_surfaces_errors_and_last_run(client, ledger):

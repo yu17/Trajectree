@@ -111,3 +111,10 @@ def test_one_bad_project_does_not_stop_others(ledger, human):
     rep = materialize(ledger, now=NOW)
     assert len(rep.errors) == 1 and rep.errors[0].startswith("bad: ")
     assert rep.created == 8 and len(list_events(ledger.conn, project_ids=[good.id])) == 8
+
+
+def test_unknown_time_zone_is_reported_not_raised(ledger, human):
+    p = create_project(ledger, human, ProjectIn(slug="gm", title="G", kind="routine", recurrence=RULE))
+    rep = materialize(ledger, now=NOW, tz="Mars/Olympus")
+    assert rep.created == 0 and len(rep.errors) == 1 and "Mars/Olympus" in rep.errors[0]
+    assert list_events(ledger.conn, project_ids=[p.id]) == []

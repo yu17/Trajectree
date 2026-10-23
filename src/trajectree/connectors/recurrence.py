@@ -55,7 +55,10 @@ def materialize(ledger: Ledger, *, now: datetime, tz: str = "UTC") -> Materializ
     """
     created = dropped = 0
     errors: list[str] = []
-    zone = ZoneInfo(tz)
+    try:
+        zone = ZoneInfo(tz)
+    except Exception as exc:  # ZoneInfoNotFoundError, ValueError or OSError on a bad key
+        return MaterializeReport(created=0, dropped=0, errors=[f"time zone {tz!r}: {type(exc).__name__}"])
     start = now.astimezone(zone).replace(hour=0, minute=0, second=0, microsecond=0)
     until = now + timedelta(days=HORIZON_DAYS)
     with ledger.locked() as conn:

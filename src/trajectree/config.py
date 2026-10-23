@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
 import os
 import secrets
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel
+
+log = logging.getLogger("trajectree.config")
 
 
 class Settings(BaseModel):
@@ -35,6 +39,7 @@ class Settings(BaseModel):
     slurm_key: Path | None = None
     slurm_every_m: int = 15
     ssh_bin: str = "ssh"
+    gitlab_host: str | None = None  # the one host polled as GitLab (and sent the GitLab token)
     chatmaid_url: str | None = None
     marp_bin: str | None = None  # None: look up `marp` on PATH when exporting
     chrome_bin: str | None = None
@@ -133,6 +138,16 @@ _STR_ENV = {
 }
 
 
+def _valid_tz(value: str) -> str:
+    """`value` when it names an IANA time zone; otherwise "UTC", with a warning."""
+    try:
+        ZoneInfo(value)
+    except (ZoneInfoNotFoundError, ValueError, OSError):  # OSError: e.g. a directory such as "America"
+        log.warning("TRAJECTREE_TZ=%r is not a known time zone; using UTC", value)
+        return "UTC"
+    return value
+
+
 def load_settings() -> Settings:
     data_dir = Path(
         os.environ.get("TRAJECTREE_DATA_DIR", "~/.local/share/trajectree")
@@ -153,6 +168,10 @@ def load_settings() -> Settings:
     for var, field in _STR_ENV.items():
         if var in os.environ:
             values[field] = os.environ[var]
+    if os.environ.get("TRAJECTREE_GITLAB_HOST", "").strip():
+        values["gitlab_host"] = os.environ["TRAJECTREE_GITLAB_HOST"].strip().lower()
+    if "tz" in values:
+        values["tz"] = _valid_tz(str(values["tz"]))
     if os.environ.get("TRAJECTREE_CHATMAID_URL"):
         values["chatmaid_url"] = os.environ["TRAJECTREE_CHATMAID_URL"].strip()
     if os.environ.get("TRAJECTREE_MARP_BIN"):

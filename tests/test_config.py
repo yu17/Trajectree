@@ -56,6 +56,26 @@ def test_marp_and_chrome_bins_from_env(monkeypatch, tmp_path):
     assert load_settings().marp_bin is None
 
 
+def test_gitlab_host_from_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("TRAJECTREE_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("TRAJECTREE_GITLAB_HOST", raising=False)
+    assert load_settings().gitlab_host is None
+    monkeypatch.setenv("TRAJECTREE_GITLAB_HOST", "")
+    assert load_settings().gitlab_host is None
+    monkeypatch.setenv("TRAJECTREE_GITLAB_HOST", " GitLab.Uni.edu ")
+    assert load_settings().gitlab_host == "gitlab.uni.edu"
+
+
+def test_unknown_tz_falls_back_to_utc_with_warning(monkeypatch, tmp_path, caplog):
+    monkeypatch.setenv("TRAJECTREE_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TRAJECTREE_TZ", "Mars/Olympus")
+    with caplog.at_level("WARNING", logger="trajectree.config"):
+        assert load_settings().tz == "UTC"
+    assert "Mars/Olympus" in caplog.text
+    monkeypatch.setenv("TRAJECTREE_TZ", "Europe/Berlin")
+    assert load_settings().tz == "Europe/Berlin"
+
+
 def test_ensure_cfg_dirs_creates_private_ssh_dir(settings):
     from trajectree.runner.credentials import ensure_cfg_dirs
 
