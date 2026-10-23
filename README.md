@@ -154,8 +154,9 @@ trajectree hooks uninstall
 for an ingest pass. It edits `~/.claude/settings.json` (or
 `$CLAUDE_CONFIG_DIR/settings.json`) only after printing the change and getting
 `--yes` or a typed `y`. The first backup is kept as `settings.json.trajectree.bak`.
-The hooks carry a dedicated liveness-only token that can announce a session but
-cannot read or write the tracker. `show` prints the hooks currently installed;
+The hooks carry a dedicated liveness-only token, one per settings file, that can
+announce a session but cannot read or write the tracker; a settings file the
+command creates is made private (0600). `show` prints the hooks currently installed;
 `uninstall` removes only Trajectree's entries. All three accept
 `--settings-file` to target another file.
 

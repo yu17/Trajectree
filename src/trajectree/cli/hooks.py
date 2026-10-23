@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import shutil
@@ -10,6 +11,11 @@ from typing import Any, Callable, Mapping, TextIO
 
 HOOK_EVENTS = ("SessionStart", "Stop", "SessionEnd")
 HOOK_LABEL = "hooks"
+
+
+def token_label(path: Path) -> str:
+    """One hook token per settings file, so installing into one never revokes another's."""
+    return f"{HOOK_LABEL}:{hashlib.sha256(str(path.resolve()).encode()).hexdigest()[:8]}"
 
 
 def hooks_url(base: str) -> str:
@@ -122,11 +128,27 @@ def _write(path: Path, settings: dict[str, Any]) -> None:
     if path.exists() and not backup.exists():
         shutil.copyfile(path, backup)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    existed = path.exists()
+    # Write a sibling and rename it over the file, so a crash never leaves a half-written
+    # settings file. A new file holds a hook token, so it starts private.
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(settings, indent=2, ensure_ascii=False) + "\n")
+        if existed:
+            shutil.copymode(path, tmp)  # an existing file keeps its mode
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    if not existed:
+        path.chmod(0o600)
 
 
-def _hook_tokens(api: Any) -> list[dict[str, Any]]:
-    return [t for t in api.get("/api/tokens") if t["label"] == HOOK_LABEL]
+def _hook_tokens(api: Any, path: Path) -> list[dict[str, Any]]:
+    label = token_label(path)
+    return [t for t in api.get("/api/tokens") if t["label"] == label]
 
 
 def install(
@@ -142,10 +164,10 @@ def install(
     current = _load(path)
     if current is None:
         return 1
-    old_tokens = _hook_tokens(api)
+    old_tokens = _hook_tokens(api, path)
     created = api.post(
         "/api/tokens",
-        {"label": HOOK_LABEL, "scope": {"projects": [], "tools": ["hooks"], "write": False}},
+        {"label": token_label(path), "scope": {"projects": [], "tools": ["hooks"], "write": False}},
     )
     merged = merge_hooks(current, hooks_url(api.base), created["secret"])
     shown = redact(merged)["hooks"]
@@ -182,7 +204,7 @@ def uninstall(
         except OSError as exc:
             print(f"cannot write {path}: {exc}", file=sys.stderr)
             return 1
-    for token in _hook_tokens(api):
+    for token in _hook_tokens(api, path):
         api.delete(f"/api/tokens/{token['id']}")
     print("hooks: removed", file=out)
     return 0
@@ -201,5 +223,5 @@ def show(
             h.get("url") == url for g in current.get("hooks", {}).get(event, []) for h in g.get("hooks", [])
         )
         print(f"{event}: {'present' if present else 'absent'}", file=out)
-    print(f"token: {'present' if _hook_tokens(api) else 'absent'}", file=out)
+    print(f"token: {'present' if _hook_tokens(api, path) else 'absent'}", file=out)
     return 0
