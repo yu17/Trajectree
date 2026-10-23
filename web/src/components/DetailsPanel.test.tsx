@@ -1,10 +1,11 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { DetailsPanel } from "./DetailsPanel";
 import { api } from "../api/client";
-import type { TimelineResponse } from "../api/types";
+import type { Run, Signal, TimelineResponse } from "../api/types";
 
 vi.mock("../api/client", () => ({ api: {
   txn: vi.fn(async (id: string) => ({
@@ -16,7 +17,11 @@ vi.mock("../api/client", () => ({ api: {
     payload: { session_id: "abcd1234-ef56-7890-abcd-ef1234567890", cwd: "/home/u/proj", title: "Fix build", git_branch: "main", model: "claude-opus-5-5", prompts: 3, tokens_in: 100, tokens_out: 200, transcript_path: "/t.jsonl", backend: "claude", running: false },
     dedupe_key: "session:abcd1234", updated_at: "2026-01-05T11:00:00Z",
   }]),
-} }));
+  summarizeSession: vi.fn(),
+  run: vi.fn(),
+  acceptProposal: vi.fn(),
+  dismissProposal: vi.fn(),
+}, ApiError: class extends Error {} }));
 
 const data: TimelineResponse = {
   projects: [{ id: "p1", slug: "clmi", title: "CLMI", kind: "research", status: "active", lane_order: 0, summary_md: "", recurrence: null, props: {}, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" }],
@@ -119,5 +124,52 @@ describe("DetailsPanel", () => {
     expect(container.querySelector("code.resume")!.textContent).toContain("claude --resume");
     fireEvent.click(screen.getByText("Copy resume command"));
     await screen.findByText(/Copy failed/);
+  });
+  it("renders files_changed, job_state and remote signals and summarizes a session", async () => {
+    const user = userEvent.setup();
+    const sig = (id: string, kind: Signal["kind"], payload: Record<string, unknown>): Signal => ({ id, project_id: "p1", resource_id: null, kind, t_start: "2026-01-05T09:00:00Z", t_end: null, payload, dedupe_key: id, updated_at: "2026-01-05T11:00:00Z" });
+    vi.mocked(api.signals).mockResolvedValueOnce([
+      sig("s1", "session", { session_id: "sess-1", cwd: "/home/u/proj", title: "Fix build", model: "claude-opus-5-5", prompts: 2 }),
+      sig("f1", "files_changed", { count: 7, bytes: 1024, paths: ["a.py", "b.py", "c.py", "d.py", "e.py", "f.py", "g.py"], big_dirs: [] }),
+      sig("j1", "job_state", { job_id: "4242", name: "train", state: "RUNNING", partition: "gpu", workdir: "/w" }),
+      sig("r1", "remote", { count: 3, prs: [{ number: 12, title: "Add loader", state: "open", url: "u" }], issues: [{ number: 13, title: "Crash on start", state: "open", url: "u" }], releases: [{ tag: "v1.0", title: "First release", url: "u" }] }),
+      sig("m1", "message", { ref: "x", summary: "Bob asked about the deadline", channel: "slack", participants: ["bob"] }),
+    ]);
+    const queued = { id: "run5", kind: "summarize_session", project_id: "p1", status: "queued", runner: "claude", backend: "claude", model: null, session_id: "sess-1", started: null, finished: null, tokens_in: 0, tokens_out: 0, tokens_cache: 0, est_usd: 0, turns: 0, duration_ms: 0, result_md: "", proposals: [], error: null, log_path: null, token_id: null, props: {}, routine_id: null, slot: "interactive", attempt: 1, created_at: "2026-01-05T12:00:00Z" } as Run;
+    vi.mocked(api.summarizeSession).mockResolvedValue(queued);
+    vi.mocked(api.run).mockResolvedValue({ run: { ...queued, status: "ok", result_md: "Fixed the build.", proposals: [{ kind: "todo", project: "clmi", title: "Add CI", reason: "flaky", event_kind: "", when: null, due: null, body_md: "", status: "suggested", applied_txn: null, applied_id: null, dismissed: false }] }, txn_ids: [] });
+    const start = Date.UTC(2026, 0, 5);
+    const { container } = wrap(<DetailsPanel data={data} selected={{ type: "bin", projectId: "p1", start, end: start + 86_400_000 }} onReview={() => {}} onRevert={() => {}} />);
+    expect(await screen.findByText("7 files changed")).toBeTruthy();
+    expect(screen.getByText("e.py")).toBeTruthy();
+    expect(screen.queryByText("f.py")).toBeNull();
+    expect(screen.getByText("job train RUNNING")).toBeTruthy();
+    expect(screen.getByText("3 updates")).toBeTruthy();
+    expect(screen.getByText("Add loader")).toBeTruthy();
+    expect(screen.getByText("Crash on start")).toBeTruthy();
+    expect(screen.getByText("First release")).toBeTruthy();
+    expect(screen.getByText("slack: Bob asked about the deadline")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Summarize session" }));
+    expect(api.summarizeSession).toHaveBeenCalledWith("sess-1", {});
+    expect(await screen.findByText("Fixed the build.")).toBeTruthy();
+    expect(container.querySelector(".answer")!.textContent).toBe("Fixed the build.");
+    expect(container.querySelector("span.badge.run-ok")).not.toBeNull();
+    expect(screen.getByText("Add CI")).toBeTruthy();
+    expect(api.run).toHaveBeenCalledWith("run5");
+  });
+  it("shows the error when a session summary fails", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.summarizeSession).mockRejectedValue(new Error("runs are paused"));
+    const start = Date.UTC(2026, 0, 5);
+    wrap(<DetailsPanel data={data} selected={{ type: "bin", projectId: "p1", start, end: start + 86_400_000 }} onReview={() => {}} onRevert={() => {}} />);
+    await user.click(await screen.findByRole("button", { name: "Summarize session" }));
+    expect(await screen.findByText("runs are paused")).toBeTruthy();
+  });
+  it("opens the project of a selected event", async () => {
+    const onOpenProject = vi.fn();
+    wrap(<DetailsPanel data={data} selected={{ type: "event", id: "e1" }} onReview={() => {}} onRevert={() => {}} onOpenProject={onOpenProject} />);
+    await screen.findByText(/agent run_7/);
+    fireEvent.click(screen.getByRole("button", { name: "Open project" }));
+    expect(onOpenProject).toHaveBeenCalledWith("p1");
   });
 });

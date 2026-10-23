@@ -97,6 +97,22 @@ describe("Timeline", () => {
     expect(onSelect).not.toHaveBeenCalled();
     expect(container.querySelector("g.chip.stale title")!.textContent).toBe("Regenerate summary");
   });
+  it("calls onLane when a lane label is clicked", () => {
+    const onLane = vi.fn();
+    const onChip = vi.fn();
+    const onSelect = vi.fn();
+    const d = { ...data, stale: ["p1"] };
+    const { container } = render(<Timeline data={d} now={new Date("2026-01-10T00:00:00Z")} range={[new Date("2026-01-01T00:00:00Z"), new Date("2026-02-01T00:00:00Z")]} selected={null} onSelect={onSelect} onChip={onChip} onLane={onLane} />);
+    const labels = container.querySelectorAll("g.lab");
+    fireEvent.click(labels[1].querySelector("text.lbl-name")!);
+    expect(onLane).toHaveBeenCalledWith("p2");
+    fireEvent.click(labels[0].querySelector("text.lbl-kind")!);
+    expect(onLane).toHaveBeenLastCalledWith("p1");
+    expect(onSelect).not.toHaveBeenCalled();
+    fireEvent.click(container.querySelector("g.chip.stale")!);
+    expect(onChip).toHaveBeenCalledWith("p1", "stale");
+    expect(onLane).toHaveBeenCalledTimes(2);
+  });
   it("marks pending todos", () => {
     const d: TimelineResponse = {
       ...data,

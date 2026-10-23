@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useCallback, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "./api/client";
 import { AskPanel } from "./components/AskPanel";
@@ -6,6 +6,7 @@ import { ProjectForm } from "./components/ProjectForm";
 import { QuickCapture } from "./components/QuickCapture";
 import { InboxView, pendingTxnsQuery } from "./views/InboxView";
 import { LedgerView } from "./views/LedgerView";
+import { ProjectView } from "./views/ProjectView";
 import { RunsView } from "./views/RunsView";
 import { TimelineView } from "./views/TimelineView";
 import "./views/views.css";
@@ -13,7 +14,7 @@ import "./views/views.css";
 // Marp (with its MathJax) and CodeMirror are most of the bundle; load them with the Reports tab.
 const ReportsView = lazy(() => import("./views/ReportsView").then(m => ({ default: m.ReportsView })));
 
-type Tab = "timeline" | "ledger" | "runs" | "reports" | "inbox";
+type Tab = "timeline" | "ledger" | "runs" | "reports" | "project" | "inbox";
 type Panel = "project" | "capture" | "ask" | null;
 
 const isUnauthorized = (err: unknown) => err instanceof ApiError && err.status === 401;
@@ -21,7 +22,16 @@ const isUnauthorized = (err: unknown) => err instanceof ApiError && err.status =
 export default function App() {
   const [tab, setTab] = useState<Tab>("timeline");
   const [panel, setPanel] = useState<Panel>(null);
+  const [openProject, setOpenProject] = useState<string | null>(null);
   const qc = useQueryClient();
+  const onOpenProject = useCallback((id: string) => {
+    setOpenProject(id);
+    setTab("project");
+  }, []);
+  const closeProject = () => {
+    setOpenProject(null);
+    setTab("timeline");
+  };
   const projects = useQuery({
     queryKey: ["projects"],
     queryFn: api.projects,
@@ -56,6 +66,11 @@ export default function App() {
           <button role="tab" aria-selected={tab === "reports"} onClick={() => setTab("reports")}>
             Reports
           </button>
+          {openProject && (
+            <button role="tab" aria-selected={tab === "project"} onClick={() => setTab("project")}>
+              Project
+            </button>
+          )}
           <button role="tab" aria-selected={tab === "inbox"} onClick={() => setTab("inbox")}>
             {pendingCount > 0 ? `Inbox (${pendingCount})` : "Inbox"}
           </button>
@@ -81,7 +96,9 @@ export default function App() {
       )}
       <div role="tabpanel">
         {tab === "timeline" ? (
-          <TimelineView />
+          <TimelineView onOpenProject={onOpenProject} />
+        ) : tab === "project" && openProject ? (
+          <ProjectView key={openProject} projectId={openProject} onClose={closeProject} />
         ) : tab === "ledger" ? (
           <LedgerView />
         ) : tab === "runs" ? (

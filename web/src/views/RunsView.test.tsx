@@ -5,7 +5,7 @@ import { RunsView } from "./RunsView";
 import type { Run } from "../api/types";
 
 const run = (id: string, over: Partial<Run> = {}): Run => ({ id, kind: "ask", project_id: null, status: "ok", runner: "claude", backend: "claude", model: null, session_id: "s", started: "2026-01-05T10:00:00Z", finished: "2026-01-05T10:01:00Z", tokens_in: 100, tokens_out: 20, tokens_cache: 12, est_usd: 0.0123, turns: 2, duration_ms: 345, result_md: "Answer.", proposals: [], error: null, log_path: "/data/runs/r1.log", token_id: null, props: {}, routine_id: null, slot: "interactive", attempt: 1, created_at: "2026-01-05T10:00:00Z", ...over });
-const api = vi.hoisted(() => ({ runs: vi.fn(), run: vi.fn(), usage: vi.fn(), caps: vi.fn(), setCaps: vi.fn(), runnerStatus: vi.fn(), projects: vi.fn(), acceptProposal: vi.fn() }));
+const api = vi.hoisted(() => ({ runs: vi.fn(), run: vi.fn(), usage: vi.fn(), caps: vi.fn(), setCaps: vi.fn(), runnerStatus: vi.fn(), projects: vi.fn(), acceptProposal: vi.fn(), routines: vi.fn(), scheduler: vi.fn(), patchRoutine: vi.fn(), runRoutine: vi.fn() }));
 vi.mock("../api/client", () => ({ api, ApiError: class extends Error {} }));
 const wrap = (ui: React.ReactElement) => render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>{ui}</QueryClientProvider>);
 const caps = { usd_per_run: 1, usd_per_day: 5, timeout_s: 600, paused: false };
@@ -15,8 +15,10 @@ describe("RunsView", () => {
     vi.clearAllMocks();
     api.projects.mockResolvedValue([]);
     api.runnerStatus.mockResolvedValue({ claude: { available: true, version: "2.1.309", authenticated: false }, codex: { available: false, version: null, authenticated: false }, backends: [] });
-    api.usage.mockResolvedValue({ days: [{ day: "2026-01-04", est_usd: 1, runs: 1, tokens_in: 1, tokens_out: 1 }, { day: "2026-01-05", est_usd: 0.5, runs: 2, tokens_in: 1, tokens_out: 1 }], by_kind: [{ key: "ask", est_usd: 1.5, runs: 3 }], by_runner: [], spent_today: 0.5, caps });
+    api.usage.mockResolvedValue({ days: [{ day: "2026-01-04", est_usd: 1, runs: 1, tokens_in: 1, tokens_out: 1 }, { day: "2026-01-05", est_usd: 0.5, runs: 2, tokens_in: 1, tokens_out: 1 }], by_kind: [{ key: "ask", est_usd: 1.5, runs: 3 }], by_runner: [], by_routine: [{ key: "weekly-review", est_usd: 0.25, runs: 1 }, { key: "-", est_usd: 1.25, runs: 2 }], spent_today: 0.5, caps });
     api.caps.mockResolvedValue(caps);
+    api.routines.mockResolvedValue([]);
+    api.scheduler.mockResolvedValue({ last_tick: null, interval_s: 60, next_fires: [] });
     api.setCaps.mockImplementation(async (c) => c);
   });
   it("renders usage bars, the cap line and the runner status", async () => {
@@ -58,5 +60,23 @@ describe("RunsView", () => {
     expect(await screen.findByText("Email Bob")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Accept" })).toBeTruthy();
     expect(screen.getByText("t1")).toBeTruthy();
+  });
+  it("shows usage by routine, the routines section and each run's slot and retry", async () => {
+    api.runs.mockResolvedValue([run("r1", { kind: "routine", slot: "scheduled", attempt: 2 }), run("r2")]);
+    const { container } = wrap(<RunsView />);
+    const caption = await screen.findByText("by routine");
+    const table = caption.closest("table")!;
+    expect(table.textContent).toContain("weekly-review");
+    expect(table.textContent).toContain("$0.25");
+    expect(await screen.findByText("No routines")).toBeTruthy();
+    const headings = screen.getAllByRole("heading").map(h => h.textContent);
+    expect(headings.indexOf("Routines")).toBeGreaterThan(-1);
+    expect(headings.indexOf("Routines")).toBeLessThan(headings.indexOf("Run history"));
+    await screen.findByRole("button", { name: /routine/ });
+    const rows = container.querySelectorAll("li.run-row");
+    expect(rows[0].textContent).toContain("scheduled");
+    expect(rows[0].textContent).toContain("retry 2");
+    expect(rows[1].textContent).toContain("interactive");
+    expect(rows[1].textContent).not.toContain("retry");
   });
 });

@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import type { Caps, Run, RunnerStatus, UsageDay, UsageSlice } from "../api/types";
 import { Proposals } from "../components/Proposals";
+import { RoutinesSection } from "../components/RoutinesSection";
 import { useRun } from "../components/useRun";
 
 const usd = (n: number) => `$${n.toFixed(2)}`;
@@ -130,6 +131,8 @@ function RunRow({ run, slug }: { run: Run; slug: string | null }) {
           {run.kind} · {new Date(run.created_at).toLocaleString()}
         </button>
         <span className={`badge run-${run.status}`}>{run.status}</span>
+        <span className="muted">{run.slot}</span>
+        {run.attempt > 1 && <span className="badge">{`retry ${run.attempt}`}</span>}
         {slug && <span className="muted">{slug}</span>}
         <span>{usd(run.est_usd)}</span>
         <span className="muted">{run.turns} turns</span>
@@ -160,10 +163,12 @@ export function RunsView() {
           <UsageChart days={usage.data.days} cap={usage.data.caps.usd_per_day} />
           <SliceTable title="by kind" rows={usage.data.by_kind} />
           <SliceTable title="by runner" rows={usage.data.by_runner} />
+          <SliceTable title="by routine" rows={usage.data.by_routine} />
         </>
       )}
       <h2>Caps</h2>
       {caps.data && <CapsForm caps={caps.data} />}
+      <RoutinesSection />
       <h2>Run history</h2>
       {runs.data && runs.data.length === 0 && <p className="muted">No runs yet</p>}
       {runs.data && runs.data.length > 0 && (

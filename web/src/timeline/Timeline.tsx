@@ -16,11 +16,12 @@ export interface TimelineProps {
   onSelect: (s: Selection | null) => void;
   showAllWires?: boolean;
   onChip?: (projectId: string, kind: "running" | "stale") => void;
+  onLane?: (projectId: string) => void;
 }
 
 const FALLBACK_W = 1200; // jsdom reports 0 for every layout measurement
 
-export function Timeline({ data, now, range, selected, onSelect, showAllWires = false, onChip }: TimelineProps) {
+export function Timeline({ data, now, range, selected, onSelect, showAllWires = false, onChip, onLane }: TimelineProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const tipRef = useRef<HTMLDivElement>(null);
@@ -95,8 +96,9 @@ export function Timeline({ data, now, range, selected, onSelect, showAllWires = 
       onSelect,
       onHover: setHovered,
       onChip,
+      onLane,
     });
-  }, [data, nowMs, from, to, width, transform, selType, selId, binProject, binStart, binEnd, hovered, showAllWires, uid, onSelect, onChip]);
+  }, [data, nowMs, from, to, width, transform, selType, selId, binProject, binStart, binEnd, hovered, showAllWires, uid, onSelect, onChip, onLane]);
 
   return (
     <div className="tlwrap" ref={wrapRef}>

@@ -10,6 +10,8 @@
 .lane-sep{stroke:var(--grid)}
 .lbl-name{fill:var(--ink);font-size:12.5px;font-weight:600}
 .lbl-kind{fill:var(--muted);font-size:10.5px}
+.lbl-name.open,.lbl-kind.open{cursor:pointer}
+.lbl-name.open:hover{text-decoration:underline}
 .gutter-edge{stroke:var(--axis)}
 .future{fill:var(--future)}
 .now{stroke:var(--now);stroke-width:1.5}

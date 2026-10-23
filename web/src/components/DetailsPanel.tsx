@@ -1,21 +1,23 @@
-import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import * as d3 from "d3";
 import { api } from "../api/client";
-import type { Signal, TimelineResponse, Txn } from "../api/types";
+import type { TimelineResponse, Txn } from "../api/types";
 import type { Selection } from "../timeline/Timeline";
 import { fmtWhen, glyph } from "../timeline/render";
+import { BinDetails } from "./BinDetails";
 import "../timeline/timeline.css";
+
+export { BinDetails };
 
 export interface DetailsPanelProps {
   data: TimelineResponse;
   selected: Selection | null;
   onReview: (txnId: string, state: "accepted" | "rejected") => void;
   onRevert: (txnId: string) => void;
+  onOpenProject?: (id: string) => void;
 }
 
 const fmtRecorded = d3.timeFormat("%d %b %Y %H:%M");
-const fmtDay = d3.utcFormat("%d %b %Y"); // strip buckets are UTC days, weeks or months
 
 function authorOf(t: Txn): string {
   return [
@@ -26,7 +28,7 @@ function authorOf(t: Txn): string {
   ].filter(Boolean).join(" · ");
 }
 
-export function DetailsPanel({ data, selected, onReview, onRevert }: DetailsPanelProps) {
+export function DetailsPanel({ data, selected, onReview, onRevert, onOpenProject }: DetailsPanelProps) {
   const event = selected?.type === "event" ? data.events.find(e => e.id === selected.id) ?? null : null;
   // Review the pending txn of the event's latest change (an agent update, say), not its creation.
   const pendingTxn = event ? data.pending.event?.[event.id] : undefined;
@@ -104,6 +106,11 @@ export function DetailsPanel({ data, selected, onReview, onRevert }: DetailsPane
         <dt>author</dt><dd>{author}</dd>
         <dt>txn</dt><dd>{txnId ? <code>{txnId}</code> : "—"}</dd>
       </dl>
+      {onOpenProject && (
+        <div className="actions">
+          <button onClick={() => onOpenProject(event.project_id)}>Open project</button>
+        </div>
+      )}
       <h2>Wires</h2>
       {wires.length ? (
         <ul className="links">
@@ -136,95 +143,6 @@ export function DetailsPanel({ data, selected, onReview, onRevert }: DetailsPane
       )}
     </aside>
   );
-}
-
-const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
-const num = (v: unknown): number => (typeof v === "number" ? v : 0);
-
-function BinDetails({ projectId, start, end }: { projectId: string; start: number; end: number }) {
-  const q = useQuery({
-    queryKey: ["signals", projectId, start, end],
-    // The server matches by overlap, so stop 1 ms before the exclusive end the cell did not count.
-    queryFn: () => api.signals([projectId], new Date(start), new Date(end - 1)),
-  });
-  const signals: Signal[] = q.data ?? [];
-  const sessions = signals.filter(s => s.kind === "session");
-  const commits = signals.filter(s => s.kind === "commits");
-  const first = fmtDay(new Date(start));
-  const last = fmtDay(new Date(end - 1));
-
-  return (
-    <aside className="details">
-      <h2>Activity</h2>
-      <p className="muted">{first === last ? first : `${first} – ${last}`}</p>
-      {q.isPending ? (
-        <p className="muted">loading…</p>
-      ) : q.isError ? (
-        <p className="empty">Activity unavailable.</p>
-      ) : !sessions.length && !commits.length ? (
-        <p className="empty">No activity in this bin.</p>
-      ) : (
-        <>
-          {sessions.length > 0 && (
-            <>
-              <h2>Sessions</h2>
-              <ul className="links">
-                {sessions.map(s => {
-                  const sid = str(s.payload.session_id) ?? "";
-                  const command = `cd ${str(s.payload.cwd) ?? "."} && claude --resume ${sid}`;
-                  return (
-                    <li key={s.id}>
-                      <b>{str(s.payload.title) ?? sid.slice(0, 8)}</b>
-                      {` · ${num(s.payload.prompts)} prompts · ${str(s.payload.model) ?? "unknown model"} `}
-                      <CopyResume command={command} />
-                      <div><code className="resume">{command}</code></div>
-                    </li>
-                  );
-                })}
-              </ul>
-            </>
-          )}
-          {commits.length > 0 && (
-            <>
-              <h2>Commits</h2>
-              <ul className="links">
-                {commits.map(s => {
-                  const subjects = Array.isArray(s.payload.subjects) ? s.payload.subjects.map(String) : [];
-                  return (
-                    <li key={s.id}>
-                      {num(s.payload.count)} commits
-                      {subjects.length > 0 && <ul>{subjects.map((t, i) => <li key={i}>{t}</li>)}</ul>}
-                    </li>
-                  );
-                })}
-              </ul>
-            </>
-          )}
-        </>
-      )}
-    </aside>
-  );
-}
-
-type CopyState = "idle" | "copied" | "failed";
-const COPY_LABEL: Record<CopyState, string> = {
-  idle: "Copy resume command", copied: "Copied", failed: "Copy failed, select the text",
-};
-
-function CopyResume({ command }: { command: string }) {
-  const [state, setState] = useState<CopyState>("idle");
-  useEffect(() => {
-    if (state === "idle") return;
-    const id = setTimeout(() => setState("idle"), state === "copied" ? 1500 : 3000);
-    return () => clearTimeout(id);
-  }, [state]);
-  const copy = () => {
-    // navigator.clipboard is absent outside secure contexts (plain http on a LAN host).
-    const clip = navigator.clipboard as Clipboard | undefined;
-    if (!clip) { setState("failed"); return; }
-    clip.writeText(command).then(() => setState("copied"), () => setState("failed"));
-  };
-  return <button onClick={copy}>{COPY_LABEL[state]}</button>;
 }
 
 function titleOf(data: TimelineResponse, id: string): { title: string; project: string } {

@@ -68,6 +68,7 @@ export interface RenderInput {
   onSelect: (s: Selection | null) => void;
   onHover: (id: string | null) => void;
   onChip?: (projectId: string, kind: "running" | "stale") => void;
+  onLane?: (projectId: string) => void;
 }
 
 interface Lane {
@@ -92,7 +93,7 @@ export function renderTimeline(
   wrapEl: HTMLDivElement,
   input: RenderInput,
 ): void {
-  const { data, now, range, width, transform, selected, hovered, showAllWires, uid, onSelect, onHover, onChip } = input;
+  const { data, now, range, width, transform, selected, hovered, showAllWires, uid, onSelect, onHover, onChip, onLane } = input;
   const W = width;
   const plotW = Math.max(200, W - GUTTER);
   // Zoom acts in svg coordinates; shift the rescaled range back to plot coordinates.
@@ -183,6 +184,14 @@ export function renderTimeline(
   lab.attr("transform", (d: Lane) => `translate(14,${AXIS_H + d.y + PAD + 15})`);
   lab.select(".lbl-name").text((d: Lane) => trunc(d.title, GUTTER - 28));
   lab.select(".lbl-kind").text((d: Lane) => d.kind);
+  // The label texts open the project; the chips below keep their own handler.
+  const openLane = (ev: MouseEvent, d: Lane) => {
+    if (!onLane) return; // without a handler a label click still clears the selection
+    ev.stopPropagation();
+    onLane(d.id);
+  };
+  lab.select(".lbl-name").classed("open", !!onLane).on("click", openLane);
+  lab.select(".lbl-kind").classed("open", !!onLane).on("click", openLane);
   const chipsOf = (d: Lane): Chip[] => {
     const out: Chip[] = [];
     const add = (kind: Chip["kind"], text: string) => {

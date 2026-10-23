@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { DetailsPanel } from "../components/DetailsPanel";
@@ -11,7 +11,7 @@ import "./views.css";
 const DAY = 86_400_000;
 const PRESETS: [string, number][] = [["Week", 10], ["Month", 35], ["Quarter+", 150], ["All", 365]];
 
-export function TimelineView() {
+export function TimelineView({ onOpenProject }: { onOpenProject?: (id: string) => void } = {}) {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 60_000);
@@ -24,15 +24,21 @@ export function TimelineView() {
   const [selected, setSelected] = useState<Selection | null>(null);
   const actions = useTxnActions();
   const [notice, setNotice] = useState<string | null>(null);
-  const summarize = useMutation({
+  // Projects with a regeneration in flight: a second stale click on one is ignored,
+  // while a click on another lane still fires.
+  const regeneratingRef = useRef<Set<string>>(new Set());
+  const { mutate: regenerate } = useMutation({
     mutationFn: (projectId: string) => api.summarize(projectId),
     onSuccess: run => setNotice(`Summary regeneration queued (run ${run.id})`),
     onError: err => setNotice(errorText(err)),
+    onSettled: (_run, _err, projectId) => { regeneratingRef.current.delete(projectId); },
   });
-  const { mutate: regenerate, isPending: regenerating } = summarize;
   const onChip = useCallback((projectId: string, kind: "running" | "stale") => {
-    if (kind === "stale" && !regenerating) regenerate(projectId);
-  }, [regenerate, regenerating]);
+    if (kind !== "stale" || regeneratingRef.current.has(projectId)) return;
+    // Added before mutate: the mutation function starts a tick later.
+    regeneratingRef.current.add(projectId);
+    regenerate(projectId);
+  }, [regenerate]);
 
   const [from, to] = range;
   const q = useQuery({
@@ -63,9 +69,9 @@ export function TimelineView() {
       {q.data ? (
         <div className="tl-layout">
           <Timeline data={q.data} now={now} range={range} selected={selected}
-            onSelect={setSelected} showAllWires={showAllWires} onChip={onChip} />
+            onSelect={setSelected} showAllWires={showAllWires} onChip={onChip} onLane={onOpenProject} />
           <DetailsPanel data={q.data} selected={selected}
-            onReview={actions.review} onRevert={actions.revert} />
+            onReview={actions.review} onRevert={actions.revert} onOpenProject={onOpenProject} />
         </div>
       ) : (
         !q.isError && <p className="muted">loading…</p>

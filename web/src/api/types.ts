@@ -8,7 +8,7 @@ export type TodoState = "open" | "doing" | "done" | "dropped";
 export type Review = "none" | "pending" | "accepted" | "rejected";
 export type ActorKind = "human" | "agent" | "session" | "connector";
 export type EntityType = "project" | "event" | "todo" | "resource";
-export type SignalKind = "commits" | "session" | "files_changed" | "job_state" | "message";
+export type SignalKind = "commits" | "session" | "files_changed" | "job_state" | "message" | "remote";
 
 export interface Project {
   id: string;
