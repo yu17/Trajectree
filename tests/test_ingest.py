@@ -113,3 +113,42 @@ def test_ingest_runs_folders_and_recurrence(ledger, human, settings, tmp_path):
     assert report.recurrence.created == 8 and len(list_events(ledger.conn, project_ids=[p.id])) == 8
     second = run_ingest(ledger, settings, now=now)
     assert second.folders is None and second.recurrence.created == 0
+
+
+def test_ingest_discovers_remote_as_pending_resource(ledger, human, settings, tmp_path):
+    import subprocess
+    from trajectree.repo.resources import find_resource
+
+    repo = tmp_path / "r"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", "git@github.com:o/r.git"], check=True)
+    p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    upsert_resource(ledger, human, ResourceIn(project_id=p.id, kind="git_local", locator=str(repo)))
+    settings.remote_every_m = 0
+    report = run_ingest(ledger, settings, now=datetime(2026, 10, 22, 12, tzinfo=UTC))
+    assert report.remote is None
+    found = find_resource(ledger.conn, p.id, "git_remote", "https://github.com/o/r")
+    assert found is not None and found.title == "o/r"
+    pending = [t for t in ledger.list_txns(review="pending") if t.intent.startswith("discovered git remote")]
+    assert len(pending) == 1 and pending[0].intent == "discovered git remote https://github.com/o/r"
+    run_ingest(ledger, settings, now=datetime(2026, 10, 22, 13, tzinfo=UTC))
+    assert len([t for t in ledger.list_txns(review="pending") if t.intent.startswith("discovered git remote")]) == 1
+
+
+def test_ingest_remote_phase_runs_when_due(ledger, human, settings, monkeypatch):
+    import trajectree.connectors.remote as remote
+
+    p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    upsert_resource(ledger, human, ResourceIn(project_id=p.id, kind="git_remote", locator="https://github.com/o/r"))
+    calls = []
+
+    def fake_collect(settings, resources, states, *, now, since_days, client=None):
+        calls.append([r.locator for r in resources])
+        return remote.RemoteCollection(signals=[], releases=[], polled=[resources[0].id], errors=["boom"])
+
+    monkeypatch.setattr(job, "collect_remote", fake_collect)
+    now = datetime(2026, 10, 22, 12, tzinfo=UTC)
+    first = run_ingest(ledger, settings, now=now)
+    assert first.remote.repos == 1 and first.remote.errors == ["boom"] and calls == [["https://github.com/o/r"]]
+    assert run_ingest(ledger, settings, now=now).remote is None and len(calls) == 1

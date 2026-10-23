@@ -13,6 +13,7 @@ from urllib.parse import quote, urlencode
 
 import httpx
 
+from trajectree.runner.credentials import CONNECTOR_NAMES
 from trajectree.timeutil import to_db, utcnow
 
 DEFAULT_URL = "http://127.0.0.1:8742"
@@ -154,6 +155,11 @@ def _parser() -> argparse.ArgumentParser:
     sched.add_argument("action", nargs="?", choices=["tick"])
 
     sub.add_parser("login", help="store a Claude OAuth token for the runner")
+
+    conn = sub.add_parser("connectors", help="connector commands")
+    conn_sub = conn.add_subparsers(dest="sub", required=True)
+    conn_login = conn_sub.add_parser("login", help="store a connector API token (read from stdin)")
+    conn_login.add_argument("name", choices=CONNECTOR_NAMES)
 
     back = sub.add_parser("backends", help="backend commands")
     back_sub = back.add_subparsers(dest="sub", required=True)
@@ -408,6 +414,15 @@ def _cmd_login(api: _Api, stdin: TextIO) -> None:
     print("stored")
 
 
+def _cmd_connectors_login(api: _Api, name: str, stdin: TextIO) -> None:
+    print(f"Paste the {name} API token (input is not echoed):", file=sys.stderr)
+    token = (getpass.getpass("token: ") if stdin.isatty() else stdin.readline()).strip()
+    if not token:
+        raise _Fail("no token given", 2)
+    api.post(f"/api/connectors/{name}/credentials", {"token": token})
+    print("stored")
+
+
 def _cmd_backends_sync(api: _Api) -> None:
     synced = api.post("/api/backends/sync", {})["synced"]
     print("synced: " + (", ".join(synced) if synced else "none"))
@@ -445,6 +460,9 @@ def _run(
         return
     if cmd == "login":
         _cmd_login(api, stdin if stdin is not None else sys.stdin)
+        return
+    if cmd == "connectors":
+        _cmd_connectors_login(api, args.name, stdin if stdin is not None else sys.stdin)
         return
     if cmd == "backends":
         _cmd_backends_sync(api)

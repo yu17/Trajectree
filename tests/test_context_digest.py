@@ -18,13 +18,13 @@ def test_activity_digest_formats_each_kind_newest_first(ledger, human):
         sig(p, "session", 3, "s", {"session_id": "abcdef123456", "title": None, "prompts": 5, "model": "opus"}),
         sig(p, "files_changed", 4, "f", {"count": 5, "paths": ["a.py", "b.py", "c.py", "d.py"]}),
         sig(p, "job_state", 5, "j", {"name": "train", "state": "failed"}),
-        sig(p, "remote", 6, "r", {"count": 2, "titles": ["PR 1", "PR 2"]}),
+        sig(p, "remote", 6, "r", {"count": 4, "prs": [{"number": 1, "title": "PR 1", "state": "open", "url": "u"}], "issues": [{"number": 2, "title": "Issue 2", "state": "open", "url": "u"}], "releases": [{"tag": "v1", "title": "Rel 1", "url": "u"}, {"tag": "v2", "title": "Rel 2", "url": "u"}]}),
         sig(p, "message", 7, "m", {"channel": "slack", "summary": "ship it"}),
     ])
     lines = activity_digest(ledger.conn, project_ids=[p.id], since=SINCE, until=UNTIL).splitlines()
     assert lines == [
         "- 2026-01-07 message via slack: ship it",
-        "- 2026-01-06 2 remote updates: PR 1; PR 2",
+        "- 2026-01-06 4 remote updates: PR 1; Issue 2; Rel 1",
         "- 2026-01-05 job train failed",
         "- 2026-01-04 5 files changed (a.py, b.py, c.py)",
         '- 2026-01-03 session "abcdef12" (5 prompts, opus)',

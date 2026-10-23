@@ -6,6 +6,8 @@ import threading
 import time
 from datetime import datetime, timedelta
 
+from urllib.parse import urlparse
+
 from pydantic import AwareDatetime, BaseModel
 
 from trajectree.config import Settings
@@ -17,11 +19,25 @@ from trajectree.connectors.folders import (
     read_folder_states,
     write_folders,
 )
-from trajectree.connectors.local_git import GitReport, collect_git, read_git_states, write_git
+from trajectree.connectors.local_git import (
+    GitReport,
+    collect_git,
+    discover_remotes,
+    read_git_states,
+    write_git,
+)
 from trajectree.connectors.recurrence import MaterializeReport, materialize
+from trajectree.connectors.remote import (
+    RemoteReport,
+    collect_remote,
+    read_remote_states,
+    remote_due,
+    write_remote,
+)
 from trajectree.db.ledger import Ledger
 from trajectree.ingest.exports import render_exports, write_files
-from trajectree.repo.resources import list_resources
+from trajectree.models import Actor, ResourceIn
+from trajectree.repo.resources import find_resource, list_resources, upsert_resource
 from trajectree.repo.signals import stale_projects
 from trajectree.repo.state import set_state
 from trajectree.timeutil import utcnow
@@ -32,6 +48,7 @@ class IngestBusy(Exception):
 
 
 _RUNNING = threading.Lock()
+DISCOVERY_ACTOR = Actor(kind="connector", ref="local-git", tool="git")
 
 
 class IngestReport(BaseModel):
@@ -40,6 +57,7 @@ class IngestReport(BaseModel):
     scan: ScanReport | None
     git: GitReport
     folders: FoldersReport | None = None
+    remote: RemoteReport | None = None
     recurrence: MaterializeReport | None = None
     stale: list[str]
     exports_written: int
@@ -61,6 +79,7 @@ def run_ingest(ledger: Ledger, settings: Settings, *, now: datetime | None = Non
         scan: ScanReport | None = None
         git: GitReport | None = None
         folders: FoldersReport | None = None
+        remote: RemoteReport | None = None
         recurrence: MaterializeReport | None = None
         stale: list[str] = []
         exports_written = 0
@@ -82,6 +101,38 @@ def run_ingest(ledger: Ledger, settings: Settings, *, now: datetime | None = Non
             git = GitReport(
                 repos=len(git_resources), signals_written=git_written, errors=collection.errors
             )
+            # remotes seen in local checkouts become pending git_remote resources (suggestions)
+            discovered = discover_remotes(settings, git_resources)
+            with ledger.locked() as conn:
+                for project_id, url in discovered:
+                    if find_resource(conn, project_id, "git_remote", url) is None:
+                        upsert_resource(
+                            ledger,
+                            DISCOVERY_ACTOR,
+                            ResourceIn(
+                                project_id=project_id,
+                                kind="git_remote",
+                                locator=url,
+                                title=urlparse(url).path.strip("/"),
+                            ),
+                            intent=f"discovered git remote {url}",
+                        )
+            # remote: same three phases, the HTTP calls run with no lock; skipped until due
+            with ledger.locked() as conn:
+                remote_run = remote_due(conn, now=now, every_m=settings.remote_every_m)
+                remote_resources = list_resources(conn, kinds=["git_remote"]) if remote_run else []
+                remote_states = read_remote_states(conn, remote_resources)
+            if remote_run:
+                remote_collection = collect_remote(
+                    settings, remote_resources, remote_states, now=now, since_days=settings.scan_since_days
+                )
+                remote_signals, remote_milestones = write_remote(ledger, remote_collection, now=now)
+                remote = RemoteReport(
+                    repos=len(remote_resources),
+                    signals_written=remote_signals,
+                    milestones_created=remote_milestones,
+                    errors=remote_collection.errors,
+                )
             # folders: same three phases, the walk runs with no lock; skipped until due
             with ledger.locked() as conn:
                 due = folders_due(conn, now=now, every_h=settings.folders_scan_every_h)
@@ -119,6 +170,7 @@ def run_ingest(ledger: Ledger, settings: Settings, *, now: datetime | None = Non
                 scan=scan,
                 git=git,
                 folders=folders,
+                remote=remote,
                 recurrence=recurrence,
                 stale=stale,
                 exports_written=exports_written,

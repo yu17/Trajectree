@@ -79,3 +79,16 @@ def test_mcp_subcommand_requires_token(tmp_path, capsys):
 def test_cli_ingest(app, anon, capsys):
     assert main(["ingest"], client=anon, env=env_for(app)) == 0
     assert capsys.readouterr().out.startswith("ingest: ")
+
+
+def test_cli_connectors_login(app, anon, capsys):
+    import io
+
+    from trajectree.runner.credentials import load_connector_token
+
+    assert main(["connectors", "login", "github"], client=anon, env=env_for(app), stdin=io.StringIO("ghp_abc\n")) == 0
+    assert capsys.readouterr().out.strip() == "stored"
+    assert load_connector_token(app.state.settings, "github") == "ghp_abc"
+    assert main(["connectors", "login", "gitlab"], client=anon, env=env_for(app), stdin=io.StringIO("\n")) == 2
+    assert load_connector_token(app.state.settings, "gitlab") is None
+    assert main(["connectors", "login", "nope"], client=anon, env=env_for(app), stdin=io.StringIO("x\n")) == 2

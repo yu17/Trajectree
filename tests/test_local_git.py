@@ -127,3 +127,21 @@ def test_collect_git_runs_without_a_connection(ledger, human, settings, tmp_path
     assert len(c.signals) == 2 and c.errors == [] and c.polled == [resources[0].id]
     # nothing was written: the caller writes later, under the lock
     assert list_signals(ledger.conn, project_ids=[p.id]) == [] and get_state(ledger.conn, f"git:{resources[0].id}") is None
+
+
+def test_discover_remotes(ledger, human, settings, tmp_path):
+    from trajectree.connectors.local_git import discover_remotes
+
+    repo = tmp_path / "disc"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", "git@github.com:o/r.git"], check=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "mirror", "https://github.com/o/r"], check=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "local", str(tmp_path)], check=True)
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    upsert_resource(ledger, human, ResourceIn(project_id=p.id, kind="git_local", locator=str(repo)))
+    upsert_resource(ledger, human, ResourceIn(project_id=p.id, kind="git_local", locator=str(plain)))
+    resources = list_resources(ledger.conn, kinds=["git_local"])
+    assert discover_remotes(settings, resources) == [(p.id, "https://github.com/o/r")]

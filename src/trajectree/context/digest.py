@@ -37,7 +37,13 @@ def _line(s: Signal) -> str:
     if s.kind == "job_state":
         return f"- {day} job {_one_line(p.get('name', '?'))} {_one_line(p.get('state', '?'))}"
     if s.kind == "remote":
-        return f"- {day} {_count(p, 'count')} remote updates: {'; '.join(_items(p.get('titles')))}"
+        titles = [
+            _one_line(item["title"])
+            for key in ("prs", "issues", "releases")
+            for item in (p.get(key) if isinstance(p.get(key), list) else [])
+            if isinstance(item, dict) and item.get("title")
+        ][:3]
+        return f"- {day} {_count(p, 'count')} remote updates: {'; '.join(titles)}"
     if s.kind == "message":
         return f"- {day} message via {_one_line(p.get('channel', '?'))}: {_one_line(p.get('summary', ''))}"
     return f"- {day} {s.kind}"

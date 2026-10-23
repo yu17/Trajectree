@@ -137,6 +137,42 @@ def collect_git(
     return GitCollection(signals=signals, polled=polled, errors=errors)
 
 
+def discover_remotes(
+    settings: Settings, resources: list[Resource], *, run=subprocess.run
+) -> list[tuple[str, str]]:
+    """Normalized fetch-remote URLs of each git_local resource as (project_id, url), unique per
+    project. A repository that cannot be read is skipped. No DB access."""
+    from trajectree.connectors.remote import normalize_remote
+
+    found: list[tuple[str, str]] = []
+    for resource in resources:
+        try:
+            local = to_local(settings, resource.locator)
+            if not (local / ".git").exists():
+                continue
+            proc = run(
+                ["git", "-c", "safe.directory=*", "-C", str(local), "remote", "-v"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=60,
+                env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+            )
+        except (subprocess.TimeoutExpired, OSError, ValueError):
+            continue
+        if proc.returncode != 0:
+            continue
+        for line in proc.stdout.splitlines():
+            parts = line.split()
+            if len(parts) != 3 or parts[2] != "(fetch)":
+                continue
+            url = normalize_remote(parts[1])
+            if url is not None and (resource.project_id, url) not in found:
+                found.append((resource.project_id, url))
+    return found
+
+
 def write_git(conn: apsw.Connection, collection: GitCollection, *, now: datetime) -> int:
     """Upsert the collected signals and advance the polled cursors in one transaction."""
     with conn:

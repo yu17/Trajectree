@@ -178,6 +178,13 @@ export interface FoldersReport {
   errors: string[];
 }
 
+export interface RemoteReport {
+  repos: number;
+  signals_written: number;
+  milestones_created: number;
+  errors: string[];
+}
+
 export interface MaterializeReport {
   created: number;
   dropped: number;
@@ -190,6 +197,7 @@ export interface IngestReport {
   scan: ScanReport | null;
   git: GitReport;
   folders?: FoldersReport | null;
+  remote?: RemoteReport | null;
   recurrence?: MaterializeReport | null;
   stale: string[];
   exports_written: number;

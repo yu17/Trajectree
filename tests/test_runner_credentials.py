@@ -94,3 +94,19 @@ def test_sync_backends_skips_unreadable_profile(settings, tmp_path):
         locked.chmod(0o600)
     assert (s.backends_cfg_dir / "zzz-ok" / "settings.json").exists()
     assert not (s.backends_cfg_dir / "aaa-locked").exists()
+
+
+def test_connector_tokens_roundtrip_and_validation(settings):
+    import pytest
+
+    from trajectree.runner.credentials import CONNECTOR_NAMES, load_connector_token, store_connector_token
+
+    assert CONNECTOR_NAMES == ("github", "gitlab", "chatmaid")
+    assert load_connector_token(settings, "github") is None
+    path = store_connector_token(settings, "github", "  ghp_x \n")
+    assert path == settings.connectors_dir / "github_token" and path.stat().st_mode & 0o777 == 0o600
+    assert load_connector_token(settings, "github") == "ghp_x"
+    with pytest.raises(ValueError):
+        store_connector_token(settings, "github", "  ")
+    with pytest.raises(ValueError):
+        store_connector_token(settings, "../x", "t")

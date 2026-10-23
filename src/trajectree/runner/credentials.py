@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from trajectree.config import Settings
 
 OAUTH_FILE = "oauth_token"
+CONNECTOR_NAMES = ("github", "gitlab", "chatmaid")
 _BACKEND_KEYS = ("env", "model", "apiKeyHelper")
 
 _versions: dict[str, str | None] = {}
@@ -58,6 +59,30 @@ def store_oauth_token(settings: Settings, token: str) -> Path:
 def load_oauth_token(settings: Settings) -> str | None:
     try:
         token = (settings.claude_config_dir / OAUTH_FILE).read_text().strip()
+    except OSError:
+        return None
+    return token or None
+
+
+def store_connector_token(settings: Settings, name: str, token: str) -> Path:
+    """Write a connector's API token to `<cfg_root>/connectors/<name>_token` (0600)."""
+    if name not in CONNECTOR_NAMES:
+        raise ValueError(f"unknown connector {name!r}")
+    token = token.strip()
+    if not token:
+        raise ValueError("empty token")
+    _private_dir(settings.cfg_root)
+    _private_dir(settings.connectors_dir)
+    path = settings.connectors_dir / f"{name}_token"
+    _write_secret(path, token.encode())
+    return path
+
+
+def load_connector_token(settings: Settings, name: str) -> str | None:
+    if name not in CONNECTOR_NAMES:
+        return None
+    try:
+        token = (settings.connectors_dir / f"{name}_token").read_text().strip()
     except OSError:
         return None
     return token or None

@@ -29,6 +29,11 @@ class Settings(BaseModel):
     digest_max_chars: int = 12000
     folders_scan_every_h: int = 24
     folders_big_dir_mb: int = 500
+    remote_every_m: int = 30
+
+    @property
+    def connectors_dir(self) -> Path:
+        return self.cfg_root / "connectors"
 
     @property
     def cfg_root(self) -> Path:
@@ -102,6 +107,7 @@ _INT_ENV = {
     "TRAJECTREE_DIGEST_MAX_CHARS": "digest_max_chars",
     "TRAJECTREE_FOLDERS_EVERY_H": "folders_scan_every_h",
     "TRAJECTREE_BIG_DIR_MB": "folders_big_dir_mb",
+    "TRAJECTREE_REMOTE_EVERY_M": "remote_every_m",
 }
 
 
