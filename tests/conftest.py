@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from trajectree.db.connection import open_db
@@ -33,8 +35,29 @@ def settings(tmp_path):
 
     # Null the transcript roots so no test ever reads the developer's real ~/.claude.
     return Settings(
-        data_dir=tmp_path / "data", claude_home=None, backends_root=None, ingest_interval_s=0
+        data_dir=tmp_path / "data",
+        claude_home=None,
+        backends_root=None,
+        ingest_interval_s=0,
+        cfg_dir=tmp_path / "cfg",
+        claude_bin=str(Path(__file__).parent / "bin" / "fake-claude"),
+        run_env_passthrough=[
+            "FAKE_CLAUDE_MODE",
+            "FAKE_CLAUDE_MODE_FILE",
+            "FAKE_CLAUDE_STRUCTURED",
+            "FAKE_CLAUDE_RESULT",
+            "FAKE_CLAUDE_PROJECT",
+            "FAKE_CLAUDE_ARGV_FILE",
+            "FAKE_CLAUDE_ENV_FILE",
+        ],
     )
+
+
+@pytest.fixture
+def logged_in(settings):
+    from trajectree.runner.credentials import store_oauth_token
+
+    store_oauth_token(settings, "fake-oauth")
 
 
 @pytest.fixture
