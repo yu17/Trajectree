@@ -269,6 +269,9 @@ def test_recover_fails_orphaned_running_runs(ledger, human, settings):
     token_id, _ = mint_token(ledger.conn, label=f"run:{orphan.id}", scope=Scope(write=False),
                              actor=Actor(kind="agent", ref=orphan.id), ttl=None)
     update_run(ledger.conn, orphan.id, status="running", started=s.now(), token_id=token_id)
+    leftover = settings.runs_dir / orphan.id / "mcp.json"
+    leftover.parent.mkdir(parents=True)
+    leftover.write_text("{}")
     ghost = s.enqueue(AskRequest(question="q3"))
     update_run(ledger.conn, ghost.id, status="running", started=s.now(), token_id="tok-gone")
     assert s.recover() == 2
@@ -277,6 +280,7 @@ def test_recover_fails_orphaned_running_runs(ledger, human, settings):
     assert get_run(ledger.conn, ghost.id).status == "failed"
     assert get_run(ledger.conn, queued.id).status == "queued"
     assert ledger.conn.execute("select count(*) from token where id = ?", (token_id,)).fetchone()[0] == 0
+    assert not leftover.exists()
     assert s.recover() == 0
 
 
@@ -346,7 +350,8 @@ def test_dismiss_proposal(ledger, human, settings, logged_in):
     from trajectree.repo.runs import list_runs
     create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
     s, run = _run_with(ledger, settings, [{"kind": "todo", "project": "a", "title": "T1", "reason": "r"},
-                                          {"kind": "todo", "project": "a", "title": "T2", "reason": "r"}])
+                                          {"kind": "todo", "project": "a", "title": "T2", "reason": "r", "dismissed": True, "applied_txn": "forged"}])
+    assert [(p.dismissed, p.applied_txn) for p in run.proposals] == [(False, None), (False, None)]   # agent cannot preset these
     assert [r.id for r in list_runs(ledger.conn, with_open_proposals=True)] == [run.id]
     n = len(ledger.list_txns())
     after = s.dismiss_proposal(run.id, 0)

@@ -309,6 +309,7 @@ class RunService:
                 self._fail(conn, run.id, "daemon restarted")
                 if run.token_id:
                     revoke_token(conn, run.token_id)  # already gone is fine
+                (self.settings.runs_dir / run.id / "mcp.json").unlink(missing_ok=True)
         return len(orphans)
 
     async def worker(self, stop: asyncio.Event, *, poll_s: float = 0.5) -> None:
@@ -433,5 +434,7 @@ def _proposals(parsed: ParsedResult) -> list[Proposal]:
             }
         except (ValidationError, ValueError):
             continue
-        out.append(proposal.model_copy(update=dates))
+        # The bookkeeping fields are ours, never the agent's.
+        fresh = {"applied_txn": None, "applied_id": None, "dismissed": False}
+        out.append(proposal.model_copy(update={**dates, **fresh}))
     return out
