@@ -46,7 +46,7 @@ ul.runs{list-style:none;margin:0;padding:0}
 .usage-chart{display:block;max-width:720px;height:120px;margin:6px 0}
 .runs .answer{white-space:pre-wrap;background:var(--plane);border:1px solid var(--grid);border-radius:4px;padding:8px;margin:6px 0;color:var(--ink)}
 .badge.run-ok{border-color:var(--ink2)}
-.badge.run-failed{border-color:var(--now);color:var(--now)}
+.badge.run-failed{border-color:var(--now)}
 .badge.run-capped{background:color-mix(in srgb,var(--warn) 25%,transparent);border-color:var(--warn)}
 .badge.run-running,.badge.run-queued{color:var(--muted);border-style:dashed}
 .proposals{list-style:none;margin:0;padding:0}

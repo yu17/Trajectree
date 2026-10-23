@@ -38,6 +38,15 @@ describe("RunsView", () => {
     fireEvent.click(screen.getByRole("button", { name: "Pause runs" }));
     await waitFor(() => expect(api.setCaps).toHaveBeenLastCalledWith(expect.objectContaining({ paused: true })));
   });
+  it("refuses to save caps that are not positive numbers", async () => {
+    api.runs.mockResolvedValue([]);
+    wrap(<RunsView />);
+    const perDay = await screen.findByLabelText("USD per day");
+    fireEvent.change(perDay, { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save caps" }));
+    expect(await screen.findByText("enter positive numbers")).toBeTruthy();
+    expect(api.setCaps).not.toHaveBeenCalled();
+  });
   it("lists runs and expands one with its proposals", async () => {
     const r1 = run("r1", { proposals: [{ kind: "todo", project: "clmi", title: "Email Bob", reason: "owed", event_kind: "note", when: null, due: null, body_md: "", status: "happened", applied_txn: null, applied_id: null }] });
     api.runs.mockResolvedValue([r1]);

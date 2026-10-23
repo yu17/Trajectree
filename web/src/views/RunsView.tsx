@@ -64,6 +64,7 @@ function CapsForm({ caps }: { caps: Caps }) {
     setPerDay(String(caps.usd_per_day));
     setTimeoutS(String(caps.timeout_s));
   }, [caps]);
+  const [invalid, setInvalid] = useState(false);
   const save = useMutation({
     mutationFn: (c: Caps) => api.setCaps(c),
     onSuccess: () => {
@@ -76,21 +77,25 @@ function CapsForm({ caps }: { caps: Caps }) {
       className="panel-form"
       onSubmit={e => {
         e.preventDefault();
-        save.mutate({ usd_per_run: Number(perRun), usd_per_day: Number(perDay), timeout_s: Number(timeout), paused: caps.paused });
+        const next = { usd_per_run: Number(perRun), usd_per_day: Number(perDay), timeout_s: Number(timeout) };
+        const ok = Object.values(next).every(v => Number.isFinite(v) && v > 0);
+        setInvalid(!ok);
+        if (ok) save.mutate({ ...next, paused: caps.paused });
       }}
     >
       <label htmlFor="cap-run">USD per run</label>
-      <input id="cap-run" type="number" step="any" value={perRun} onChange={e => setPerRun(e.target.value)} />
+      <input id="cap-run" type="number" min="0.01" step="0.01" value={perRun} onChange={e => setPerRun(e.target.value)} />
       <label htmlFor="cap-day">USD per day</label>
-      <input id="cap-day" type="number" step="any" value={perDay} onChange={e => setPerDay(e.target.value)} />
+      <input id="cap-day" type="number" min="0.01" step="0.01" value={perDay} onChange={e => setPerDay(e.target.value)} />
       <label htmlFor="cap-timeout">Timeout (s)</label>
-      <input id="cap-timeout" type="number" value={timeout} onChange={e => setTimeoutS(e.target.value)} />
+      <input id="cap-timeout" type="number" min="1" step="1" value={timeout} onChange={e => setTimeoutS(e.target.value)} />
       <div className="row-actions">
         <button type="submit" disabled={save.isPending}>Save caps</button>
         <button type="button" disabled={save.isPending} onClick={() => save.mutate({ ...caps, paused: !caps.paused })}>
           {caps.paused ? "Resume runs" : "Pause runs"}
         </button>
       </div>
+      {invalid && <p className="form-error">enter positive numbers</p>}
       {save.isError && <p className="form-error">{(save.error as Error).message}</p>}
     </form>
   );
