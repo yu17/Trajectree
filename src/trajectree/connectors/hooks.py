@@ -13,6 +13,7 @@ from trajectree.repo.sessions import end_session, start_session, touch_session
 
 HOOK_TOOL = "hooks"
 MAX_FIELD_CHARS = 4096
+STORED_FIELDS = ("session_id", "cwd", "transcript_path", "hook_event_name", "source", "reason")
 
 
 def _text(value: Any) -> str | None:
@@ -22,6 +23,8 @@ def _text(value: Any) -> str | None:
 def handle_hook(conn: apsw.Connection, payload: Any, *, now: datetime) -> SessionRow | None:
     """Apply one hook event; None when the payload is malformed or the event is not tracked."""
     if not isinstance(payload, dict):
+        return None
+    if any(isinstance(payload.get(k), str) and len(payload[k]) > MAX_FIELD_CHARS for k in STORED_FIELDS):
         return None
     event = _text(payload.get("hook_event_name"))
     session_id = _text(payload.get("session_id"))

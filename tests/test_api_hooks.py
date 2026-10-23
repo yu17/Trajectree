@@ -44,6 +44,15 @@ def test_hook_bad_sizes_and_deep_json_are_ignored(client):
     assert client.post("/api/hooks/claude", json=hook("SessionStart", transcript_path="y" * 70000)).json() == {}
     assert client.get("/api/sessions").json() == []
 
+def test_hook_overlong_optional_fields_are_ignored(client):
+    assert client.post("/api/hooks/claude", json=hook("SessionStart", transcript_path="y" * 5000)).json() == {}
+    assert client.post("/api/hooks/claude", json=hook("SessionStart", source="z" * 5000)).json() == {}
+    assert client.get("/api/sessions").json() == []
+    client.post("/api/hooks/claude", json=hook("SessionStart"))
+    assert client.post("/api/hooks/claude", json=hook("SessionEnd", reason="r" * 5000)).json() == {}
+    rows = client.get("/api/sessions").json()
+    assert len(rows) == 1 and rows[0]["ended_at"] is None
+
 def test_registry_wins_over_scan_and_ended_hides_scan(client, app):
     p = mk_project(client)
     client.post("/api/resources", json={"project_id": p["id"], "kind": "folder", "locator": "/home/u/proj"})
