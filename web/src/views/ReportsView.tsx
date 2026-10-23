@@ -245,7 +245,7 @@ export function ReportsView() {
           </ul>
         )}
       </aside>
-      {selected ? <ReportEditor key={selected.id} report={selected} onDirty={onDirty} /> :<p className="muted">Select or create a report</p>}
+      {selected ? <ReportEditor key={selected.id} report={selected} onDirty={onDirty} /> : <p className="muted">Select or create a report</p>}
     </div>
   );
 }
