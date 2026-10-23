@@ -65,7 +65,9 @@ def logged_in(settings):
 def app(settings, ledger):
     from trajectree.api.app import create_app
 
-    return create_app(settings, ledger=ledger)
+    app = create_app(settings, ledger=ledger)
+    app.state.which = lambda name: None  # never find a real marp-cli on the host
+    return app
 
 
 @pytest.fixture

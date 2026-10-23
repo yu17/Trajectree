@@ -101,7 +101,8 @@ def test_cli_routine_enable_disable_and_scheduler(app, client, anon, capsys):
     assert cli.main(["routine", "enable", "nope"], client=anon, env=env) == 1
 
 
-def test_cli_report_draft_list_and_export(app, client, anon, capsys, tmp_path):
+def test_cli_report_draft_list_and_export(app, client, anon, capsys, tmp_path, monkeypatch):
+    from pathlib import Path
     env = env_for(app)
     client.post("/api/projects", json={"slug": "clmi", "title": "CLMI", "kind": "research"})
     assert cli.main(["report", "draft", "--kind", "deck", "--title", "Q1", "--projects", "clmi", "--days", "30", "--no-wait"],
@@ -117,7 +118,13 @@ def test_cli_report_draft_list_and_export(app, client, anon, capsys, tmp_path):
     assert cli.main(["report", "export", r["id"], "--format", "html", "--out", str(out)], client=anon, env=env) == 0
     assert "<h1>Hi</h1>" in out.read_text() and capsys.readouterr().out.strip() == f"wrote {out}"
     assert cli.main(["report", "export", r["id"], "--format", "md"], client=anon, env=env) == 0
-    assert capsys.readouterr().out.strip() == "md: 4 bytes"
+    assert capsys.readouterr().out == "# Hi"   # md and html go to stdout
     assert cli.main(["report", "export", r["id"], "--format", "pdf"], client=anon, env=env) == 1
     assert "marp-cli not available" in capsys.readouterr().err
+    monkeypatch.chdir(tmp_path)
+    fake = str(Path(__file__).parent / "bin" / "fake-marp")
+    app.state.which = lambda name: fake if name == "marp" else None
+    assert cli.main(["report", "export", r["id"], "--format", "pdf"], client=anon, env=env) == 0
+    assert capsys.readouterr().out.strip() == f"wrote {r['id']}.pdf"
+    assert (tmp_path / f"{r['id']}.pdf").read_text().startswith("FAKE MARP .pdf")
     assert cli.main(["report", "draft", "--kind", "deck", "--title", "Q1", "--projects", "zzz", "--no-wait"], client=anon, env=env) == 1

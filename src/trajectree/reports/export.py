@@ -6,7 +6,9 @@ marp-cli runs as a subprocess with no ledger lock held; callers load the report 
 from __future__ import annotations
 
 import html
+import os
 import re
+import secrets
 import shutil
 import subprocess
 from pathlib import Path
@@ -65,23 +67,32 @@ def marp_binary(settings: Settings, *, which=shutil.which) -> str | None:
 
 
 def split_slides(source_md: str) -> tuple[dict[str, str], list[str]]:
-    """Split Marp Markdown into its front matter (`key: value` pairs) and slides (split on `---` lines)."""
+    """Split Marp Markdown into its front matter (`key: value` pairs) and slides (split on `---` lines
+    outside fenced code). A leading `---` with no closing `---` is a plain line, not front matter."""
     lines = source_md.splitlines()
     meta: dict[str, str] = {}
+    slides: list[list[str]] = [[]]
     if lines and lines[0].strip() == "---":
         end = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), None)
-        if end is not None:
+        if end is None:
+            slides[0].append(lines.pop(0))
+        else:
             for line in lines[1:end]:
                 key, sep, value = line.partition(":")
                 if sep and key.strip():
                     meta[key.strip()] = value.strip()
             lines = lines[end + 1 :]
-    slides: list[list[str]] = [[]]
+    fence: str | None = None  # the opening ``` or ~~~ of the code block we are in
     for line in lines:
-        if line == "---":
+        marker = line.lstrip()[:3]
+        if fence is None and marker in ("```", "~~~"):
+            fence = marker
+        elif fence is not None and marker == fence:
+            fence = None
+        elif fence is None and line == "---":
             slides.append([])
-        else:
-            slides[-1].append(line)
+            continue
+        slides[-1].append(line)
     return meta, ["\n".join(slide) for slide in slides]
 
 
@@ -109,11 +120,14 @@ def builtin_html(report: Report) -> str:
 def export_report(
     settings: Settings, report: Report, fmt: ExportFormat, *, run=subprocess.run, which=shutil.which
 ) -> Path:
-    """Write `<reports_dir>/<id>.md`, then the requested format beside it; return the file's path."""
+    """Write `<reports_dir>/<id>.md`, then the requested format beside it; return the file's path.
+
+    Every file is written under a temporary name and moved into place with `os.replace`, so a
+    concurrent export or save never serves (or feeds marp) a half-written file."""
     out_dir = settings.reports_dir
     out_dir.mkdir(parents=True, exist_ok=True)
     md_path = out_dir / f"{report.id}.md"
-    md_path.write_text(report.source_md, encoding="utf-8")
+    _write_atomic(md_path, report.source_md)
     if fmt == "md":
         return md_path
     out_path = out_dir / f"{report.id}.{fmt}"
@@ -121,18 +135,39 @@ def export_report(
     if marp is None:
         if fmt != "html":
             raise MarpUnavailable("marp-cli not available; build the reports image variant")
-        out_path.write_text(builtin_html(report), encoding="utf-8")
+        _write_atomic(out_path, builtin_html(report))
         return out_path
+    tmp_out = _temp_path(out_path)
     # Never `--allow-local-files`: the Markdown is agent-written and must not read the host's files.
-    argv = [marp, str(md_path), "-o", str(out_path)]
+    argv = [marp, str(md_path), "-o", str(tmp_out)]
     if settings.chrome_bin:
         argv += ["--browser-path", settings.chrome_bin]
     try:
-        result = run(argv, capture_output=True, text=True, timeout=MARP_TIMEOUT_S, cwd=out_dir)
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"marp timed out after {MARP_TIMEOUT_S}s") from None
-    except OSError as exc:
-        raise RuntimeError(f"marp failed to start: {exc}") from None
-    if result.returncode != 0:
-        raise RuntimeError((result.stderr or f"marp exited with {result.returncode}")[-500:])
+        try:
+            result = run(argv, capture_output=True, text=True, timeout=MARP_TIMEOUT_S, cwd=out_dir)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"marp timed out after {MARP_TIMEOUT_S}s") from None
+        except OSError as exc:
+            raise RuntimeError(f"marp failed to start: {exc}") from None
+        if result.returncode != 0:
+            raise RuntimeError((result.stderr or f"marp exited with {result.returncode}")[-500:])
+        if not tmp_out.is_file():
+            raise RuntimeError("marp wrote no output")
+        os.replace(tmp_out, out_path)
+    finally:
+        tmp_out.unlink(missing_ok=True)
     return out_path
+
+
+def _temp_path(path: Path) -> Path:
+    """A fresh hidden name beside `path` with the same extension (marp picks the format from it)."""
+    return path.with_name(f".{path.stem}.{secrets.token_hex(6)}{path.suffix}")
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    tmp = _temp_path(path)
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)

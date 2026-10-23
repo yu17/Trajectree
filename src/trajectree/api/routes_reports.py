@@ -81,7 +81,7 @@ def reports_export(
         report = _get(conn, report_id)
     # marp-cli may take a while: it runs with no lock held
     try:
-        path = export_report(request.app.state.settings, report, fmt)
+        path = export_report(request.app.state.settings, report, fmt, which=request.app.state.which)
     except MarpUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except RuntimeError as exc:

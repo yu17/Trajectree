@@ -123,7 +123,7 @@ def _parser() -> argparse.ArgumentParser:
     exp = rep_sub.add_parser("export", help="export a report")
     exp.add_argument("report_id")
     exp.add_argument("--format", choices=["md", "html", "pdf", "pptx"], default="html")
-    exp.add_argument("--out", help="write the file here")
+    exp.add_argument("--out", help="write the file here (default: md/html to stdout, pdf/pptx to ./<id>.<format>)")
 
     qadd = sub.add_parser("add", help="quick-add: turn free text into proposals")
     qadd.add_argument("text")
@@ -351,11 +351,13 @@ def _cmd_report(args: argparse.Namespace, api: _Api) -> None:
     else:
         query = urlencode({"format": args.format})
         data = api.get_bytes(f"/api/reports/{quote(args.report_id, safe='')}/export?{query}")
-        if args.out:
-            Path(args.out).write_bytes(data)
-            print(f"wrote {args.out}")
-        else:
-            print(f"{args.format}: {len(data)} bytes")
+        out = args.out
+        if out is None and args.format in ("md", "html"):
+            sys.stdout.write(data.decode("utf-8"))  # text formats go to stdout
+            return
+        out = out or f"{args.report_id}.{args.format}"  # binary formats default to ./<id>.<fmt>
+        Path(out).write_bytes(data)
+        print(f"wrote {out}")
 
 
 def _cmd_accept(args: argparse.Namespace, api: _Api) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from importlib.metadata import version
@@ -109,6 +110,7 @@ def create_app(settings: Settings, *, ledger: Ledger | None = None) -> FastAPI:
     app.state.ledger = ledger
     app.state.token = token
     app.state.mcp = mcp
+    app.state.which = shutil.which  # how report exports find marp-cli; tests replace it
     app.state.runs = RunService(ledger, settings)
     app.state.scheduler = Scheduler(ledger, settings, app.state.runs)
 

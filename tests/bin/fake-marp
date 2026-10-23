@@ -1,0 +1,9 @@
+#!/usr/bin/env python3
+"""Stand-in for marp-cli in tests: `fake-marp <in.md> -o <out> [...]` writes a marker plus the input."""
+import sys
+from pathlib import Path
+
+args = sys.argv[1:]
+source = Path(args[0]).read_text(encoding="utf-8")
+out = Path(args[args.index("-o") + 1])
+out.write_text(f"FAKE MARP {out.suffix}\n{' '.join(args[3:])}\n{source}", encoding="utf-8")

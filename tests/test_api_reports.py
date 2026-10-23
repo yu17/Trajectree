@@ -26,6 +26,21 @@ def test_report_crud_and_export(client):
     assert client.post("/api/reports/draft", json={"kind": "deck", "title": "D", "projects": ["clmi"]}).status_code == 202
 
 
+def test_export_through_marp_when_found(client, app):
+    from pathlib import Path
+    fake = str(Path(__file__).parent / "bin" / "fake-marp")
+    app.state.which = lambda name: fake if name == "marp" else None
+    r = client.post("/api/reports", json={"title": "Deck", "kind": "deck", "source_md": "# One"}).json()
+    pdf = client.get(f"/api/reports/{r['id']}/export?format=pdf")
+    assert pdf.status_code == 200 and pdf.headers["content-type"] == "application/pdf"
+    assert pdf.content.startswith(b"FAKE MARP .pdf") and pdf.content.endswith(b"# One")
+    html = client.get(f"/api/reports/{r['id']}/export?format=html")
+    assert html.text.startswith("FAKE MARP .html")   # marp, not the built-in renderer
+    app.state.which = lambda name: "/nonexistent/marp"
+    failed = client.get(f"/api/reports/{r['id']}/export?format=pptx")
+    assert failed.status_code == 502 and "marp failed to start" in failed.json()["detail"]
+
+
 def test_report_errors_and_pending(client, app):
     from trajectree.models import Actor, ReportIn
     from trajectree.repo.reports import create_report
