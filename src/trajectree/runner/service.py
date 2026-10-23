@@ -18,10 +18,11 @@ from pydantic import ValidationError
 from trajectree.auth.tokens import mint_token, revoke_token
 from trajectree.config import Settings
 from trajectree.db.ledger import Ledger
-from trajectree.models import Actor, EventIn, Proposal, Run, TodoIn
+from trajectree.models import SLOT_OF, Actor, EventIn, Proposal, Run, RunSlot, TodoIn
 from trajectree.repo import NotFound, UnknownProject, events, todos
 from trajectree.repo.caps import get_caps
 from trajectree.repo.projects import get_project_by_slug, resolve_project_ref
+from trajectree.repo.routines import resolve_routine_ref
 from trajectree.repo.runs import (
     create_run,
     find_active_summarize,
@@ -36,6 +37,8 @@ from trajectree.runner.credentials import cli_version, ensure_cfg_dirs, load_oau
 from trajectree.runner.kinds import (
     KIND_OF,
     AskRequest,
+    RoutineRequest,
+    RunPlan,
     RunRequest,
     SummarizeRequest,
     ensure_prompts,
@@ -45,6 +48,7 @@ from trajectree.runner.kinds import (
 )
 from trajectree.runner.launch import launch
 from trajectree.runner.parse import ParsedResult, parse_claude_json, parse_codex
+from trajectree.runner.routines import after_routine, deliver_result, routine_cap
 from trajectree.runner.spec import (
     AlreadyApplied,
     MissingCredentials,
@@ -88,27 +92,36 @@ class RunService:
         with self.ledger.locked() as conn:
             if get_caps(conn).paused:
                 raise RunsPaused("runs are paused")
-            runner = request.runner or self.settings.default_runner
-            runner, backend = runner_parts(runner)
-            project_id = None
+            kind = KIND_OF[type(request)]
+            default_runner, model = self.settings.default_runner, request.model
+            routine_id, attempt, project_id = None, 1, None
+            if isinstance(request, RoutineRequest):
+                routine = resolve_routine_ref(conn, request.routine)
+                default_runner = routine.runner or default_runner
+                model = model or routine.model
+                routine_id, attempt = routine.id, request.attempt
+            runner, backend = runner_parts(request.runner or default_runner)
             if isinstance(request, SummarizeRequest):
                 project_id = resolve_project_ref(conn, request.project).id
                 active = find_active_summarize(conn, project_id)
                 if active is not None:
                     return active  # one summary per project in flight
-            elif isinstance(request, AskRequest):
+            elif isinstance(request, (AskRequest, RoutineRequest)):
                 for ref in request.projects or []:
                     resolve_project_ref(conn, ref)
             elif request.project:
                 resolve_project_ref(conn, request.project)
             return create_run(
                 conn,
-                kind=KIND_OF[type(request)],
+                kind=kind,
                 runner=runner,
                 backend=backend,
-                model=request.model,
+                model=model,
                 project_id=project_id,
                 props={"request": request.model_dump(mode="json")},
+                routine_id=routine_id,
+                slot=SLOT_OF[kind],
+                attempt=attempt,
             )
 
     # -- execute ---------------------------------------------------------------------------
@@ -121,7 +134,9 @@ class RunService:
             if run is None:
                 raise NotFound(f"run {run_id} not found")
             fields["props"] = {**run.props, "failure": "infra"}
-        return update_run(conn, run_id, status=status, error=error, finished=self.now(), **fields)
+        failed = update_run(conn, run_id, status=status, error=error, finished=self.now(), **fields)
+        after_routine(conn, failed)
+        return failed
 
     def execute(self, run_id: str) -> Run:
         with self.ledger.locked() as conn:
@@ -136,7 +151,7 @@ class RunService:
             prepared = self._prepare(conn, run_id, version)  # revokes its own token if it fails
             if isinstance(prepared, Run):
                 return prepared
-            run, caps, plan, spec, env, token_id, oauth_token = prepared
+            run, caps, plan, spec, env, token_id, oauth_token, actor = prepared
         secrets = [spec.mcp_token, oauth_token or ""]
         run_dir = self.settings.runs_dir / run_id
         mcp_path = run_dir / "mcp.json"
@@ -173,7 +188,7 @@ class RunService:
                 raise
             with self.ledger.locked() as conn:
                 try:
-                    return self._finalize(conn, run, caps.timeout_s, outcome, last_path, secrets)
+                    return self._finalize(conn, run, plan, actor, caps.timeout_s, outcome, last_path, secrets)
                 finally:
                     revoke_token(conn, token_id)
         finally:
@@ -196,6 +211,8 @@ class RunService:
         now = self.now()
         if spent_usd(conn, day=self.today()) + caps.usd_per_run > caps.usd_per_day:
             return self._fail(conn, run_id, f"daily cap {caps.usd_per_day} USD reached", "capped")
+        if run.kind == "routine" and (capped := routine_cap(conn, run, today=self.today(), now=now)):
+            return self._fail(conn, run_id, capped, "capped")
         update_run(conn, run_id, status="running", started=now)
         ensure_prompts(self.settings)
         request = request_from_props(run.kind, run.props["request"])
@@ -206,7 +223,7 @@ class RunService:
         actor = Actor(
             kind="agent",
             ref=run_id,
-            model=request.model,
+            model=run.model,
             backend=run.backend,
             tool=run.runner,
             tool_version=version,
@@ -231,7 +248,7 @@ class RunService:
                 system_prompt=plan.system_prompt,
                 cwd=plan.cwd,
                 tools=plan.tools,
-                usd_cap=caps.usd_per_run,
+                usd_cap=caps.usd_per_run if plan.usd_cap is None else min(caps.usd_per_run, plan.usd_cap),
                 timeout_s=caps.timeout_s,
                 mcp_url=f"http://127.0.0.1:{self.settings.port}/mcp",
                 mcp_token=secret,
@@ -252,9 +269,11 @@ class RunService:
             revoke_token(conn, token_id)
             token_id = None
             raise
-        return run, caps, plan, spec, env, token_id, oauth_token
+        return run, caps, plan, spec, env, token_id, oauth_token, actor
 
-    def _finalize(self, conn, run: Run, timeout_s: int, outcome, last_path, secrets: list[str]) -> Run:
+    def _finalize(
+        self, conn, run: Run, plan: RunPlan, actor: Actor, timeout_s: int, outcome, last_path, secrets: list[str]
+    ) -> Run:
         if outcome.timed_out:
             return self._fail(conn, run.id, f"timeout after {timeout_s}s", infra=True)
         if outcome.exit_code is None:
@@ -278,7 +297,7 @@ class RunService:
             status = "failed"
         structured = parsed.structured
         answer = structured.get("answer") if isinstance(structured, dict) else None
-        return update_run(
+        done = update_run(
             conn,
             run.id,
             status=status,
@@ -295,6 +314,16 @@ class RunService:
             log_path=outcome.log_path,
             finished=self.now(),
         )
+        if done.kind == "routine":
+            if done.status == "ok" and done.result_md:
+                done = self._deliver(conn, done, plan, actor)
+            after_routine(conn, done)
+        return done
+
+    def _deliver(self, conn, run: Run, plan: RunPlan, actor: Actor) -> Run:
+        """Deliver an ok routine run's result; `create_event` re-enters the held ledger lock."""
+        result = deliver_result(self.ledger, self.settings, run, plan, actor=actor, now=self.now())
+        return update_run(conn, run.id, props={**run.props, "delivery": result.model_dump(mode="json")})
 
     # -- worker ----------------------------------------------------------------------------
 
@@ -302,16 +331,16 @@ class RunService:
         with self.ledger.locked() as conn:
             return get_caps(conn).paused
 
-    def _next_queued(self) -> Run | None:
+    def _next_queued(self, slot: RunSlot = "interactive") -> Run | None:
         with self.ledger.locked() as conn:
-            return oldest_queued(conn)
+            return oldest_queued(conn, slot=slot)
 
     def _mark_failed(self, run_id: str, error: str) -> None:
         with self.ledger.locked() as conn:
             run = get_run(conn, run_id)
             # `execute` already finished (and masked) a run it aborted: never overwrite that.
             if run is not None and run.status in ("queued", "running"):
-                self._fail(conn, run_id, error)
+                self._fail(conn, run_id, error, infra=True)  # our code crashed, not the model
 
     def recover(self) -> int:
         """Fail every run left `running` by a previous daemon and revoke its token."""
@@ -324,17 +353,19 @@ class RunService:
                 (self.settings.runs_dir / run.id / "mcp.json").unlink(missing_ok=True)
         return len(orphans)
 
-    async def worker(self, stop: asyncio.Event, *, poll_s: float = 0.5) -> None:
+    async def worker(self, stop: asyncio.Event, *, slot: RunSlot = "interactive", poll_s: float = 0.5) -> None:
+        """Drain queued runs of one slot, one at a time."""
         while not stop.is_set():
             try:
                 # Paused: queued runs stay queued until the owner resumes.
                 paused = await asyncio.to_thread(self._paused)
-                run = None if paused else await asyncio.to_thread(self._next_queued)
+                run = None if paused else await asyncio.to_thread(self._next_queued, slot)
                 if run is not None:
                     try:
                         await asyncio.to_thread(self.execute, run.id)
                     except Exception as exc:
-                        log.exception("run %s crashed", run.id)
+                        # No traceback or exception text: a launch error can carry the run token.
+                        log.error("run %s crashed: %s", run.id, type(exc).__name__)
                         await asyncio.to_thread(self._mark_failed, run.id, str(exc)[:500])
                     continue
             except Exception:

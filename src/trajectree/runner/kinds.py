@@ -17,11 +17,12 @@ from trajectree.auth.scopes import Scope
 from trajectree.config import Settings
 from trajectree.connectors.paths import to_local
 from trajectree.context.pack import build_context_pack
-from trajectree.models import RUNNER_PATTERN, Run, RunKind
+from trajectree.models import RUNNER_PATTERN, Delivery, Project, Run, RunKind
+from trajectree.repo import NotFound
 from trajectree.repo.projects import get_project_by_slug, list_projects, resolve_project_ref
 from trajectree.repo.resources import list_resources
+from trajectree.repo.routines import resolve_routine_ref
 from trajectree.runner.spec import ToolPolicy
-
 
 
 class SummarizeRequest(BaseModel):
@@ -47,12 +48,22 @@ class QuickAddRequest(BaseModel):
     model: str | None = None
 
 
-RunRequest = SummarizeRequest | AskRequest | QuickAddRequest
+class RoutineRequest(BaseModel):
+    routine: str
+    projects: list[str] | None = None
+    reason: str = "manual"
+    attempt: int = Field(1, ge=1, le=3)
+    runner: str | None = None
+    model: str | None = None
+
+
+RunRequest = SummarizeRequest | AskRequest | QuickAddRequest | RoutineRequest
 
 KIND_OF: dict[type[BaseModel], RunKind] = {
     SummarizeRequest: "summarize",
     AskRequest: "ask",
     QuickAddRequest: "quick_add",
+    RoutineRequest: "routine",
 }
 _CLASS_OF = {kind: cls for cls, kind in KIND_OF.items()}
 
@@ -98,6 +109,11 @@ READ_ONLY_SYSTEM = (
     "You are answering from the owner's project tracker. You have read-only access; "
     "put anything worth recording into `proposals` instead of writing."
 )
+ROUTINE_SYSTEM = (
+    "You are the routine `$routine_name` maintaining the owner's project tracker. "
+    "Write only through the trajectree MCP tools, each with a one-line intent; writes land pending review. "
+    "Anything uncertain goes into `proposals`."
+)
 
 def ensure_prompts(settings: Settings) -> None:
     """Create `prompts_dir` and copy each packaged prompt that is missing; never overwrite edits."""
@@ -132,6 +148,11 @@ class RunPlan(BaseModel):
     tools: ToolPolicy
     json_schema: dict[str, Any]
     scope: Scope
+    usd_cap: float | None = None
+    delivery: Delivery = "none"
+    routine_id: str | None = None
+    delivery_project_id: str | None = None
+    routine_name: str | None = None
 
 
 def _day(moment: datetime) -> str:
@@ -146,6 +167,8 @@ def plan_run(
         return _plan_summarize(conn, settings, run, request, now)
     if isinstance(request, AskRequest):
         return _plan_ask(conn, settings, run, request, now)
+    if isinstance(request, RoutineRequest):
+        return _plan_routine(conn, settings, run, request, now)
     return _plan_quick_add(conn, settings, run, request, now)
 
 
@@ -168,16 +191,10 @@ def _plan_summarize(
             "today": _day(now),
         },
     )
-    cwd = settings.runs_dir / run.id
-    for resource in list_resources(conn, project_ids=[project.id], kinds=["folder"]):
-        local = to_local(settings, resource.locator)
-        if local.is_dir():
-            cwd = local
-            break
     return RunPlan(
         prompt=prompt,
         system_prompt=render_prompt(SUMMARIZE_SYSTEM, {"project_slug": project.slug}),
-        cwd=cwd,
+        cwd=_folder_cwd(conn, settings, project.id) or settings.runs_dir / run.id,
         tools=ToolPolicy(
             tools=["Read", "Grep", "Glob", "Bash"],
             allowed=["Read", "Grep", "Glob", "Bash(git log *)", "mcp__trajectree__*"],
@@ -188,6 +205,15 @@ def _plan_summarize(
         json_schema=PROPOSAL_SCHEMA,
         scope=Scope(projects=[project.id], tools=["set_project_summary"], write=True),
     )
+
+
+def _folder_cwd(conn: apsw.Connection, settings: Settings, project_id: str) -> Path | None:
+    """The project's first `folder` resource that exists locally, if any."""
+    for resource in list_resources(conn, project_ids=[project_id], kinds=["folder"]):
+        local = to_local(settings, resource.locator)
+        if local.is_dir():
+            return local
+    return None
 
 
 def _deny_read(path: Path) -> str:
@@ -253,3 +279,59 @@ def _plan_quick_add(
         },
     )
     return _read_only_plan(settings, run, prompt)
+
+
+def _plan_routine(
+    conn: apsw.Connection, settings: Settings, run: Run, request: RoutineRequest, now: datetime
+) -> RunPlan:
+    routine = resolve_routine_ref(conn, run.routine_id or request.routine)
+    refs = request.projects or routine.scope.projects
+    projects: list[Project] = (
+        [resolve_project_ref(conn, ref) for ref in refs] if refs else list_projects(conn, status="active")
+    )
+    ids = [p.id for p in projects]
+    pack = build_context_pack(
+        conn,
+        project_ids=ids,
+        t_from=now - timedelta(days=routine.scope.lookback_days),
+        t_to=now + timedelta(days=30),
+        token_budget=8000,
+    )
+    try:
+        template = (settings.prompts_dir / routine.prompt_ref).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise NotFound(f"prompt {routine.prompt_ref} missing") from None
+    prompt = render_prompt(
+        template,
+        {
+            "routine_name": routine.name,
+            "projects": ", ".join(p.slug for p in projects),
+            "context_pack": pack.markdown,
+            "today": _day(now),
+            "lookback_days": str(routine.scope.lookback_days),
+        },
+    )
+    cwd = settings.runs_dir / run.id
+    if routine.cwd_mode == "project_folder" and ids:
+        cwd = _folder_cwd(conn, settings, ids[0]) or cwd
+    direct = routine.write_mode == "direct"
+    return RunPlan(
+        prompt=prompt,
+        system_prompt=render_prompt(ROUTINE_SYSTEM, {"routine_name": routine.name}) if direct else READ_ONLY_SYSTEM,
+        cwd=cwd,
+        tools=ToolPolicy(
+            tools=routine.tool_policy,
+            allowed=[*routine.tool_policy, "mcp__trajectree__*"],
+            disallowed=(
+                [_deny_read(settings.cfg_root), _deny_read(settings.data_dir)] if routine.tool_policy else []
+            ),
+        ),
+        json_schema=PROPOSAL_SCHEMA,
+        scope=Scope(projects=ids or None, write=direct),
+        usd_cap=routine.caps.usd_per_run,
+        delivery=routine.delivery,
+        routine_id=routine.id,
+        # Inbox delivery goes to the first explicitly scoped project, else the `inbox` project.
+        delivery_project_id=ids[0] if refs else None,
+        routine_name=routine.name,
+    )

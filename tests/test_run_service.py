@@ -242,9 +242,9 @@ async def test_pause_holds_queued_runs_until_resumed(ledger, human, settings, lo
     set_caps(ledger.conn, Caps(paused=True))
     polls = []
     real_next = s._next_queued
-    def counting_next():
+    def counting_next(*a):
         polls.append(1)
-        return real_next()
+        return real_next(*a)
     s._next_queued = counting_next
     stop = asyncio.Event()
     task = asyncio.create_task(s.worker(stop, poll_s=0.02))
@@ -403,3 +403,157 @@ def test_dismiss_proposal(ledger, human, settings, logged_in):
     with pytest.raises(AlreadyApplied):
         s.dismiss_proposal(run.id, 1)
     assert list_runs(ledger.conn, with_open_proposals=True) == []
+
+
+# -- routines ------------------------------------------------------------------------------
+
+from datetime import datetime, timezone
+from trajectree.models import RoutineCaps, RoutineIn, RoutineScope
+from trajectree.repo.routines import create_routine, get_routine
+from trajectree.repo.runs import create_run, oldest_queued
+from trajectree.runner.kinds import RoutineRequest
+
+R_NOW = datetime(2026, 1, 10, 12, tzinfo=timezone.utc)
+
+
+def _routine(ledger, **over):
+    data = {"name": "rev", "trigger": "@daily", "prompt_ref": "cross_project_review.md", **over}
+    return create_routine(ledger.conn, RoutineIn(**data), now=R_NOW)
+
+
+def test_enqueue_routine_lands_in_scheduled_slot(ledger, human, settings):
+    r = _routine(ledger)
+    s = svc(ledger, settings)
+    run = s.enqueue(RoutineRequest(routine="rev"))
+    assert (run.slot, run.kind, run.routine_id, run.attempt) == ("scheduled", "routine", r.id, 1)
+    assert oldest_queued(ledger.conn, slot="interactive") is None
+    assert run.props["request"]["routine"] == "rev" and run.project_id is None
+    assert s.enqueue(AskRequest(question="q")).slot == "interactive"
+    with pytest.raises(NotFound):
+        s.enqueue(RoutineRequest(routine="nope"))
+    with pytest.raises(UnknownProject):
+        s.enqueue(RoutineRequest(routine="rev", projects=["zzz"]))
+
+
+def test_enqueue_routine_runner_and_model_fall_back_to_routine(ledger, human, settings):
+    _routine(ledger, runner="ccx:kimi", model="k2")
+    s = svc(ledger, settings)
+    run = s.enqueue(RoutineRequest(routine="rev", attempt=2))
+    assert (run.runner, run.backend, run.model, run.attempt) == ("ccx:kimi", "kimi", "k2", 2)
+    run = s.enqueue(RoutineRequest(routine="rev", runner="claude", model="m"))
+    assert (run.runner, run.model) == ("claude", "m")
+
+
+def test_routine_daily_cap_marks_capped_and_pauses_routine(ledger, human, settings, logged_in):
+    r = _routine(ledger, caps=RoutineCaps(usd_per_run=0.01, usd_per_day=0.02))
+    s = svc(ledger, settings)
+    prior = s.enqueue(RoutineRequest(routine="rev"))
+    update_run(ledger.conn, prior.id, status="ok", est_usd=0.0199, started=s.now())
+    run = s.execute(s.enqueue(RoutineRequest(routine="rev")).id)
+    assert run.status == "capped" and "routine daily cap 0.02 USD reached" in run.error and run.token_id is None
+    assert not (settings.runs_dir / f"{run.id}.log").exists()
+    after = get_routine(ledger.conn, r.id)
+    assert after.paused_until > s.now() and after.paused_until.hour == 0 and after.paused_until.minute == 0
+    assert after.last_run_id == run.id and after.last_error == run.error
+
+
+def test_routine_run_cap_is_the_smaller_of_routine_and_global(ledger, human, settings, logged_in, monkeypatch):
+    create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    _routine(ledger, caps=RoutineCaps(usd_per_run=0.25, usd_per_day=2.0))
+    seen = []
+    real = service_mod.run_env
+    def spy(spec, *a, **kw):
+        seen.append(spec.usd_cap)
+        return real(spec, *a, **kw)
+    monkeypatch.setattr(service_mod, "run_env", spy)
+    s = svc(ledger, settings)
+    s.execute(s.enqueue(RoutineRequest(routine="rev")).id)
+    set_caps(ledger.conn, Caps(usd_per_run=0.1, usd_per_day=5.0))
+    s.execute(s.enqueue(RoutineRequest(routine="rev")).id)
+    s.execute(s.enqueue(AskRequest(question="q")).id)
+    assert seen == [0.25, 0.1, 0.1]
+
+
+def test_routine_ok_run_delivers_to_inbox_and_updates_routine(ledger, human, settings, logged_in, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "ok")
+    monkeypatch.setenv("FAKE_CLAUDE_RESULT", "Agenda")
+    monkeypatch.delenv("FAKE_CLAUDE_STRUCTURED", raising=False)
+    p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    r = _routine(ledger, delivery="inbox", scope=RoutineScope(projects=["a"]))
+    s = RunService(ledger, settings)
+    run = s.execute(s.enqueue(RoutineRequest(routine="rev")).id)
+    assert run.status == "ok" and run.result_md == "Agenda", run.error
+    notes = list_events(ledger.conn, project_ids=[p.id], kinds=["note"])
+    assert [(e.title, e.body_md, e.source) for e in notes] == [(f"rev · {s.today()}", "Agenda", "agent")]
+    txn = ledger.get_txn(notes[0].created_txn)
+    assert (txn.review, txn.actor_kind, txn.run_id, txn.intent) == ("pending", "agent", run.id, "deliver rev result")
+    assert run.props["delivery"]["ok"] is True and run.props["delivery"]["event_id"] == notes[0].id
+    after = get_routine(ledger.conn, r.id)
+    assert after.last_run_id == run.id and after.last_error is None and after.last_fired == run.started
+
+
+def test_routine_failed_run_records_last_error_without_delivery(ledger, human, settings, logged_in):
+    create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    r = _routine(ledger, delivery="inbox", scope=RoutineScope(projects=["a"]))
+    s = svc(ledger, settings, mode="garbage")
+    run = s.execute(s.enqueue(RoutineRequest(routine="rev")).id)
+    assert run.status == "failed" and "delivery" not in run.props
+    assert list_events(ledger.conn, kinds=["note"]) == []
+    after = get_routine(ledger.conn, r.id)
+    assert after.last_run_id == run.id and after.last_error == run.error
+
+
+@pytest.mark.anyio
+async def test_interactive_worker_ignores_scheduled_runs(ledger, human, settings, logged_in):
+    create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    _routine(ledger)
+    s = svc(ledger, settings)
+    routine_run = s.enqueue(RoutineRequest(routine="rev"))
+    ask = s.enqueue(AskRequest(question="q"))
+    stop = asyncio.Event()
+    task = asyncio.create_task(s.worker(stop, poll_s=0.02))
+    for _ in range(200):
+        await asyncio.sleep(0.05)
+        if get_run(ledger.conn, ask.id).status == "ok":
+            break
+    await asyncio.sleep(0.2)
+    stop.set()
+    await asyncio.wait_for(task, 5)
+    assert get_run(ledger.conn, ask.id).status == "ok"
+    assert get_run(ledger.conn, routine_run.id).status == "queued"
+    stop = asyncio.Event()
+    task = asyncio.create_task(s.worker(stop, slot="scheduled", poll_s=0.02))
+    for _ in range(200):
+        await asyncio.sleep(0.05)
+        if get_run(ledger.conn, routine_run.id).status == "ok":
+            break
+    stop.set()
+    await asyncio.wait_for(task, 5)
+    assert get_run(ledger.conn, routine_run.id).status == "ok"
+
+
+@pytest.mark.anyio
+async def test_worker_crash_is_logged_without_exception_text(ledger, human, settings, logged_in, caplog):
+    def boom(*a, **kw):
+        raise RuntimeError("boom trj_secret")
+    s = RunService(ledger, settings, launch=boom, base_env={"PATH": os.environ["PATH"]})
+    run = s.enqueue(AskRequest(question="q"))
+    stop = asyncio.Event()
+    task = asyncio.create_task(s.worker(stop, poll_s=0.02))
+    for _ in range(200):
+        await asyncio.sleep(0.05)
+        if get_run(ledger.conn, run.id).status == "failed":
+            break
+    stop.set()
+    await asyncio.wait_for(task, 5)
+    assert get_run(ledger.conn, run.id).status == "failed"
+    assert "trj_secret" not in caplog.text and "RuntimeError" in caplog.text and "Traceback" not in caplog.text
+
+
+def test_mark_failed_is_an_infra_failure(ledger, human, settings):
+    s = svc(ledger, settings)
+    run = s.enqueue(AskRequest(question="q"))
+    update_run(ledger.conn, run.id, status="running")
+    s._mark_failed(run.id, "planner crashed")
+    after = get_run(ledger.conn, run.id)
+    assert after.status == "failed" and after.props["failure"] == "infra"
