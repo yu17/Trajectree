@@ -6,6 +6,7 @@ stay as history.
 """
 
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from dateutil.rrule import rrulestr
 from pydantic import BaseModel
@@ -36,10 +37,26 @@ def instances(rule: str, *, start: datetime, until: datetime) -> list[datetime]:
         raise ValueError(str(exc)) from exc
 
 
-def materialize(ledger: Ledger, *, now: datetime) -> MaterializeReport:
-    """Create the missing planned instances for every recurring project; take the lock per write."""
+def _parse_instance(value: object) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def materialize(ledger: Ledger, *, now: datetime, tz: str = "UTC") -> MaterializeReport:
+    """Create the missing planned instances for every recurring project; take the lock per write.
+
+    Rules are expanded in `tz` from the start of the local day of `now` (a stable anchor, so
+    seconds and unset hour/minute never drift between passes); instances are stored in UTC.
+    """
     created = dropped = 0
     errors: list[str] = []
+    zone = ZoneInfo(tz)
+    start = now.astimezone(zone).replace(hour=0, minute=0, second=0, microsecond=0)
     until = now + timedelta(days=HORIZON_DAYS)
     with ledger.locked() as conn:
         projects = [p for p in list_projects(conn) if p.recurrence]
@@ -50,44 +67,45 @@ def materialize(ledger: Ledger, *, now: datetime) -> MaterializeReport:
     for project in projects:
         rule = project.recurrence or ""
         try:
-            wanted = instances(rule, start=now, until=until)
-        except ValueError as exc:
-            errors.append(f"{project.slug}: {exc}")
-            continue
-        current: set[str] = set()
-        for event in existing[project.id]:
-            if event.props.get("rrule") == rule:
-                current.add(str(event.props["instance"]))
-            elif event.status == "planned" and event.t_start > now:
-                update_event(
+            local = instances(rule, start=start, until=until.astimezone(zone))
+            wanted = [w.astimezone(timezone.utc) for w in local if w >= now]
+            current: set[datetime] = set()
+            for event in existing[project.id]:
+                if event.props.get("rrule") == rule:
+                    parsed = _parse_instance(event.props.get("instance"))
+                    if parsed is not None:
+                        current.add(parsed)
+                elif event.status == "planned" and event.t_start > now:
+                    update_event(
+                        ledger,
+                        MATERIALIZER,
+                        event.id,
+                        EventPatch(status="dropped"),
+                        intent="recurrence rule changed",
+                        auto_accept=True,
+                    )
+                    dropped += 1
+            minutes = project.props.get("instance_minutes", 60)
+            for when in wanted:
+                if when in current:
+                    continue
+                create_event(
                     ledger,
                     MATERIALIZER,
-                    event.id,
-                    EventPatch(status="dropped"),
-                    intent="recurrence rule changed",
+                    EventIn(
+                        project_id=project.id,
+                        kind=project.props.get("instance_kind", "meeting"),
+                        title=project.props.get("instance_title", project.title),
+                        t_start=when,
+                        t_end=when + timedelta(minutes=minutes),
+                        status="planned",
+                        source="connector",
+                        props={"instance": when.isoformat(), "rrule": rule},
+                    ),
+                    intent="materialize recurrence",
                     auto_accept=True,
                 )
-                dropped += 1
-        minutes = project.props.get("instance_minutes", 60)
-        for when in wanted:
-            iso = when.astimezone(timezone.utc).isoformat()
-            if iso in current:
-                continue
-            create_event(
-                ledger,
-                MATERIALIZER,
-                EventIn(
-                    project_id=project.id,
-                    kind=project.props.get("instance_kind", "meeting"),
-                    title=project.props.get("instance_title", project.title),
-                    t_start=when,
-                    t_end=when + timedelta(minutes=minutes),
-                    status="planned",
-                    source="connector",
-                    props={"instance": iso, "rrule": rule},
-                ),
-                intent="materialize recurrence",
-                auto_accept=True,
-            )
-            created += 1
+                created += 1
+        except Exception as exc:  # one bad project never stops the others
+            errors.append(f"{project.slug}: {exc}")
     return MaterializeReport(created=created, dropped=dropped, errors=errors)

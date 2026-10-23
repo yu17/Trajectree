@@ -52,7 +52,10 @@ class FoldersReport(BaseModel):
 
 
 def load_gitignore(root: Path) -> GitIgnoreSpec | None:
-    """The root `.gitignore` as a spec, or None when absent or unreadable."""
+    """The root `.gitignore` as a spec, or None when absent or unreadable.
+
+    Raises ValueError (GitIgnorePatternError) for a malformed pattern; the collector reports it.
+    """
     try:
         lines = (root / ".gitignore").read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
@@ -182,7 +185,7 @@ def collect_folders(
                 since=_since(states.get(resource.id), now, since_days),
                 big_dir_mb=settings.folders_big_dir_mb,
             )
-        except OSError as exc:
+        except (OSError, ValueError) as exc:  # ValueError: malformed .gitignore pattern
             errors.append(f"{resource.locator}: {exc}")
             continue
         for day, change in days.items():

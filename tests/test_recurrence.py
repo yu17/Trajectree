@@ -67,3 +67,47 @@ def test_bad_rule_reported(ledger, human):
     create_project(ledger, human, ProjectIn(slug="gm", title="Group meeting", kind="routine", recurrence="FREQ=NOPE"))
     rep = materialize(ledger, now=NOW)
     assert rep.created == 0 and len(rep.errors) == 1 and rep.errors[0].startswith("gm: ")
+
+
+NOW_SECS = datetime(2026, 10, 21, 12, 34, 56, tzinfo=UTC)
+
+
+def test_second_pass_with_nonzero_seconds_creates_nothing(ledger, human):
+    p = create_project(ledger, human, ProjectIn(slug="gm", title="G", kind="routine", recurrence=RULE))
+    assert materialize(ledger, now=NOW_SECS).created == 8
+    assert materialize(ledger, now=NOW_SECS.replace(minute=40, second=1)).created == 0
+    assert all(e.t_start.second == 0 for e in list_events(ledger.conn, project_ids=[p.id]))
+
+
+def test_daily_rule_without_byhour_is_stable(ledger, human):
+    p = create_project(ledger, human, ProjectIn(slug="d", title="D", kind="routine", recurrence="FREQ=DAILY"))
+    materialize(ledger, now=NOW_SECS)
+    first = [e.t_start for e in list_events(ledger.conn, project_ids=[p.id])]
+    assert materialize(ledger, now=NOW_SECS.replace(minute=50, second=9)).created == 0
+    assert [e.t_start for e in list_events(ledger.conn, project_ids=[p.id])] == first
+    assert all(t.hour == 0 and t.second == 0 and t >= NOW_SECS for t in first)
+
+
+def test_rule_expands_in_configured_timezone(ledger, human):
+    p = create_project(ledger, human, ProjectIn(slug="b", title="B", kind="routine", recurrence=RULE))
+    materialize(ledger, now=NOW_SECS.replace(day=14), tz="Europe/Berlin")  # DST ends Oct 25
+    evs = list_events(ledger.conn, project_ids=[p.id])
+    winter = [e for e in evs if e.t_start.month == 11][0]
+    summer = [e for e in evs if e.t_start.day == 20 and e.t_start.month == 10][0]
+    assert winter.t_start.hour == 9 and summer.t_start.hour == 8
+
+
+def test_existing_instance_matched_by_datetime_not_string(ledger, human):
+    p = create_project(ledger, human, ProjectIn(slug="gm", title="G", kind="routine", recurrence=RULE))
+    create_event(ledger, human, EventIn(
+        project_id=p.id, kind="meeting", title="hand", t_start=datetime(2026, 10, 27, 10, tzinfo=UTC),
+        status="planned", props={"instance": "2026-10-27T10:00:00Z", "rrule": RULE}))
+    assert materialize(ledger, now=NOW).created == 7
+
+
+def test_one_bad_project_does_not_stop_others(ledger, human):
+    create_project(ledger, human, ProjectIn(slug="bad", title="Bad", kind="routine", recurrence=RULE, props={"instance_minutes": "x"}))
+    good = create_project(ledger, human, ProjectIn(slug="ok", title="Ok", kind="routine", recurrence=RULE))
+    rep = materialize(ledger, now=NOW)
+    assert len(rep.errors) == 1 and rep.errors[0].startswith("bad: ")
+    assert rep.created == 8 and len(list_events(ledger.conn, project_ids=[good.id])) == 8

@@ -98,7 +98,7 @@ def run_ingest(ledger: Ledger, settings: Settings, *, now: datetime | None = Non
                     signals_written=folders_written,
                     errors=folder_collection.errors,
                 )
-            recurrence = materialize(ledger, now=now)
+            recurrence = materialize(ledger, now=now, tz=settings.tz)
             with ledger.locked() as conn:
                 stale = stale_projects(conn, settled_before=now - timedelta(hours=settings.stale_settle_h))
                 with conn:

@@ -95,3 +95,20 @@ def test_folders_due(conn):
     assert not folders_due(conn, now=NOW.replace(hour=20), every_h=24)
     assert folders_due(conn, now=NOW.replace(day=14), every_h=24)
     assert not folders_due(conn, now=NOW.replace(day=14), every_h=0)
+
+
+def test_malformed_gitignore_is_reported_and_pass_continues(ledger, human, settings, tmp_path):
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    (bad / ".gitignore").write_text("!\n")
+    (bad / "a.txt").write_text("x")
+    good = tmp_path / "good"
+    good.mkdir()
+    (good / "b.txt").write_text("x")
+    os.utime(good / "b.txt", (T1, T1))
+    p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    upsert_resource(ledger, human, ResourceIn(project_id=p.id, kind="folder", locator=str(bad)))
+    upsert_resource(ledger, human, ResourceIn(project_id=p.id, kind="folder", locator=str(good)))
+    resources = list_resources(ledger.conn, kinds=["folder"])
+    c = collect_folders(settings, resources, read_folder_states(ledger.conn, resources), now=NOW, since_days=30)
+    assert len(c.errors) == 1 and c.errors[0].startswith(str(bad)) and len(c.signals) == 1
