@@ -30,6 +30,14 @@ export default defineConfig({
       TRAJECTREE_INGEST_EVERY: "0",
       TRAJECTREE_CLAUDE_HOME: "",
       TRAJECTREE_BACKENDS_ROOT: "",
+      TRAJECTREE_CLAUDE_BIN: path.resolve(import.meta.dirname,"../tests/bin/fake-claude"),
+      TRAJECTREE_CFG_DIR: path.join(dataDir, "cfg"),
+      TRAJECTREE_RUN_ENV_PASSTHROUGH: "FAKE_CLAUDE_MODE,FAKE_CLAUDE_STRUCTURED",
+      FAKE_CLAUDE_MODE: "ok",
+      FAKE_CLAUDE_STRUCTURED: JSON.stringify({
+        answer: "Parsed one decision",
+        proposals: [{ kind: "event", project: "clmi", title: "Encoder frozen (parsed)", reason: "quick add", event_kind: "decision" }],
+      }),
     },
   },
 });

@@ -27,4 +27,22 @@ test("create a project and an event, see the block, revert it from the ledger", 
   expect(run.status()).toBe(200);
   await page.getByRole("tab", { name: "Timeline" }).click();
   await expect(page.locator("g.lab", { hasText: "CLMI" })).toBeVisible();
+
+  const cred = await page.request.post("/api/runner/credentials", {
+    headers: { Authorization: `Bearer ${token}` },
+    data: { oauth_token: "fake" },
+  });
+  expect(cred.status()).toBe(200);
+  await page.getByRole("button", { name: "Quick capture" }).click();
+  await page.getByLabel("Describe it").fill("we froze the encoder");
+  await page.getByRole("button", { name: "Parse" }).click();
+  await expect(page.getByText("Encoder frozen (parsed)")).toBeVisible();
+  await page.getByRole("button", { name: "Accept" }).click();
+  // The panel closes as soon as the proposal is applied (App's `created`), so the "applied" badge is
+  // never stable; the timeline block below proves the apply.
+  await page.getByRole("tab", { name: "Timeline" }).click();
+  await expect(page.locator("g.block.k-decision")).toHaveCount(1);
+  await page.getByRole("tab", { name: "Runs" }).click();
+  await expect(page.getByRole("heading", { name: "Run history" })).toBeVisible();
+  await expect(page.locator("span.badge.run-ok").first()).toBeVisible();
 });
