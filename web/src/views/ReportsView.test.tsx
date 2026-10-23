@@ -1,0 +1,83 @@
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { ReportsView } from "./ReportsView";
+import type { ReportIn, ReportOut, ReportPatch } from "../api/types";
+
+const mocks = vi.hoisted(() => ({ reports: vi.fn(), createReport: vi.fn(), updateReport: vi.fn(), draftReport: vi.fn(), run: vi.fn(), projects: vi.fn() }));
+vi.mock("../api/client", async importOriginal => {
+  const real = await importOriginal<typeof import("../api/client")>();
+  return { ...real, api: { ...real.api, ...mocks } };
+});
+import { api } from "../api/client";
+
+const wrap = (ui: React.ReactElement) => render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>{ui}</QueryClientProvider>);
+const report = (id: string, over: Partial<ReportOut> = {}): ReportOut => ({ id, title: id, kind: "deck", scope: { projects: [], start: null, end: null }, source_md: "", props: {}, created_at: "2026-10-01T10:00:00Z", updated_at: "2026-10-01T10:00:00Z", pending_txn: null, ...over });
+const run = (status: string) => ({ run: { id: "run1", kind: "report", status, result_md: "", proposals: [], error: null, project_id: null, runner: "claude", backend: "claude", model: null, session_id: null, started: null, finished: null, tokens_in: 0, tokens_out: 0, tokens_cache: 0, est_usd: 0, turns: 0, duration_ms: 0, log_path: null, token_id: null, props: {}, routine_id: null, slot: "interactive", attempt: 1, created_at: "2026-10-22T10:00:00Z" }, txn_ids: [] });
+const projects = [{ id: "p1", slug: "clmi", title: "CLMI", kind: "research", status: "active" }, { id: "p2", slug: "old", title: "Old", kind: "research", status: "paused" }];
+
+let store: ReportOut[];
+
+describe("ReportsView", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    store = [];
+    mocks.reports.mockImplementation(async () => store.map(r => ({ ...r })));
+    mocks.projects.mockResolvedValue(projects);
+    mocks.createReport.mockImplementation(async (body: ReportIn) => {
+      const r = report("r1", { title: body.title, kind: body.kind, source_md: "# Memo" });
+      store = [r, ...store];
+      return r;
+    });
+    mocks.updateReport.mockImplementation(async (id: string, patch: ReportPatch) => {
+      store = store.map(r => (r.id === id ? { ...r, ...patch, updated_at: "2026-10-22T11:00:00Z" } as ReportOut : r));
+      return store.find(r => r.id === id);
+    });
+  });
+
+  it("creates, edits and saves a report", async () => {
+    const user = userEvent.setup();
+    wrap(<ReportsView />);
+    expect(await screen.findByText("No reports yet")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "New report" }));
+    await user.type(screen.getByLabelText("Title"), "Memo");
+    await user.selectOptions(screen.getByLabelText("Kind"), "memo");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(api.createReport).toHaveBeenCalledWith({ title: "Memo", kind: "memo" }));
+    const source = await screen.findByLabelText("Source");
+    expect((source as HTMLTextAreaElement).value).toBe("# Memo");
+    expect(screen.getByRole("button", { name: "Save report" })).toBeDisabled();
+    await user.clear(source);
+    await user.type(source, "# Draft");
+    await user.click(screen.getByRole("button", { name: "Save report" }));
+    await waitFor(() => expect(api.updateReport).toHaveBeenCalledWith("r1", { source_md: "# Draft" }));
+    expect(screen.getByRole("link", { name: "Export HTML" }).getAttribute("href")).toBe("/api/reports/r1/export?format=html");
+    expect(screen.getByRole("link", { name: "Export PDF" }).getAttribute("href")).toBe("/api/reports/r1/export?format=pdf");
+    expect(screen.getByRole("link", { name: "Export PPTX" }).getAttribute("target")).toBe("_blank");
+    expect(screen.getByRole("heading", { name: "Preview" })).toBeTruthy();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save report" })).toBeDisabled());
+    expect(screen.getByRole("button", { name: /Memo · memo/ })).toBeTruthy();
+  });
+
+  it("drafts with the agent and selects the result when the run finishes", async () => {
+    const user = userEvent.setup();
+    store = [report("old1", { title: "Older", source_md: "# Older" })];
+    mocks.draftReport.mockImplementation(async () => {
+      store = [...store, report("new1", { title: "Weekly", updated_at: "2026-10-22T10:05:00Z", source_md: "# Agent deck", pending_txn: "t9" })];
+      return run("queued").run;
+    });
+    mocks.run.mockResolvedValueOnce(run("running")).mockResolvedValue(run("ok"));
+    const { container } = wrap(<ReportsView />);
+    expect(await screen.findByRole("button", { name: /Older · deck/ })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Draft with agent" }));
+    expect(screen.queryByRole("option", { name: "Old" })).toBeNull();
+    await user.type(screen.getByLabelText("Title"), "Weekly");
+    await user.selectOptions(await screen.findByLabelText("Projects"), ["clmi"]);
+    await user.click(screen.getByRole("button", { name: "Draft" }));
+    await waitFor(() => expect(api.draftReport).toHaveBeenCalledWith(expect.objectContaining({ kind: "deck", title: "Weekly", projects: ["clmi"] })));
+    await waitFor(() => expect((screen.getByLabelText("Source") as HTMLTextAreaElement).value).toBe("# Agent deck"), { timeout: 4000 });
+    expect(container.querySelector(".badge.run-ok")).not.toBeNull();
+    expect(container.querySelector(".badge.review-pending")).not.toBeNull();
+  });
+});

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "./api/client";
 import { AskPanel } from "./components/AskPanel";
@@ -10,7 +10,10 @@ import { RunsView } from "./views/RunsView";
 import { TimelineView } from "./views/TimelineView";
 import "./views/views.css";
 
-type Tab = "timeline" | "ledger" | "runs" | "inbox";
+// Marp (with its MathJax) and CodeMirror are most of the bundle; load them with the Reports tab.
+const ReportsView = lazy(() => import("./views/ReportsView").then(m => ({ default: m.ReportsView })));
+
+type Tab = "timeline" | "ledger" | "runs" | "reports" | "inbox";
 type Panel = "project" | "capture" | "ask" | null;
 
 const isUnauthorized = (err: unknown) => err instanceof ApiError && err.status === 401;
@@ -50,6 +53,9 @@ export default function App() {
           <button role="tab" aria-selected={tab === "runs"} onClick={() => setTab("runs")}>
             Runs
           </button>
+          <button role="tab" aria-selected={tab === "reports"} onClick={() => setTab("reports")}>
+            Reports
+          </button>
           <button role="tab" aria-selected={tab === "inbox"} onClick={() => setTab("inbox")}>
             {pendingCount > 0 ? `Inbox (${pendingCount})` : "Inbox"}
           </button>
@@ -74,7 +80,19 @@ export default function App() {
         </aside>
       )}
       <div role="tabpanel">
-        {tab === "timeline" ? <TimelineView /> : tab === "ledger" ? <LedgerView /> : tab === "runs" ? <RunsView /> : <InboxView />}
+        {tab === "timeline" ? (
+          <TimelineView />
+        ) : tab === "ledger" ? (
+          <LedgerView />
+        ) : tab === "runs" ? (
+          <RunsView />
+        ) : tab === "reports" ? (
+          <Suspense fallback={<p className="muted">Loading</p>}>
+            <ReportsView />
+          </Suspense>
+        ) : (
+          <InboxView />
+        )}
       </div>
     </div>
   );
