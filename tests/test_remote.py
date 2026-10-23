@@ -43,6 +43,8 @@ def test_parse_remote_urls():
     assert parse_remote_url("https://gitlab.uni.edu/lab/sub/proj.git").kind == "gitlab"
     ssh = parse_remote_url("ssh://git@host/g/sub/r.git")
     assert ssh.kind == "gitlab" and ssh.path == "g/sub/r" and ssh.web_url == "https://host/g/sub/r"
+    ported = parse_remote_url("https://gitlab.lab:8443/g/r")
+    assert ported.api_base == "https://gitlab.lab:8443/api/v4" and ported.web_url == "https://gitlab.lab:8443/g/r"
     assert parse_remote_url("file:///tmp/x") is None
     assert parse_remote_url("/tmp/x") is None
     assert parse_remote_url("nonsense") is None
@@ -174,6 +176,7 @@ def test_collect_remote_isolates_failures(ledger, human, settings):
     assert d21.payload["releases"] == [{"tag": "v1", "title": "One", "url": "ru"}]
     assert [r.tag for r in col.releases] == ["v1"] and col.releases[0].resource_id == rok.id
     assert rbad.id not in col.polled and r401.id not in col.polled
+    assert "ghp_x" not in joined and all("ghp_x" not in str(s.payload) for s in col.signals)
 
 
 def test_collect_remote_since_uses_cursor_and_caps(ledger, human, settings):

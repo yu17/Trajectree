@@ -39,7 +39,8 @@ from trajectree.ingest.exports import render_exports, write_files
 from trajectree.models import Actor, ResourceIn
 from trajectree.repo.resources import find_resource, list_resources, upsert_resource
 from trajectree.repo.signals import stale_projects
-from trajectree.repo.state import set_state
+from trajectree.repo.review import pending_txns
+from trajectree.repo.state import get_state, set_state
 from trajectree.timeutil import utcnow
 
 
@@ -104,7 +105,17 @@ def run_ingest(ledger: Ledger, settings: Settings, *, now: datetime | None = Non
             # remotes seen in local checkouts become pending git_remote resources (suggestions)
             discovered = discover_remotes(settings, git_resources)
             with ledger.locked() as conn:
+                # every URL ever suggested is remembered, so a rejected suggestion stays gone
+                suggested = get_state(conn, "remote:suggested")
+                suggested = suggested if isinstance(suggested, dict) else {}
                 for project_id, url in discovered:
+                    seen = suggested.get(project_id)
+                    seen = seen if isinstance(seen, list) else []
+                    if url in seen:
+                        continue
+                    suggested[project_id] = [*seen, url]
+                    with conn:
+                        set_state(conn, "remote:suggested", suggested)
                     if find_resource(conn, project_id, "git_remote", url) is None:
                         upsert_resource(
                             ledger,
@@ -120,7 +131,13 @@ def run_ingest(ledger: Ledger, settings: Settings, *, now: datetime | None = Non
             # remote: same three phases, the HTTP calls run with no lock; skipped until due
             with ledger.locked() as conn:
                 remote_run = remote_due(conn, now=now, every_m=settings.remote_every_m)
-                remote_resources = list_resources(conn, kinds=["git_remote"]) if remote_run else []
+                # only accepted remotes are polled: a pending (discovered) one must not receive tokens
+                unreviewed = pending_txns(conn, "resource") if remote_run else {}
+                remote_resources = (
+                    [r for r in list_resources(conn, kinds=["git_remote"]) if r.id not in unreviewed]
+                    if remote_run
+                    else []
+                )
                 remote_states = read_remote_states(conn, remote_resources)
             if remote_run:
                 remote_collection = collect_remote(

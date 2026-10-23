@@ -136,6 +136,58 @@ def test_ingest_discovers_remote_as_pending_resource(ledger, human, settings, tm
     assert len([t for t in ledger.list_txns(review="pending") if t.intent.startswith("discovered git remote")]) == 1
 
 
+def _discover_setup(ledger, human, tmp_path):
+    import subprocess
+
+    repo = tmp_path / "r"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", "https://evil.example/a/b"], check=True)
+    p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    upsert_resource(ledger, human, ResourceIn(project_id=p.id, kind="git_local", locator=str(repo)))
+    return p
+
+
+def test_ingest_polls_discovered_remote_only_after_accept(ledger, human, settings, tmp_path, monkeypatch):
+    import httpx
+    import trajectree.connectors.remote as remote
+    from trajectree.runner.credentials import store_connector_token
+
+    _discover_setup(ledger, human, tmp_path)
+    store_connector_token(settings, "gitlab", "glpat-secret")
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json=[])
+
+    real = remote.collect_remote
+    monkeypatch.setattr(
+        job, "collect_remote",
+        lambda *a, **k: real(*a, **k, client=httpx.Client(transport=httpx.MockTransport(handler))),
+    )
+    settings.remote_every_m = 1
+    first = run_ingest(ledger, settings, now=datetime(2026, 10, 22, 12, tzinfo=UTC))
+    assert first.remote.repos == 0 and requests == []
+    txn = [t for t in ledger.list_txns(review="pending") if t.intent.startswith("discovered git remote")][0]
+    ledger.set_review(txn.id, "accepted", human)
+    second = run_ingest(ledger, settings, now=datetime(2026, 10, 22, 13, tzinfo=UTC))
+    assert second.remote.repos == 1 and requests and requests[0].url.host == "evil.example"
+
+
+def test_rejected_discovery_is_not_suggested_again(ledger, human, settings, tmp_path):
+    _discover_setup(ledger, human, tmp_path)
+    settings.remote_every_m = 0
+    run_ingest(ledger, settings, now=datetime(2026, 10, 22, 12, tzinfo=UTC))
+    txn = [t for t in ledger.list_txns(review="pending") if t.intent.startswith("discovered git remote")][0]
+    ledger.set_review(txn.id, "rejected", human)
+    run_ingest(ledger, settings, now=datetime(2026, 10, 22, 13, tzinfo=UTC))
+    assert [t for t in ledger.list_txns(review="pending") if t.intent.startswith("discovered git remote")] == []
+    assert get_state(ledger.conn, "remote:suggested") == {
+        next(iter(get_state(ledger.conn, "remote:suggested"))): ["https://evil.example/a/b"]
+    }
+
+
 def test_ingest_remote_phase_runs_when_due(ledger, human, settings, monkeypatch):
     import trajectree.connectors.remote as remote
 

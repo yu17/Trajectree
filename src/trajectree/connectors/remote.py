@@ -85,6 +85,8 @@ def parse_remote_url(url: str) -> RemoteRepo | None:
         if parsed.scheme not in ("http", "https", "ssh", "git"):
             return None
         host, path = parsed.hostname or "", parsed.path
+        if parsed.scheme in ("http", "https") and parsed.port:
+            host = f"{host}:{parsed.port}"
     else:
         match = _SCP.match(url)
         if match is None:
@@ -292,7 +294,7 @@ def collect_remote(
                 errors.append(f"{resource.locator}: {exc.response.status_code}")
                 continue
             except (httpx.HTTPError, ValueError) as exc:
-                errors.append(f"{resource.locator}: {str(exc) or type(exc).__name__}")
+                errors.append(f"{resource.locator}: {(str(exc) or type(exc).__name__)[:200]}")
                 continue
             signals += _signals(resource, items)
             releases += [
