@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import type { Project, ReportFormat, ReportKind, ReportOut } from "../api/types";
@@ -104,15 +104,37 @@ function DraftForm({ projects, busy, onStarted }: { projects: Project[]; busy: b
 }
 
 
-function ReportEditor({ report }: { report: ReportOut }) {
+function ReportEditor({ report, onDirty }: { report: ReportOut; onDirty: (dirty: boolean) => void }) {
   const qc = useQueryClient();
   const [source, setSource] = useState(report.source_md);
-  // A newer saved source (a refetch after a save or an agent rewrite) replaces the buffer.
-  useEffect(() => setSource(report.source_md), [report.source_md]);
+  // `base` is the saved source the buffer started from; the buffer is dirty when it differs.
+  const [base, setBase] = useState(report.source_md);
+  const [stale, setStale] = useState(false);
+  const dirty = source !== base;
+  useEffect(() => onDirty(dirty), [dirty, onDirty]);
+  useEffect(() => () => onDirty(false), [onDirty]);
+  // A newer server copy (an agent rewrite, another tab) replaces a clean buffer; dirty edits are kept.
+  useEffect(() => {
+    if (report.source_md === base) return;
+    if (dirty) {
+      setStale(true);
+    } else {
+      setSource(report.source_md);
+      setBase(report.source_md);
+    }
+  }, [report.source_md]);
+  const reload = () => {
+    setSource(report.source_md);
+    setBase(report.source_md);
+    setStale(false);
+  };
   const save = useMutation({
-    mutationFn: () => api.updateReport(report.id, { source_md: source }),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["reports"] });
+    mutationFn: (sent: string) => api.updateReport(report.id, { source_md: sent }),
+    // Stay pending until the list has the saved copy, so a second click cannot file a second txn.
+    onSuccess: async (_saved, sent) => {
+      setBase(sent);
+      setStale(false);
+      await qc.invalidateQueries({ queryKey: ["reports"] });
       void qc.invalidateQueries({ queryKey: ["txns"] });
     },
   });
@@ -120,8 +142,14 @@ function ReportEditor({ report }: { report: ReportOut }) {
     <>
       <section className="report-editor">
         <MarkdownEditor value={source} onChange={setSource} />
+        {stale && (
+          <p className="muted">
+            Server copy changed; save to overwrite or reload{" "}
+            <button className="linklike" onClick={reload}>Reload</button>
+          </p>
+        )}
         <div className="row-actions">
-          <button disabled={source === report.source_md || save.isPending} onClick={() => save.mutate()}>
+          <button disabled={!dirty || save.isPending} onClick={() => save.mutate(source)}>
             Save report
           </button>
           {EXPORTS.map(([fmt, name]) => (
@@ -150,24 +178,39 @@ export function ReportsView() {
   const runStatus = draftRun.data?.run.status ?? "queued";
   const drafting = draftRunId !== null && !draftRun.isError && (runStatus === "queued" || runStatus === "running");
 
-  // When the agent draft finishes ok, refetch the list and select the newest report (the draft).
+  // Unsaved edits in the editor: switching reports (or opening a form) asks before discarding them.
+  const dirty = useRef(false);
+  const onDirty = useCallback((d: boolean) => {
+    dirty.current = d;
+  }, []);
+  const mayDiscard = () => !dirty.current || window.confirm("Discard unsaved changes?");
+
+  // When the agent draft finishes ok, refetch the list and select the draft: the report the run
+  // saved (`props.report_id`), else the newest one.
   const qc = useQueryClient();
   const handled = useRef<string | null>(null);
+  const draftReportId = draftRun.data?.run.props?.report_id;
   useEffect(() => {
     if (draftRunId === null || runStatus !== "ok" || handled.current === draftRunId) return;
     handled.current = draftRunId;
     void qc.invalidateQueries({ queryKey: ["txns"] });
     void qc.invalidateQueries({ queryKey: ["reports"] }).then(() => {
-      const latest = newest(qc.getQueryData<ReportOut[]>(["reports"]) ?? []);
-      if (latest) setSelectedId(latest.id);
+      const list = qc.getQueryData<ReportOut[]>(["reports"]) ?? [];
+      const target = list.find(r => r.id === draftReportId) ?? newest(list);
+      if (target && mayDiscard()) setSelectedId(target.id);
     });
-  }, [draftRunId, runStatus, qc]);
+  }, [draftRunId, runStatus, draftReportId, qc]);
 
   const selected = reports.data?.find(r => r.id === selectedId) ?? null;
-  const toggle = (f: "new" | "draft") => setForm(cur => (cur === f ? null : f));
+  const toggle = (f: "new" | "draft") => {
+    if (mayDiscard()) setForm(cur => (cur === f ? null : f));
+  };
+  const select = (id: string) => {
+    if (id !== selectedId && mayDiscard()) setSelectedId(id);
+  };
   const created = (id: string) => {
     setForm(null);
-    setSelectedId(id);
+    if (mayDiscard()) setSelectedId(id);
   };
 
   return (
@@ -193,7 +236,7 @@ export function ReportsView() {
           <ul className="ledger-list">
             {reports.data.map(r => (
               <li key={r.id} className="ledger-row">
-                <button className="linklike" aria-current={r.id === selectedId || undefined} onClick={() => setSelectedId(r.id)}>
+                <button className="linklike" aria-current={r.id === selectedId || undefined} onClick={() => select(r.id)}>
                   {r.title} · {r.kind} · {new Date(r.updated_at).toLocaleString()}
                 </button>
                 {r.pending_txn && <span className="badge review-pending">pending</span>}
@@ -202,7 +245,7 @@ export function ReportsView() {
           </ul>
         )}
       </aside>
-      {selected ? <ReportEditor key={selected.id} report={selected} /> : <p className="muted">Select or create a report</p>}
+      {selected ? <ReportEditor key={selected.id} report={selected} onDirty={onDirty} /> :<p className="muted">Select or create a report</p>}
     </div>
   );
 }

@@ -179,3 +179,20 @@ async def test_save_report_draft_scope_and_update(ledger, settings, human):
     async with Client(owner_mcp(ledger, settings)) as c:
         r = await c.call_tool("save_report_draft", {"title": "Any", "kind": "memo", "source_md": "m", "intent": "draft memo"})
         assert not r.is_error and r.structured_content["scope"]["projects"] == []
+
+async def test_save_report_draft_records_report_id_on_the_run(ledger, settings, human):
+    from trajectree.repo.runs import create_run, get_run
+    a, _ = two_projects(ledger, human)
+    run = create_run(ledger.conn, kind="report", runner="claude", backend="claude", model=None, project_id=None,
+                     props={"request": {"kind": "deck"}})
+    principal = Principal(actor=Actor(kind="agent", ref=run.id, run_id=run.id, tool="mcp"),
+                          scope=Scope(projects=[a.id], tools=["save_report_draft"], write=True), token_id="tok")
+    async with Client(build_mcp(ledger, settings, resolve=lambda ctx: principal)) as c:
+        r = await c.call_tool("save_report_draft", {"title": "Deck", "kind": "deck", "source_md": "# One", "intent": "draft deck", "projects": ["a"]})
+        assert not r.is_error
+    props = get_run(ledger.conn, run.id).props
+    assert props == {"request": {"kind": "deck"}, "report_id": r.structured_content["id"]}
+    gone = Principal(actor=Actor(kind="agent", ref="x", run_id="no-such-run", tool="mcp"),
+                     scope=Scope(projects=[a.id], tools=["save_report_draft"], write=True), token_id="tok")
+    async with Client(build_mcp(ledger, settings, resolve=lambda ctx: gone)) as c:  # a missing run is tolerated
+        assert not (await c.call_tool("save_report_draft", {"title": "D", "kind": "deck", "source_md": "#", "intent": "i", "projects": ["a"]})).is_error

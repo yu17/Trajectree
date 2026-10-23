@@ -47,7 +47,7 @@ from trajectree.models import (
     TodoPatch,
     TodoState,
 )
-from trajectree.repo import DuplicateEdge, NotFound, edges, events, projects, reports, resources, todos
+from trajectree.repo import DuplicateEdge, NotFound, edges, events, projects, reports, resources, runs, todos
 from trajectree.timeutil import utcnow
 
 NO_PROJECT = "inbox"
@@ -426,10 +426,17 @@ def register_write_tools(mcp: MCPServer, deps: ToolDeps) -> None:
                 with _repo_errors():
                     if report_id is None:
                         data = ReportIn(title=title, kind=kind, scope=scope, source_md=source_md)
-                        return reports.create_report(deps.ledger, principal.actor, data, intent=intent)
-                    patch = ReportPatch(title=title, kind=kind, scope=scope, source_md=source_md)
-                    return reports.update_report(
-                        deps.ledger, principal.actor, report_id, patch, intent=intent
-                    )
+                        saved = reports.create_report(deps.ledger, principal.actor, data, intent=intent)
+                    else:
+                        patch = ReportPatch(title=title, kind=kind, scope=scope, source_md=source_md)
+                        saved = reports.update_report(
+                            deps.ledger, principal.actor, report_id, patch, intent=intent
+                        )
+                # a drafting run remembers its report, so the web can open the right one
+                run_id = principal.actor.run_id
+                run = runs.get_run(conn, run_id) if run_id else None
+                if run is not None:
+                    runs.update_run(conn, run.id, props={**run.props, "report_id": saved.id})
+                return saved
 
         return await anyio.to_thread.run_sync(body)
