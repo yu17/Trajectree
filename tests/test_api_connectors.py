@@ -48,6 +48,30 @@ def test_chatmaid_message_dedupes_on_ref_and_honours_project_and_when(client, le
     assert ledger.conn.execute("SELECT count(*) FROM signal WHERE dedupe_key = 'chatmaid:m1'").fetchone()[0] == 1
 
 
+def test_chatmaid_token_restricted_to_projects(client, ledger, human):
+    from trajectree.models import ProjectIn
+    from trajectree.repo.projects import create_project
+
+    thesis = create_project(ledger, human, ProjectIn(slug="thesis", title="Thesis", kind="research"))
+
+    def mint(projects):
+        scope = {"projects": projects, "tools": ["chatmaid"], "write": False}
+        secret = client.post("/api/tokens", json={"label": "chatmaid", "scope": scope, "actor_kind": "connector"}).json()["secret"]
+        return {"Authorization": f"Bearer {secret}"}
+
+    restricted = mint([thesis.id])
+    to_inbox = client.post("/api/connectors/chatmaid/messages", json={"ref": "r1", "summary": "x", "channel": "email"}, headers=restricted)
+    assert to_inbox.status_code == 403 and to_inbox.json()["detail"] == "token not permitted for project inbox"
+    assert get_signal_by_key(ledger.conn, "chatmaid:r1") is None
+    to_thesis = client.post("/api/connectors/chatmaid/messages", json={"ref": "r2", "summary": "x", "channel": "email", "project": "thesis"}, headers=restricted)
+    assert to_thesis.status_code == 200 and to_thesis.json()["project_id"] == thesis.id
+    # the documented recipe (`projects: []`) reaches every project
+    anywhere = mint([])
+    for ref, project in (("r3", None), ("r4", "thesis")):
+        body = {"ref": ref, "summary": "x", "channel": "email", **({"project": project} if project else {})}
+        assert client.post("/api/connectors/chatmaid/messages", json=body, headers=anywhere).status_code == 200
+
+
 def test_chatmaid_message_rejects_anonymous_cookie_and_missing_inbox(anon, client, ledger, app):
     msg = {"ref": "m1", "summary": "x", "channel": "c"}
     assert anon.post("/api/connectors/chatmaid/messages", json=msg).status_code == 401

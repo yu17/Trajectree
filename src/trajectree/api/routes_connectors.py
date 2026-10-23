@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
 from trajectree.api.deps import scoped_or_owner
+from trajectree.auth.scopes import Principal, Scope
 from trajectree.models import SignalIn
 from trajectree.repo.projects import get_project_by_slug, resolve_project_ref
 from trajectree.repo.signals import get_signal_by_key, upsert_signals
@@ -20,7 +21,14 @@ MAX_BODY_BYTES = 64 * 1024
 
 router = APIRouter()
 # Mounted outside the owner-only /api router: it takes the owner token or a `chatmaid`-scoped token.
-chatmaid_router = APIRouter(prefix="/api/connectors/chatmaid", dependencies=[Depends(scoped_or_owner(CHATMAID_TOOL))])
+# One dependency object, so the route's own `Depends` reuses the router's (cached) principal.
+chatmaid_auth = scoped_or_owner(CHATMAID_TOOL)
+chatmaid_router = APIRouter(prefix="/api/connectors/chatmaid", dependencies=[Depends(chatmaid_auth)])
+
+
+def _chatmaid_may_post_to(scope: Scope, project_id: str) -> bool:
+    """`projects: []` (the documented recipe) or None means any project; a list restricts."""
+    return scope.projects in (None, []) or project_id in scope.projects
 
 
 class ConnectorCredentials(BaseModel):
@@ -131,7 +139,7 @@ class ChatmaidMessage(BaseModel):
 
 
 @chatmaid_router.post("/messages")
-async def chatmaid_message(request: Request) -> dict[str, str]:
+async def chatmaid_message(request: Request, principal: Principal = Depends(chatmaid_auth)) -> dict[str, str]:
     raw = await request.body()
     if len(raw) > MAX_BODY_BYTES:
         raise HTTPException(status_code=413, detail="Payload Too Large")
@@ -150,6 +158,8 @@ async def chatmaid_message(request: Request) -> dict[str, str]:
                 project = get_project_by_slug(conn, "inbox")
                 if project is None:
                     raise HTTPException(status_code=422, detail="no inbox project")
+            if not _chatmaid_may_post_to(principal.scope, project.id):
+                raise HTTPException(status_code=403, detail=f"token not permitted for project {project.slug}")
             key = f"chatmaid:{msg.ref}"
             upsert_signals(conn, [SignalIn(
                 project_id=project.id,

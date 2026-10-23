@@ -26,6 +26,10 @@ curl -X POST "$TRAJECTREE_URL/api/tokens" \
 
 The response carries the `secret` once; give it to chatmaid.
 
+`"projects": []` lets the token post to any project; a non-empty list of
+project ids restricts it to those projects, and a message aimed at any other
+project (including the default `inbox`) is refused with 403.
+
 ### Request
 
 JSON body, at most 64 KB. Unknown fields are rejected.
@@ -45,6 +49,7 @@ JSON body, at most 64 KB. Unknown fields are rejected.
 | --- | --- |
 | 200 | `{"signal_id": "...", "project_id": "..."}` |
 | 401 | missing, wrong, expired or wrongly scoped token |
+| 403 | `token not permitted for project <slug>`: the token's `projects` list does not include the target project |
 | 413 | body larger than 64 KB |
 | 422 | invalid fields, an unknown `project`, a `body` field, or no `inbox` project to default to |
 
