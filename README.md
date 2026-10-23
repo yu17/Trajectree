@@ -304,7 +304,9 @@ Reports are Marp Markdown documents, kind `deck` (slides) or `memo`.
   is a transaction, so it shows in the Ledger and can be reverted.
 - Export from the tab or with
   `trajectree report export <id> --format md|html|pdf|pptx [--out <file>]`.
-  Exports are written to `data/exports/reports/<id>.<format>`.
+  The server always keeps its copy in `data/exports/reports/<id>.<format>`.
+  Without `--out`, the CLI prints `md` and `html` to stdout and writes `pdf`
+  and `pptx` to `./<id>.<format>` in the current directory.
 - `md` and `html` always work. `pdf` and `pptx` need marp-cli and Chromium,
   which only the `reports` image has:
 
