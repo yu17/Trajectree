@@ -30,6 +30,8 @@ TERMINAL_STATES = frozenset(
     {"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL", "PREEMPTED"}
 )
 COMMAND_TIMEOUT_S = 30
+MIN_SLUG_LEN = 3
+OVERLAP = timedelta(days=2)
 
 
 class SlurmJob(BaseModel):
@@ -47,6 +49,7 @@ class SlurmJob(BaseModel):
 class SlurmCollection(BaseModel):
     jobs: list[SlurmJob]
     errors: list[str]
+    sacct_ok: bool = False  # sacct ran and parsed; only then does the incremental window advance
 
 
 class SlurmReport(BaseModel):
@@ -162,6 +165,7 @@ def collect_slurm(settings: Settings, *, since: datetime, run=subprocess.run) ->
         ("sacct", ["sacct", "--json", "-X", "-S", since.strftime("%Y-%m-%dT%H:%M:%S")], parse_sacct),
     )
     merged: dict[str, SlurmJob] = {}
+    sacct_ok = False
     errors: list[str] = []
     for name, remote, parse in commands:
         try:
@@ -180,10 +184,11 @@ def collect_slurm(settings: Settings, *, since: datetime, run=subprocess.run) ->
         except (OSError, ValueError) as exc:
             errors.append(f"{name}: {(str(exc) or type(exc).__name__)[:200]}")
             continue
+        sacct_ok = sacct_ok or name == "sacct"
         for job in jobs:
             if name == "squeue" or job.job_id not in merged:  # squeue is first, so it wins
                 merged[job.job_id] = job
-    return SlurmCollection(jobs=list(merged.values()), errors=errors)
+    return SlurmCollection(jobs=list(merged.values()), errors=errors, sacct_ok=sacct_ok)
 
 
 def _under(path: str, prefix: str) -> bool:
@@ -207,7 +212,8 @@ def project_for_job(conn: apsw.Connection, job: SlurmJob) -> Project | None:
             ):
                 return project
     name = job.name.lower()
-    by_slug = [p for p in projects if name.startswith(p.slug)]
+    # short slugs would claim unrelated jobs
+    by_slug = [p for p in projects if len(p.slug) >= MIN_SLUG_LEN and name.startswith(p.slug.lower())]
     if by_slug:
         return max(by_slug, key=lambda p: len(p.slug))
     return get_project_by_slug(conn, "inbox")
@@ -261,9 +267,24 @@ def write_slurm(
         written = upsert_signals(conn, signals)
         with conn:
             set_state(conn, "slurm:last", {"at": to_db(now)})
+            if collection.sacct_ok:
+                set_state(conn, "slurm:last_ok", {"at": to_db(now)})
     return SlurmReport(
         jobs=len(collection.jobs), resources=resources, signals_written=written, errors=collection.errors
     )
+
+
+def slurm_since(conn: apsw.Connection, *, now: datetime, full_days: int) -> datetime:
+    """Where sacct starts: the full window until a poll succeeded, then the last success minus
+    a 2-day overlap (signal dedupe keys make re-reading harmless)."""
+    full = now - timedelta(days=full_days)
+    state = get_state(conn, "slurm:last_ok")
+    if isinstance(state, dict) and isinstance(state.get("at"), str):
+        try:
+            return max(from_db(state["at"]) - OVERLAP, full)
+        except ValueError:
+            pass
+    return full
 
 
 def slurm_due(conn: apsw.Connection, *, now: datetime, every_m: int) -> bool:

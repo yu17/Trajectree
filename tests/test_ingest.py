@@ -221,3 +221,32 @@ def test_ingest_slurm_phase_when_configured(ledger, human, settings, monkeypatch
     assert first.slurm.jobs == 3 and first.slurm.resources == 2 and first.slurm.errors == []
     assert get_state(ledger.conn, "ingest:last")["slurm"]["jobs"] == 3
     assert run_ingest(ledger, s, now=now).slurm is None  # not due yet
+
+
+def test_ingest_slurm_window_is_incremental(ledger, human, settings, tmp_path, monkeypatch):
+    from datetime import timedelta
+    from pathlib import Path
+
+    argv_file = tmp_path / "argv"
+    monkeypatch.setenv("FAKE_SSH_ARGV_FILE", str(argv_file))
+    s = settings.model_copy(
+        update={"slurm_host": "login.hpc", "ssh_bin": str(Path(__file__).parent / "bin" / "fake-ssh")}
+    )
+    now = datetime(2026, 1, 6, 12, tzinfo=UTC)
+
+    def since_arg():
+        argv = json.loads(argv_file.read_text())  # the last command run is sacct
+        return argv[argv.index("-S") + 1]
+
+    monkeypatch.setenv("FAKE_SSH_EXIT", "255")  # sacct fails: window must not advance
+    assert run_ingest(ledger, s, now=now).slurm.errors
+    assert get_state(ledger.conn, "slurm:last") is not None and get_state(ledger.conn, "slurm:last_ok") is None
+    assert since_arg() == (now - timedelta(days=s.scan_since_days)).strftime("%Y-%m-%dT%H:%M:%S")
+    monkeypatch.delenv("FAKE_SSH_EXIT")
+    later = now + timedelta(minutes=20)
+    assert run_ingest(ledger, s, now=later).slurm.errors == []
+    assert since_arg() == (now - timedelta(days=s.scan_since_days) + timedelta(minutes=20)).strftime("%Y-%m-%dT%H:%M:%S")
+    assert get_state(ledger.conn, "slurm:last_ok")["at"]
+    third = later + timedelta(minutes=20)
+    run_ingest(ledger, s, now=third)
+    assert since_arg() == (later - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%S")

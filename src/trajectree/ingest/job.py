@@ -34,7 +34,7 @@ from trajectree.connectors.remote import (
     remote_due,
     write_remote,
 )
-from trajectree.connectors.slurm import SlurmReport, collect_slurm, slurm_due, write_slurm
+from trajectree.connectors.slurm import SlurmReport, collect_slurm, slurm_due, slurm_since, write_slurm
 from trajectree.db.ledger import Ledger
 from trajectree.ingest.exports import render_exports, write_files
 from trajectree.models import Actor, ResourceIn
@@ -157,10 +157,9 @@ def run_ingest(ledger: Ledger, settings: Settings, *, now: datetime | None = Non
             if settings.slurm_host:
                 with ledger.locked() as conn:
                     slurm_run = slurm_due(conn, now=now, every_m=settings.slurm_every_m)
+                    slurm_from = slurm_since(conn, now=now, full_days=settings.scan_since_days)
                 if slurm_run:
-                    slurm_collection = collect_slurm(
-                        settings, since=now - timedelta(days=settings.scan_since_days)
-                    )
+                    slurm_collection = collect_slurm(settings, since=slurm_from)
                     slurm = write_slurm(ledger, settings, slurm_collection, now=now)
             # folders: same three phases, the walk runs with no lock; skipped until due
             with ledger.locked() as conn:

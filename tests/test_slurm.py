@@ -145,6 +145,8 @@ def test_project_for_job_fallbacks(ledger, human):
     assert project_for_job(conn, job(workdir="/scratch/b/x")).id == b.id
     assert project_for_job(conn, job(workdir="/scratch/bb", name="Alpha-sweep")).id == a.id
     assert project_for_job(conn, job(workdir=None, name="zzz")).id == inbox.id
+    create_project(ledger, human, ProjectIn(slug="ml", title="ML", kind="research"))
+    assert project_for_job(conn, job(workdir=None, name="ML-train")).id == inbox.id  # short slug ignored
 
 
 def test_project_for_job_no_match_is_none(ledger, human):
