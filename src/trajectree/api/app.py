@@ -17,6 +17,7 @@ from trajectree.api.routes_entities import router as entities_router
 from trajectree.api.routes_ledger import router as ledger_router
 from trajectree.api.routes_search import router as search_router
 from trajectree.api.routes_resources import router as resources_router
+from trajectree.api.routes_runs import router as runs_router
 from trajectree.api.routes_signals import router as signals_router
 from trajectree.api.routes_timeline import router as timeline_router
 from trajectree.config import Settings, ensure_token
@@ -25,13 +26,15 @@ from trajectree.db.ledger import AlreadyReverted, Ledger, RevertConflict
 from trajectree.ingest.job import IngestBusy
 from trajectree.ingest.scheduler import ingest_loop
 from trajectree.mcpserver.server import build_mcp
-from trajectree.repo import DuplicateEdge, DuplicateSlug, InvalidRange, NotFound
+from trajectree.repo import DuplicateEdge, DuplicateSlug, InvalidRange, NotFound, UnknownProject
+from trajectree.runner.service import RunService
+from trajectree.runner.spec import AlreadyApplied, RunsPaused
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 # Plain routers (no prefix, no auth). create_app includes each into a fresh
 # /api router that enforces require_token. Later tasks append theirs here.
-PROTECTED_ROUTERS: list[APIRouter] = [entities_router, timeline_router, ledger_router, search_router, resources_router, context_router, signals_router]
+PROTECTED_ROUTERS: list[APIRouter] = [entities_router, timeline_router, ledger_router, search_router, resources_router, context_router, signals_router, runs_router]
 
 
 def _error_handler(status: int):
@@ -52,36 +55,45 @@ def create_app(settings: Settings, *, ledger: Ledger | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         async with mcp.session_manager.run():
-            if settings.ingest_interval_s <= 0:
-                yield
-                return
             stop = asyncio.Event()
-            task = asyncio.create_task(
-                ingest_loop(ledger, settings, interval_s=settings.ingest_interval_s, stop=stop)
-            )
-            app.state.ingest_stop, app.state.ingest_task = stop, task
+            # Exactly one worker: the serial run slot depends on it.
+            tasks = [asyncio.create_task(app.state.runs.worker(stop))]
+            if settings.ingest_interval_s > 0:
+                tasks.append(
+                    asyncio.create_task(
+                        ingest_loop(ledger, settings, interval_s=settings.ingest_interval_s, stop=stop)
+                    )
+                )
+                app.state.ingest_stop, app.state.ingest_task = stop, tasks[-1]
             try:
                 yield
             finally:
                 stop.set()
-                try:
-                    # wait_for cancels the task on timeout; a pass already in its
-                    # worker thread finishes on its own.
-                    await asyncio.wait_for(task, 10)
-                except TimeoutError:
-                    pass
+                for task in tasks:
+                    try:
+                        # wait_for cancels the task on timeout; a pass already in its
+                        # worker thread finishes on its own.
+                        await asyncio.wait_for(task, 10)
+                    except TimeoutError:
+                        pass
 
     app = FastAPI(title="Trajectree", lifespan=lifespan)
     app.state.settings = settings
     app.state.ledger = ledger
     app.state.token = token
     app.state.mcp = mcp
+    app.state.runs = RunService(ledger, settings)
 
     app.add_exception_handler(NotFound, _error_handler(404))
     app.add_exception_handler(DuplicateSlug, _error_handler(409))
     app.add_exception_handler(DuplicateEdge, _error_handler(409))
     app.add_exception_handler(InvalidRange, _error_handler(422))
     app.add_exception_handler(IngestBusy, _error_handler(409))
+    app.add_exception_handler(UnknownProject, _error_handler(422))
+    app.add_exception_handler(RunsPaused, lambda r, e: JSONResponse({"detail": "runs are paused"}, status_code=409))
+    app.add_exception_handler(
+        AlreadyApplied, lambda r, e: JSONResponse({"detail": "proposal already applied"}, status_code=409)
+    )
 
     def revert_conflict(request: Request, exc: Exception) -> JSONResponse:
         assert isinstance(exc, RevertConflict)
