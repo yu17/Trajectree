@@ -96,3 +96,20 @@ def test_summary_md_excludes_future_events(ledger, human, settings):
     create_event(ledger, human, EventIn(project_id=p.id, kind="milestone", title="Future", t_start=datetime(2027, 1, 1, tzinfo=UTC), status="planned"))
     md = render_summary_md(ledger.conn, get_project(ledger.conn, p.id), now=datetime(2026, 6, 1, tzinfo=UTC))
     assert "Past" in md and "Future" not in md
+
+
+def test_ingest_runs_folders_and_recurrence(ledger, human, settings, tmp_path):
+    from trajectree.repo.events import list_events
+    root = tmp_path / "work"
+    root.mkdir()
+    (root / "a.txt").write_text("x")
+    p = create_project(ledger, human, ProjectIn(slug="gm", title="GM", kind="routine", recurrence="FREQ=WEEKLY;BYDAY=TU;BYHOUR=10;BYMINUTE=0"))
+    upsert_resource(ledger, human, ResourceIn(project_id=p.id, kind="folder", locator=str(root)))
+    now = datetime(2026, 10, 21, 12, tzinfo=UTC)
+    import os
+    os.utime(root / "a.txt", (now.timestamp(), now.timestamp()))
+    report = run_ingest(ledger, settings, now=now)
+    assert report.folders.folders == 1 and report.folders.signals_written == 1 and report.folders.errors == []
+    assert report.recurrence.created == 8 and len(list_events(ledger.conn, project_ids=[p.id])) == 8
+    second = run_ingest(ledger, settings, now=now)
+    assert second.folders is None and second.recurrence.created == 0

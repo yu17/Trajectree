@@ -172,11 +172,25 @@ export interface GitReport {
   errors: string[];
 }
 
+export interface FoldersReport {
+  folders: number;
+  signals_written: number;
+  errors: string[];
+}
+
+export interface MaterializeReport {
+  created: number;
+  dropped: number;
+  errors: string[];
+}
+
 export interface IngestReport {
   started: string;
   duration_ms: number;
   scan: ScanReport | null;
   git: GitReport;
+  folders?: FoldersReport | null;
+  recurrence?: MaterializeReport | null;
   stale: string[];
   exports_written: number;
   exports_errors: string[];

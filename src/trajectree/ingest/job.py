@@ -10,7 +10,15 @@ from pydantic import AwareDatetime, BaseModel
 
 from trajectree.config import Settings
 from trajectree.connectors.claude_sessions import ScanReport, scan_transcripts, transcript_roots
+from trajectree.connectors.folders import (
+    FoldersReport,
+    collect_folders,
+    folders_due,
+    read_folder_states,
+    write_folders,
+)
 from trajectree.connectors.local_git import GitReport, collect_git, read_git_states, write_git
+from trajectree.connectors.recurrence import MaterializeReport, materialize
 from trajectree.db.ledger import Ledger
 from trajectree.ingest.exports import render_exports, write_files
 from trajectree.repo.resources import list_resources
@@ -31,6 +39,8 @@ class IngestReport(BaseModel):
     duration_ms: int
     scan: ScanReport | None
     git: GitReport
+    folders: FoldersReport | None = None
+    recurrence: MaterializeReport | None = None
     stale: list[str]
     exports_written: int
     exports_errors: list[str] = []
@@ -50,6 +60,8 @@ def run_ingest(ledger: Ledger, settings: Settings, *, now: datetime | None = Non
         clock = time.monotonic()
         scan: ScanReport | None = None
         git: GitReport | None = None
+        folders: FoldersReport | None = None
+        recurrence: MaterializeReport | None = None
         stale: list[str] = []
         exports_written = 0
         exports_errors: list[str] = []
@@ -70,6 +82,23 @@ def run_ingest(ledger: Ledger, settings: Settings, *, now: datetime | None = Non
             git = GitReport(
                 repos=len(git_resources), signals_written=git_written, errors=collection.errors
             )
+            # folders: same three phases, the walk runs with no lock; skipped until due
+            with ledger.locked() as conn:
+                due = folders_due(conn, now=now, every_h=settings.folders_scan_every_h)
+                folder_resources = list_resources(conn, kinds=["folder"]) if due else []
+                folder_states = read_folder_states(conn, folder_resources)
+            if due:
+                folder_collection = collect_folders(
+                    settings, folder_resources, folder_states, now=now, since_days=settings.scan_since_days
+                )
+                with ledger.locked() as conn:
+                    folders_written = write_folders(conn, folder_collection, now=now)
+                folders = FoldersReport(
+                    folders=len(folder_resources),
+                    signals_written=folders_written,
+                    errors=folder_collection.errors,
+                )
+            recurrence = materialize(ledger, now=now)
             with ledger.locked() as conn:
                 stale = stale_projects(conn, settled_before=now - timedelta(hours=settings.stale_settle_h))
                 with conn:
@@ -89,6 +118,8 @@ def run_ingest(ledger: Ledger, settings: Settings, *, now: datetime | None = Non
                 duration_ms=int((time.monotonic() - clock) * 1000),
                 scan=scan,
                 git=git,
+                folders=folders,
+                recurrence=recurrence,
                 stale=stale,
                 exports_written=exports_written,
                 exports_errors=exports_errors,

@@ -27,6 +27,8 @@ class Settings(BaseModel):
     scheduler_interval_s: int = 30
     scheduler_grace_s: int = 3600
     digest_max_chars: int = 12000
+    folders_scan_every_h: int = 24
+    folders_big_dir_mb: int = 500
 
     @property
     def cfg_root(self) -> Path:
@@ -98,6 +100,8 @@ _INT_ENV = {
     "TRAJECTREE_SCHEDULER_EVERY": "scheduler_interval_s",
     "TRAJECTREE_SCHEDULER_GRACE_S": "scheduler_grace_s",
     "TRAJECTREE_DIGEST_MAX_CHARS": "digest_max_chars",
+    "TRAJECTREE_FOLDERS_EVERY_H": "folders_scan_every_h",
+    "TRAJECTREE_BIG_DIR_MB": "folders_big_dir_mb",
 }
 
 
