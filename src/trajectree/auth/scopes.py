@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from trajectree.models import Actor
 
 
-NON_MCP_TOOLS = frozenset({"hooks"})
+NON_MCP_TOOLS = frozenset({"hooks", "chatmaid"})
 
 
 class Scope(BaseModel):

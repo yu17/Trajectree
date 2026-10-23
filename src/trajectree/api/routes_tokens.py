@@ -22,7 +22,7 @@ class TokenCreate(BaseModel):
     label: str = Field(min_length=1, max_length=64)
     scope: Scope
     ttl_s: int | None = Field(None, ge=60)
-    actor_kind: Literal["agent", "session"] = "session"
+    actor_kind: Literal["agent", "session", "connector"] = "session"
 
 
 class TokenOut(BaseModel):

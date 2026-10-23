@@ -160,6 +160,11 @@ command creates is made private (0600). `show` prints the hooks currently instal
 `uninstall` removes only Trajectree's entries. All three accept
 `--settings-file` to target another file.
 
+## chatmaid
+
+Trajectree has a small contract with chatmaid (inbound message signals, outbound
+routine delivery); see [docs/chatmaid-contract.md](docs/chatmaid-contract.md).
+
 ## What gets written where
 
 | Where | What |
@@ -192,6 +197,7 @@ of it. The project folders mount read-only.
 | `TRAJECTREE_CODEX_BIN` | `codex` | Codex binary the runner spawns |
 | `TRAJECTREE_DEFAULT_RUNNER` | `claude` | Runner used when none is chosen (`claude`, or `ccx:<backend>`) |
 | `TRAJECTREE_RUN_ENV_PASSTHROUGH` | none | Comma-separated environment variable names passed through to runner processes |
+| `TRAJECTREE_CHATMAID_URL` | none | Base URL of chatmaid; routine results with the `chatmaid` delivery are POSTed to `<url>/deliver` |
 | `TRAJECTREE_PROJECTS_ROOT` | none (required by compose) | Host folder mounted read-only at `/projects`; used by compose only |
 | `TRAJECTREE_URL` | `http://127.0.0.1:8742` | Daemon URL for the host CLI and shim |
 | `TRAJECTREE_TOKEN` | contents of `~/.config/trajectree/token` | Bearer token for the host CLI and shim |

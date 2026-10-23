@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from trajectree.api.deps import COOKIE_NAME, require_token, token_matches
 from trajectree.api.mcp_mount import mount_mcp, owner_or_token_resolver
 from trajectree.api.routes_hooks import router as hooks_router
-from trajectree.api.routes_connectors import router as connectors_router
+from trajectree.api.routes_connectors import chatmaid_router, router as connectors_router
 from trajectree.api.routes_context import router as context_router
 from trajectree.api.routes_entities import router as entities_router
 from trajectree.api.routes_ledger import router as ledger_router
@@ -146,6 +146,7 @@ def create_app(settings: Settings, *, ledger: Ledger | None = None) -> FastAPI:
         api_router.include_router(router)
     app.include_router(api_router)
     app.include_router(hooks_router)
+    app.include_router(chatmaid_router)
     mount_mcp(app, mcp, ledger=ledger, owner_token=token)
 
     index = STATIC_DIR / "index.html"

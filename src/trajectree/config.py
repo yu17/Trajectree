@@ -35,6 +35,7 @@ class Settings(BaseModel):
     slurm_key: Path | None = None
     slurm_every_m: int = 15
     ssh_bin: str = "ssh"
+    chatmaid_url: str | None = None
 
     @property
     def connectors_dir(self) -> Path:
@@ -146,6 +147,8 @@ def load_settings() -> Settings:
     for var, field in _STR_ENV.items():
         if var in os.environ:
             values[field] = os.environ[var]
+    if os.environ.get("TRAJECTREE_CHATMAID_URL"):
+        values["chatmaid_url"] = os.environ["TRAJECTREE_CHATMAID_URL"].strip()
     if os.environ.get("TRAJECTREE_SLURM_HOST"):
         values["slurm_host"] = os.environ["TRAJECTREE_SLURM_HOST"]
     if os.environ.get("TRAJECTREE_SLURM_USER"):

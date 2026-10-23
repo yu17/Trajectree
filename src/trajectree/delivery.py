@@ -12,7 +12,8 @@ from trajectree.config import Settings
 from trajectree.db.ledger import Ledger
 from trajectree.models import Actor, Delivery, EventIn
 from trajectree.repo.events import create_event
-from trajectree.repo.projects import get_project_by_slug
+from trajectree.repo.projects import get_project, get_project_by_slug
+from trajectree.runner.credentials import load_connector_token
 
 log = logging.getLogger("trajectree.delivery")
 
@@ -47,7 +48,7 @@ def deliver(
     if channel == "log":
         return _log(message)
     if channel == "chatmaid":
-        sent = _chatmaid(settings, message, post=post)
+        sent = _chatmaid(ledger, settings, message, post=post)
         if sent.ok:
             return sent
         fallback = _inbox(ledger, message, actor=actor, now=now)
@@ -86,6 +87,32 @@ def _inbox(ledger: Ledger, message: DeliveryMessage, *, actor: Actor, now: datet
     return DeliveryResult(channel="inbox", ok=True, event_id=event.id)
 
 
-def _chatmaid(settings: Settings, message: DeliveryMessage, *, post) -> DeliveryResult:
-    """Placeholder until the chatmaid contract lands; callers fall back to the inbox."""
-    return DeliveryResult(channel="chatmaid", ok=False, detail="chatmaid delivery not configured")
+def _chatmaid(ledger: Ledger, settings: Settings, message: DeliveryMessage, *, post) -> DeliveryResult:
+    """POST the result to chatmaid; a failed result tells the caller to fall back to the inbox."""
+    token = load_connector_token(settings, "chatmaid")
+    if not settings.chatmaid_url or token is None:
+        return DeliveryResult(channel="chatmaid", ok=False, detail="chatmaid delivery not configured")
+    slug = None
+    if message.project_id is not None:
+        with ledger.locked() as conn:
+            project = get_project(conn, message.project_id)
+        slug = project.slug if project is not None else None
+    payload = {
+        "title": message.title,
+        "body_md": message.body_md,
+        "project": slug,
+        "run_id": message.run_id,
+        "routine": message.routine,
+    }
+    try:
+        response = post(
+            f"{settings.chatmaid_url.rstrip('/')}/deliver",
+            json=payload,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=20,
+        )
+    except (httpx.HTTPError, OSError) as exc:
+        return DeliveryResult(channel="chatmaid", ok=False, detail=f"chatmaid: {type(exc).__name__}: {exc}")
+    if not 200 <= response.status_code < 300:
+        return DeliveryResult(channel="chatmaid", ok=False, detail=f"chatmaid: {response.status_code}")
+    return DeliveryResult(channel="chatmaid", ok=True)

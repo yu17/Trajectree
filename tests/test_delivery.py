@@ -1,5 +1,8 @@
 from datetime import datetime, timezone
 
+import httpx
+
+from trajectree.runner.credentials import store_connector_token
 from trajectree.delivery import DeliveryMessage, deliver
 from trajectree.models import ProjectIn
 from trajectree.repo.events import get_event, list_events
@@ -42,6 +45,43 @@ def test_deliver_chatmaid_unconfigured_falls_back(ledger, settings, agent, human
     res = deliver(ledger, settings, "chatmaid", _msg(a.id), actor=agent, now=NOW, post=lambda *a, **k: posted.append(a))
     assert res.channel == "inbox" and res.ok and "chatmaid" in res.detail and res.event_id
     assert posted == [] and len(list_events(ledger.conn, project_ids=[a.id])) == 1
+
+
+def test_deliver_chatmaid_posts_and_falls_back(ledger, settings, agent, human, tmp_path):
+    a = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    s = settings.model_copy(update={"chatmaid_url": "http://chatmaid.local/"})
+    store_connector_token(s, "chatmaid", "cm_x")
+    calls = []
+
+    def post(url, **kw):
+        calls.append((url, kw))
+        return httpx.Response(202)
+
+    res = deliver(ledger, s, "chatmaid", _msg(), actor=agent, now=NOW, post=post)
+    assert res.ok and res.channel == "chatmaid"
+    assert calls[0][0] == "http://chatmaid.local/deliver" and calls[0][1]["headers"]["Authorization"] == "Bearer cm_x"
+    assert calls[0][1]["json"] == {"title": "t", "body_md": "b", "project": None, "run_id": "r", "routine": "x"}
+    assert calls[0][1]["timeout"] == 20
+
+    deliver(ledger, s, "chatmaid", _msg(a.id), actor=agent, now=NOW, post=post)
+    assert calls[1][1]["json"]["project"] == "a"
+
+    def bad(url, **kw):
+        raise httpx.ConnectError("down")
+
+    res2 = deliver(ledger, s, "chatmaid", _msg(a.id), actor=agent, now=NOW, post=bad)
+    assert res2.channel == "inbox" and "chatmaid: " in res2.detail and res2.event_id
+    assert "cm_x" not in res2.detail
+
+    res3 = deliver(ledger, s, "chatmaid", _msg(a.id), actor=agent, now=NOW, post=lambda url, **kw: httpx.Response(500))
+    assert res3.channel == "inbox" and "chatmaid: 500" in res3.detail and res3.event_id
+
+
+def test_deliver_chatmaid_without_token_falls_back(ledger, settings, agent, human):
+    a = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    s = settings.model_copy(update={"chatmaid_url": "http://chatmaid.local"})
+    res = deliver(ledger, s, "chatmaid", _msg(a.id), actor=agent, now=NOW, post=lambda *a, **k: 1 / 0)
+    assert res.channel == "inbox" and "not configured" in res.detail
 
 
 def test_deliver_none_and_log_write_nothing(ledger, settings, agent, human, caplog):
