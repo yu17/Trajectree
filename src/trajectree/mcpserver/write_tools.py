@@ -33,6 +33,11 @@ from trajectree.models import (
     Project,
     ProjectPatch,
     ProjectStatus,
+    Report,
+    ReportIn,
+    ReportKind,
+    ReportPatch,
+    ReportScope,
     Resource,
     ResourceIn,
     ResourceKind,
@@ -42,7 +47,7 @@ from trajectree.models import (
     TodoPatch,
     TodoState,
 )
-from trajectree.repo import DuplicateEdge, NotFound, edges, events, projects, resources, todos
+from trajectree.repo import DuplicateEdge, NotFound, edges, events, projects, reports, resources, todos
 from trajectree.timeutil import utcnow
 
 NO_PROJECT = "inbox"
@@ -62,6 +67,16 @@ def _require(principal: Principal, tool: str, project_id: str | None, slug: str)
     if not principal.scope.allows(tool, project_id, write=True):
         where = NO_PROJECT if project_id is None else slug
         raise ToolError(f"token not permitted: {tool} on {where}")
+
+
+def _require_projects(conn: apsw.Connection, principal: Principal, tool: str, project_ids: list[str]) -> None:
+    """`_require` for each project; with none, only a token not limited to projects may write."""
+    if not project_ids:
+        if principal.scope.projects is not None:
+            raise ToolError(f"token not permitted: {tool} without a project")
+        _require(principal, tool, None, NO_PROJECT)
+    for project_id in project_ids:
+        _require(principal, tool, project_id, _slug_of(conn, project_id))
 
 
 @contextmanager
@@ -381,5 +396,40 @@ def register_write_tools(mcp: MCPServer, deps: ToolDeps) -> None:
             with _repo_errors():
                 data = ResourceIn(project_id=p.id, kind=kind, locator=locator, title=title)
                 return resources.upsert_resource(deps.ledger, principal.actor, data, intent=intent)
+
+        return await anyio.to_thread.run_sync(body)
+
+    @mcp.tool()
+    async def save_report_draft(
+        title: str,
+        kind: ReportKind,
+        source_md: str,
+        intent: Intent,
+        ctx: Context,
+        projects: list[str] = [],
+        report_id: str | None = None,
+    ) -> Report:
+        """Save a report (a Marp-flavoured Markdown deck or memo) about `projects` (slugs); with
+        `report_id`, replace that report's title, kind, projects and source instead. `intent` is a
+        one-line reason recorded in the ledger, and the write lands pending the owner's review."""
+
+        def body() -> Report:
+            principal = deps.resolve(ctx)
+            # one lock across check and write, so the report cannot change scope in between
+            with deps.ledger.locked() as conn:
+                ids = list(dict.fromkeys(resolve_project(conn, slug, None).id for slug in projects))
+                _require_projects(conn, principal, "save_report_draft", ids)
+                current = reports.get_report(conn, report_id) if report_id is not None else None
+                if current is not None:  # the report's existing projects must be in scope too
+                    _require_projects(conn, principal, "save_report_draft", current.scope.projects)
+                scope = ReportScope(projects=ids)
+                with _repo_errors():
+                    if report_id is None:
+                        data = ReportIn(title=title, kind=kind, scope=scope, source_md=source_md)
+                        return reports.create_report(deps.ledger, principal.actor, data, intent=intent)
+                    patch = ReportPatch(title=title, kind=kind, scope=scope, source_md=source_md)
+                    return reports.update_report(
+                        deps.ledger, principal.actor, report_id, patch, intent=intent
+                    )
 
         return await anyio.to_thread.run_sync(body)

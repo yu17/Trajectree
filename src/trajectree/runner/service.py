@@ -40,6 +40,7 @@ from trajectree.runner.credentials import cli_version, ensure_cfg_dirs, load_oau
 from trajectree.runner.kinds import (
     KIND_OF,
     AskRequest,
+    ReportRequest,
     RoutineRequest,
     RunPlan,
     RunRequest,
@@ -117,7 +118,7 @@ class RunService:
                 if session is None:
                     raise UnknownSession(f"unknown session '{request.session_id}'")
                 project_id = session.project_id
-            elif isinstance(request, (AskRequest, RoutineRequest)):
+            elif isinstance(request, (AskRequest, RoutineRequest, ReportRequest)):
                 for ref in request.projects or []:
                     resolve_project_ref(conn, ref)
             elif request.project:

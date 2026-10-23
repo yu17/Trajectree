@@ -30,8 +30,9 @@ INSTRUCTIONS = (
     "todos, resources and activity signals. Read with list_projects, get_project, timeline, search, "
     "list_todos and get_signals. Record outcomes with the write tools record_event, add_note, "
     "update_event, add_todo, update_todo, link, unlink, set_project_status, set_project_summary and "
-    "upsert_resource; every write tool requires an `intent`, one short sentence saying why the change "
-    "is made, which becomes the transaction's intent the owner reviews. Projects are named by slug; "
+    "upsert_resource; report runs save their deck or memo with save_report_draft. Every write tool "
+    "requires an `intent`, one short sentence saying why the change is made, which becomes the "
+    "transaction's intent the owner reviews. Projects are named by slug; "
     "when a write omits the project it defaults to the project mapped to the working directory. "
     "Datetimes are ISO 8601 with a timezone, e.g. 2026-01-05T10:00:00Z."
 )

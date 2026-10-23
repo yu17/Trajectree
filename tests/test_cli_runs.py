@@ -99,3 +99,25 @@ def test_cli_routine_enable_disable_and_scheduler(app, client, anon, capsys):
     assert cli.main(["scheduler", "tick"], client=anon, env=env) == 0
     assert capsys.readouterr().out.startswith("tick: 0 fired, 0 skipped, 0 retried")
     assert cli.main(["routine", "enable", "nope"], client=anon, env=env) == 1
+
+
+def test_cli_report_draft_list_and_export(app, client, anon, capsys, tmp_path):
+    env = env_for(app)
+    client.post("/api/projects", json={"slug": "clmi", "title": "CLMI", "kind": "research"})
+    assert cli.main(["report", "draft", "--kind", "deck", "--title", "Q1", "--projects", "clmi", "--days", "30", "--no-wait"],
+                    client=anon, env=env) == 0
+    assert capsys.readouterr().out.endswith(" queued\n")
+    [run] = client.get("/api/runs", params={"kind": "report"}).json()
+    req = run["props"]["request"]
+    assert (req["kind"], req["title"], req["projects"]) == ("deck", "Q1", ["clmi"]) and req["start"] and req["end"]
+    r = client.post("/api/reports", json={"title": "Memo", "kind": "memo", "source_md": "# Hi"}).json()
+    assert cli.main(["report", "list"], client=anon, env=env) == 0
+    assert capsys.readouterr().out.splitlines() == [f"{r['id']}  memo  {r['updated_at']}  Memo"]
+    out = tmp_path / "memo.html"
+    assert cli.main(["report", "export", r["id"], "--format", "html", "--out", str(out)], client=anon, env=env) == 0
+    assert "<h1>Hi</h1>" in out.read_text() and capsys.readouterr().out.strip() == f"wrote {out}"
+    assert cli.main(["report", "export", r["id"], "--format", "md"], client=anon, env=env) == 0
+    assert capsys.readouterr().out.strip() == "md: 4 bytes"
+    assert cli.main(["report", "export", r["id"], "--format", "pdf"], client=anon, env=env) == 1
+    assert "marp-cli not available" in capsys.readouterr().err
+    assert cli.main(["report", "draft", "--kind", "deck", "--title", "Q1", "--projects", "zzz", "--no-wait"], client=anon, env=env) == 1

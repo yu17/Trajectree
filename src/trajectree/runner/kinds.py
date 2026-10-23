@@ -20,7 +20,7 @@ from trajectree.connectors.claude_sessions import digest_transcript
 from trajectree.connectors.paths import to_local
 from trajectree.context.digest import activity_digest
 from trajectree.context.pack import build_context_pack
-from trajectree.models import RUNNER_PATTERN, Delivery, Project, Run, RunKind
+from trajectree.models import RUNNER_PATTERN, Delivery, Project, ReportKind, Run, RunKind
 from trajectree.repo import NotFound
 from trajectree.repo.projects import get_project_by_slug, list_projects, resolve_project_ref
 from trajectree.repo.resources import list_resources
@@ -67,7 +67,20 @@ class SummarizeSessionRequest(BaseModel):
     model: str | None = None
 
 
-RunRequest = SummarizeRequest | SummarizeSessionRequest | AskRequest | QuickAddRequest | RoutineRequest
+class ReportRequest(BaseModel):
+    kind: ReportKind
+    title: str = Field(min_length=1, max_length=200)
+    projects: list[str] = Field(min_length=1)
+    start: AwareDatetime | None = None
+    end: AwareDatetime | None = None
+    token_budget: int = Field(6000, ge=200, le=100_000)
+    runner: str | None = None
+    model: str | None = None
+
+
+RunRequest = (
+    SummarizeRequest | SummarizeSessionRequest | AskRequest | QuickAddRequest | RoutineRequest | ReportRequest
+)
 
 KIND_OF: dict[type[BaseModel], RunKind] = {
     SummarizeRequest: "summarize",
@@ -75,6 +88,7 @@ KIND_OF: dict[type[BaseModel], RunKind] = {
     AskRequest: "ask",
     QuickAddRequest: "quick_add",
     RoutineRequest: "routine",
+    ReportRequest: "report",
 }
 _CLASS_OF = {kind: cls for cls, kind in KIND_OF.items()}
 
@@ -124,6 +138,11 @@ ROUTINE_SYSTEM = (
     "You are the routine `$routine_name` maintaining the owner's project tracker. "
     "Write only through the trajectree MCP tools, each with a one-line intent; writes land pending review. "
     "Anything uncertain goes into `proposals`."
+)
+REPORT_SYSTEM = (
+    "You draft one $kind for the owner. Call save_report_draft exactly once with Marp-flavoured Markdown "
+    "(front matter `marp: true`, slides separated by `---`, speaker notes as HTML comments) and the intent "
+    "`draft $kind`; write nothing else."
 )
 
 def ensure_prompts(settings: Settings) -> None:
@@ -183,6 +202,8 @@ def plan_run(
         return _plan_ask(conn, settings, run, request, now)
     if isinstance(request, RoutineRequest):
         return _plan_routine(conn, settings, run, request, now)
+    if isinstance(request, ReportRequest):
+        return _plan_report(conn, settings, run, request, now)
     return _plan_quick_add(conn, settings, run, request, now)
 
 
@@ -330,6 +351,42 @@ def _plan_quick_add(
         },
     )
     return _read_only_plan(settings, run, prompt)
+
+
+def _plan_report(
+    conn: apsw.Connection, settings: Settings, run: Run, request: ReportRequest, now: datetime
+) -> RunPlan:
+    projects = [resolve_project_ref(conn, ref) for ref in request.projects]
+    ids = [p.id for p in projects]
+    pack = build_context_pack(
+        conn,
+        project_ids=ids,
+        t_from=request.start or now - timedelta(days=90),
+        t_to=request.end or now + timedelta(days=30),
+        token_budget=request.token_budget,
+    )
+    try:
+        template = (settings.prompts_dir / f"report_{request.kind}.md").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise NotFound(f"prompt report_{request.kind}.md missing") from None
+    prompt = render_prompt(
+        template,
+        {
+            "title": request.title,
+            "kind": request.kind,
+            "projects": ", ".join(p.slug for p in projects),
+            "context_pack": pack.markdown,
+            "today": _day(now),
+        },
+    )
+    return RunPlan(
+        prompt=prompt,
+        system_prompt=render_prompt(REPORT_SYSTEM, {"kind": request.kind}),
+        cwd=settings.runs_dir / run.id,
+        tools=ToolPolicy(tools=[], allowed=["mcp__trajectree__*"]),
+        json_schema=PROPOSAL_SCHEMA,
+        scope=Scope(projects=ids, tools=["save_report_draft"], write=True),
+    )
 
 
 def _plan_routine(

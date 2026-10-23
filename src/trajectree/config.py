@@ -36,6 +36,8 @@ class Settings(BaseModel):
     slurm_every_m: int = 15
     ssh_bin: str = "ssh"
     chatmaid_url: str | None = None
+    marp_bin: str | None = None  # None: look up `marp` on PATH when exporting
+    chrome_bin: str | None = None
 
     @property
     def connectors_dir(self) -> Path:
@@ -80,6 +82,10 @@ class Settings(BaseModel):
     @property
     def exports_dir(self) -> Path:
         return self.data_dir / "exports"
+
+    @property
+    def reports_dir(self) -> Path:
+        return self.exports_dir / "reports"
 
 
 def _optional_dir(var: str, default: str) -> Path | None:
@@ -149,6 +155,10 @@ def load_settings() -> Settings:
             values[field] = os.environ[var]
     if os.environ.get("TRAJECTREE_CHATMAID_URL"):
         values["chatmaid_url"] = os.environ["TRAJECTREE_CHATMAID_URL"].strip()
+    if os.environ.get("TRAJECTREE_MARP_BIN"):
+        values["marp_bin"] = os.environ["TRAJECTREE_MARP_BIN"]
+    if os.environ.get("TRAJECTREE_CHROME_BIN"):
+        values["chrome_bin"] = os.environ["TRAJECTREE_CHROME_BIN"]
     if os.environ.get("TRAJECTREE_SLURM_HOST"):
         values["slurm_host"] = os.environ["TRAJECTREE_SLURM_HOST"]
     if os.environ.get("TRAJECTREE_SLURM_USER"):

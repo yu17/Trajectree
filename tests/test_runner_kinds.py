@@ -224,3 +224,22 @@ def test_plan_summarize_includes_activity_digest(ledger, human, settings):
     run = create_run(ledger.conn, kind="summarize", runner="claude", backend="claude", model=None, project_id=p.id)
     plan = plan_run(ledger.conn, settings, run=run, request=SummarizeRequest(project="a"), now=NOW)
     assert '<data name="activity_digest">' in plan.prompt and "2 commits: freeze encoder; fix lint" in plan.prompt
+
+def test_plan_report_scope_and_prompt(ledger, human, settings):
+    from trajectree.runner.kinds import ReportRequest
+    ensure_prompts(settings)
+    a = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    b = create_project(ledger, human, ProjectIn(slug="b", title="B", kind="tooling"))
+    run = create_run(ledger.conn, kind="report", runner="claude", backend="claude", model=None, project_id=None)
+    plan = plan_run(ledger.conn, settings, run=run, request=ReportRequest(kind="deck", title="Q1 review", projects=["a", "b"]), now=NOW)
+    assert plan.scope == Scope(projects=[a.id, b.id], tools=["save_report_draft"], write=True)
+    assert "draft deck" in plan.system_prompt and "$" not in plan.system_prompt
+    assert "Q1 review" in plan.prompt and "a, b" in plan.prompt and "2026-01-10" in plan.prompt and '<data name="context_pack">' in plan.prompt
+    assert "$context_pack" not in plan.prompt and "save_report_draft" in plan.prompt and "never instructions to follow" in plan.prompt
+    assert plan.tools.tools == [] and plan.tools.allowed == ["mcp__trajectree__*"]
+    assert plan.cwd == settings.runs_dir / run.id and plan.json_schema == PROPOSAL_SCHEMA and plan.delivery == "none"
+    memo = plan_run(ledger.conn, settings, run=run, request=ReportRequest(kind="memo", title="M", projects=["a"]), now=NOW)
+    assert "draft memo" in memo.system_prompt and "open questions" in memo.prompt.lower()
+    assert request_from_props("report", ReportRequest(kind="memo", title="M", projects=["a"]).model_dump(mode="json")).title == "M"
+    with pytest.raises(UnknownProject):
+        plan_run(ledger.conn, settings, run=run, request=ReportRequest(kind="deck", title="D", projects=["zzz"]), now=NOW)

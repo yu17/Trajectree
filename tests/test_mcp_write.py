@@ -145,3 +145,37 @@ async def test_not_found_messages_name_the_entity(ledger, settings, human):
         assert r.is_error and "not found: nope" in r.content[0].text
         r = await c.call_tool("record_event", {"project": "a", "title": "x", "end": "", "intent": "i"})
         assert r.is_error and "ISO 8601" in r.content[0].text
+
+async def test_save_report_draft_scope_and_update(ledger, settings, human):
+    from trajectree.models import ReportIn, ReportScope
+    from trajectree.repo.reports import create_report, get_report
+    a, b = two_projects(ledger, human)
+    run = Principal(actor=Actor(kind="agent", ref="run_r", model="m", backend="claude", tool="mcp"),
+                    scope=Scope(projects=[a.id], tools=["save_report_draft"], write=True), token_id="tok")
+    async with Client(build_mcp(ledger, settings, resolve=lambda ctx: run)) as c:
+        r = await c.call_tool("save_report_draft", {"title": "Deck", "kind": "deck", "source_md": "# One", "intent": "draft deck", "projects": ["a"]})
+        assert not r.is_error and r.structured_content["scope"]["projects"] == [a.id]
+        report_id = r.structured_content["id"]
+        t = ledger.list_txns()[0]
+        assert (t.actor_kind, t.actor_ref, t.review, t.intent) == ("agent", "run_r", "pending", "draft deck")
+        r2 = await c.call_tool("save_report_draft", {"title": "Deck", "kind": "deck", "source_md": "# Two", "intent": "draft deck",
+                                                     "projects": ["a"], "report_id": report_id})
+        assert not r2.is_error and r2.structured_content["id"] == report_id
+        n = len(ledger.list_txns())
+        denied = await c.call_tool("save_report_draft", {"title": "X", "kind": "memo", "source_md": "x", "intent": "i", "projects": ["a", "b"]})
+        assert denied.is_error and "not permitted: save_report_draft on b" in denied.content[0].text
+        bare = await c.call_tool("save_report_draft", {"title": "X", "kind": "memo", "source_md": "x", "intent": "i"})
+        assert bare.is_error and "not permitted: save_report_draft without a project" in bare.content[0].text
+        unknown = await c.call_tool("save_report_draft", {"title": "X", "kind": "memo", "source_md": "x", "intent": "i", "projects": ["zzz"]})
+        assert unknown.is_error and "unknown project 'zzz'" in unknown.content[0].text
+        missing = await c.call_tool("save_report_draft", {"title": "X", "kind": "memo", "source_md": "x", "intent": "i", "projects": ["a"], "report_id": "nope"})
+        assert missing.is_error and "not found" in missing.content[0].text
+        other = create_report(ledger, human, ReportIn(title="B only", kind="memo", scope=ReportScope(projects=[b.id])))
+        n = len(ledger.list_txns())
+        hijack = await c.call_tool("save_report_draft", {"title": "X", "kind": "memo", "source_md": "x", "intent": "i", "projects": ["a"], "report_id": other.id})
+        assert hijack.is_error and "not permitted: save_report_draft on b" in hijack.content[0].text
+        assert len(ledger.list_txns()) == n and get_report(ledger.conn, other.id).title == "B only"
+    assert get_report(ledger.conn, report_id).source_md == "# Two"
+    async with Client(owner_mcp(ledger, settings)) as c:
+        r = await c.call_tool("save_report_draft", {"title": "Any", "kind": "memo", "source_md": "m", "intent": "draft memo"})
+        assert not r.is_error and r.structured_content["scope"]["projects"] == []

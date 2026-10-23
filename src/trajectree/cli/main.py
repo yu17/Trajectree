@@ -111,6 +111,20 @@ def _parser() -> argparse.ArgumentParser:
     ask.add_argument("--budget", type=int, default=4000)
     run_opts(ask)
 
+    rep = sub.add_parser("report", help="report commands")
+    rep_sub = rep.add_subparsers(dest="sub", required=True)
+    rep_sub.add_parser("list", help="list reports")
+    draft = rep_sub.add_parser("draft", help="draft a deck or memo with the runner")
+    draft.add_argument("--kind", choices=["deck", "memo"], required=True)
+    draft.add_argument("--title", required=True)
+    draft.add_argument("--projects", required=True, help="comma-separated slugs")
+    draft.add_argument("--days", type=int, default=90)
+    run_opts(draft)
+    exp = rep_sub.add_parser("export", help="export a report")
+    exp.add_argument("report_id")
+    exp.add_argument("--format", choices=["md", "html", "pdf", "pptx"], default="html")
+    exp.add_argument("--out", help="write the file here")
+
     qadd = sub.add_parser("add", help="quick-add: turn free text into proposals")
     qadd.add_argument("text")
     qadd.add_argument("--project")
@@ -223,6 +237,12 @@ class _Api:
     def delete(self, path: str) -> None:
         self._handle(self.client.delete(self.base + path, headers=self.headers))
 
+    def get_bytes(self, path: str) -> bytes:
+        resp = self.client.get(self.base + path, headers=self.headers)
+        if resp.status_code >= 400:
+            self._handle(resp)  # raises with the server's detail
+        return resp.content
+
     def project_id(self, slug: str) -> str:
         for p in self.get("/api/projects"):
             if p["slug"] == slug:
@@ -311,6 +331,31 @@ def _cmd_add(args: argparse.Namespace, api: _Api) -> None:
     if args.project:
         body["project"] = args.project
     _launch(api, args, "/api/quick-add", body)
+
+
+def _cmd_report(args: argparse.Namespace, api: _Api) -> None:
+    if args.sub == "list":
+        for r in api.get("/api/reports"):
+            pending = "  [pending]" if r["pending_txn"] else ""
+            print(f"{r['id']}  {r['kind']}  {r['updated_at']}  {r['title']}{pending}")
+    elif args.sub == "draft":
+        now = utcnow()
+        body: dict[str, Any] = {
+            "kind": args.kind,
+            "title": args.title,
+            "projects": [s for s in args.projects.split(",") if s],
+            "start": to_db(now - timedelta(days=args.days)),
+            "end": to_db(now + timedelta(days=30)),
+        }
+        _launch(api, args, "/api/reports/draft", body)
+    else:
+        query = urlencode({"format": args.format})
+        data = api.get_bytes(f"/api/reports/{quote(args.report_id, safe='')}/export?{query}")
+        if args.out:
+            Path(args.out).write_bytes(data)
+            print(f"wrote {args.out}")
+        else:
+            print(f"{args.format}: {len(data)} bytes")
 
 
 def _cmd_accept(args: argparse.Namespace, api: _Api) -> None:
@@ -454,6 +499,7 @@ def _run(
         "runs": _cmd_runs, "usage": _cmd_usage, "caps": _cmd_caps,
         "routines": _cmd_routines, "routine": _cmd_routine, "run": _cmd_run_routine,
         "review": _cmd_run_routine, "prep": _cmd_run_routine, "scheduler": _cmd_scheduler,
+        "report": _cmd_report,
     }
     if cmd in simple:
         simple[cmd](args, api)

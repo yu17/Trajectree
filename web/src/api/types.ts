@@ -417,6 +417,55 @@ export interface QuickAddRequest {
   model?: string | null;
 }
 
+export type ReportKind = "deck" | "memo";
+export type ReportFormat = "md" | "html" | "pdf" | "pptx";
+
+export interface ReportScope {
+  /** Project ids. */
+  projects: string[];
+  start: string | null;
+  end: string | null;
+}
+
+export interface ReportIn {
+  title: string;
+  kind: ReportKind;
+  scope?: Partial<ReportScope>;
+  /** Marp-flavoured Markdown: front matter, slides split on `---`, notes as HTML comments. */
+  source_md?: string;
+  props?: Record<string, unknown>;
+}
+
+export type ReportPatch = Partial<ReportIn>;
+
+export interface Report {
+  id: string;
+  title: string;
+  kind: ReportKind;
+  scope: ReportScope;
+  source_md: string;
+  props: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ReportOut extends Report {
+  /** The pending transaction that last changed this report (an agent draft awaiting review). */
+  pending_txn: string | null;
+}
+
+export interface ReportRequest {
+  kind: ReportKind;
+  title: string;
+  /** Project slugs, at least one. */
+  projects: string[];
+  start?: string | null;
+  end?: string | null;
+  token_budget?: number;
+  runner?: string | null;
+  model?: string | null;
+}
+
 export interface TxnDetail {
   txn: Txn;
   changes: Change[];

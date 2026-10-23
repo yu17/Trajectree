@@ -3,6 +3,12 @@ import type {
   Caps,
   ContextPack,
   QuickAddRequest,
+  Report,
+  ReportFormat,
+  ReportIn,
+  ReportOut,
+  ReportPatch,
+  ReportRequest,
   Run,
   RunDetail,
   RunKind,
@@ -143,6 +149,15 @@ export const api = {
   routineRuns: (ref: string, limit = 20) =>
     request<Run[]>("GET", `/api/routines/${encodeURIComponent(ref)}/runs?limit=${limit}`),
   scheduler: () => request<SchedulerStatus>("GET", "/api/scheduler"),
+  reports: () => request<ReportOut[]>("GET", "/api/reports"),
+  report: (id: string) => request<Report>("GET", `/api/reports/${encodeURIComponent(id)}`),
+  createReport: (body: ReportIn) => request<Report>("POST", "/api/reports", body),
+  updateReport: (id: string, patch: ReportPatch) =>
+    request<Report>("PATCH", `/api/reports/${encodeURIComponent(id)}`, patch),
+  draftReport: (body: ReportRequest) => request<Run>("POST", "/api/reports/draft", body),
+  // A plain URL for a link or download: the export is a file, not JSON.
+  reportExportUrl: (id: string, fmt: ReportFormat) =>
+    `/api/reports/${encodeURIComponent(id)}/export?format=${fmt}`,
   context(projects: string[], from: Date, to: Date, budget = 4000) {
     const q = new URLSearchParams({ from: from.toISOString(), to: to.toISOString(), budget: String(budget) });
     if (projects.length) q.set("projects", projects.join(","));

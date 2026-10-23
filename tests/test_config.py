@@ -40,6 +40,22 @@ def test_slurm_settings_from_env(monkeypatch, tmp_path):
     assert load_settings().slurm_key is None
 
 
+def test_marp_and_chrome_bins_from_env(monkeypatch, tmp_path):
+    from trajectree.config import load_settings
+
+    monkeypatch.setenv("TRAJECTREE_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("TRAJECTREE_MARP_BIN", raising=False)
+    monkeypatch.delenv("TRAJECTREE_CHROME_BIN", raising=False)
+    s = load_settings()
+    assert s.marp_bin is None and s.chrome_bin is None and s.reports_dir == tmp_path / "exports" / "reports"
+    monkeypatch.setenv("TRAJECTREE_MARP_BIN", "/opt/marp")
+    monkeypatch.setenv("TRAJECTREE_CHROME_BIN", "/usr/bin/chromium")
+    s = load_settings()
+    assert (s.marp_bin, s.chrome_bin) == ("/opt/marp", "/usr/bin/chromium")
+    monkeypatch.setenv("TRAJECTREE_MARP_BIN", "")
+    assert load_settings().marp_bin is None
+
+
 def test_ensure_cfg_dirs_creates_private_ssh_dir(settings):
     from trajectree.runner.credentials import ensure_cfg_dirs
 

@@ -32,6 +32,23 @@ describe("api client", () => {
     expect(call(5)).toEqual(["/api/routines/rev/runs?limit=5", "GET", undefined]);
     expect(call(6)).toEqual(["/api/scheduler", "GET", undefined]);
   });
+  it("calls the report endpoints and builds export URLs", async () => {
+    const f = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({})));
+    vi.stubGlobal("fetch", f);
+    const call = (i: number) => [String(f.mock.calls[i][0]), f.mock.calls[i][1]?.method, f.mock.calls[i][1]?.body];
+    await api.reports();
+    await api.report("r/1");
+    await api.createReport({ title: "Memo", kind: "memo", source_md: "# Hi" });
+    await api.updateReport("r1", { source_md: "# Hi there" });
+    await api.draftReport({ kind: "deck", title: "Q1", projects: ["clmi"] });
+    expect(call(0)).toEqual(["/api/reports", "GET", undefined]);
+    expect(call(1)).toEqual(["/api/reports/r%2F1", "GET", undefined]);
+    expect(call(2)).toEqual(["/api/reports", "POST", JSON.stringify({ title: "Memo", kind: "memo", source_md: "# Hi" })]);
+    expect(call(3)).toEqual(["/api/reports/r1", "PATCH", JSON.stringify({ source_md: "# Hi there" })]);
+    expect(call(4)).toEqual(["/api/reports/draft", "POST", JSON.stringify({ kind: "deck", title: "Q1", projects: ["clmi"] })]);
+    expect(api.reportExportUrl("r1", "pdf")).toBe("/api/reports/r1/export?format=pdf");
+    expect(f).toHaveBeenCalledTimes(5);
+  });
   it("posts a session summary request with the id encoded", async () => {
     const f = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({})));
     vi.stubGlobal("fetch", f);
