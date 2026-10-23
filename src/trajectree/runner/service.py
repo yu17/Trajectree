@@ -107,7 +107,15 @@ class RunService:
 
     def execute(self, run_id: str) -> Run:
         with self.ledger.locked() as conn:
-            prepared = self._prepare(conn, run_id)  # revokes its own token if it fails
+            current = get_run(conn, run_id)
+        # The version probe spawns a subprocess, so it runs before the lock is taken.
+        version = (
+            self.version(self._binary(current.runner))
+            if current is not None and current.status == "queued"
+            else None
+        )
+        with self.ledger.locked() as conn:
+            prepared = self._prepare(conn, run_id, version)  # revokes its own token if it fails
             if isinstance(prepared, Run):
                 return prepared
             run, caps, plan, spec, env, token_id, oauth_token = prepared
@@ -134,8 +142,8 @@ class RunService:
                 secrets=[secret, oauth_token or ""],
                 popen=self.popen,
             )
-        except BaseException:
-            self._revoke_after_failure(token_id)
+        except BaseException as exc:
+            self._abort(run_id, token_id, str(exc)[:500])
             raise
         with self.ledger.locked() as conn:
             try:
@@ -143,15 +151,19 @@ class RunService:
             finally:
                 revoke_token(conn, token_id)
 
-    def _revoke_after_failure(self, token_id: str | None) -> None:
-        if token_id is not None:
-            with self.ledger.locked() as conn:
+    def _abort(self, run_id: str, token_id: str, error: str) -> None:
+        with self.ledger.locked() as conn:
+            try:
+                self._fail(conn, run_id, error)
+            finally:
                 revoke_token(conn, token_id)
 
-    def _prepare(self, conn, run_id: str):
+    def _prepare(self, conn, run_id: str, version: str | None):
         run = get_run(conn, run_id)
         if run is None:
             raise NotFound(f"run {run_id} not found")
+        if run.status != "queued":
+            return run  # already claimed or finished: never launch twice
         caps = get_caps(conn)
         now = self.now()
         if spent_usd(conn, day=self.today()) + caps.usd_per_run > caps.usd_per_day:
@@ -163,14 +175,13 @@ class RunService:
             plan = plan_run(conn, self.settings, run=run, request=request, now=now)
         except (UnknownProject, NotFound) as exc:
             return self._fail(conn, run_id, str(exc))
-        binary = self._binary(run.runner)
         actor = Actor(
             kind="agent",
             ref=run_id,
             model=request.model,
             backend=run.backend,
             tool=run.runner,
-            tool_version=self.version(binary),
+            tool_version=version,
             run_id=run_id,
         )
         token_id, secret = mint_token(
@@ -266,14 +277,17 @@ class RunService:
 
     async def worker(self, stop: asyncio.Event, *, poll_s: float = 0.5) -> None:
         while not stop.is_set():
-            run = await asyncio.to_thread(self._next_queued)
-            if run is not None:
-                try:
-                    await asyncio.to_thread(self.execute, run.id)
-                except Exception as exc:
-                    log.exception("run %s crashed", run.id)
-                    await asyncio.to_thread(self._mark_failed, run.id, str(exc)[:500])
-                continue
+            try:
+                run = await asyncio.to_thread(self._next_queued)
+                if run is not None:
+                    try:
+                        await asyncio.to_thread(self.execute, run.id)
+                    except Exception as exc:
+                        log.exception("run %s crashed", run.id)
+                        await asyncio.to_thread(self._mark_failed, run.id, str(exc)[:500])
+                    continue
+            except Exception:
+                log.exception("worker iteration failed")
             try:
                 await asyncio.wait_for(stop.wait(), poll_s)
             except TimeoutError:

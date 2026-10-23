@@ -91,20 +91,26 @@ async def test_worker_continues_after_timeout(ledger, human, settings, logged_in
     mode = tmp_path / "mode"
     mode.write_text("sleep")
     s = svc(ledger, settings, FAKE_CLAUDE_MODE_FILE=str(mode))
+    real_launch = s.launch
+
+    def launch_then_unstick(*a, **kw):
+        outcome = real_launch(*a, **kw)
+        mode.write_text("ok")   # flipped before the worker can start the next run
+        return outcome
+
+    s.launch = launch_then_unstick
     r1 = s.enqueue(AskRequest(question="slow"))
     r2 = s.enqueue(AskRequest(question="fast"))
     stop = asyncio.Event()
     task = asyncio.create_task(s.worker(stop, poll_s=0.05))
     for _ in range(200):
         await asyncio.sleep(0.05)
-        if get_run(ledger.conn, r1.id).status not in ("queued", "running"):
-            mode.write_text("ok")
         if get_run(ledger.conn, r2.id).status == "ok":
             break
     stop.set()
     await asyncio.wait_for(task, 5)
     assert get_run(ledger.conn, r1.id).status == "failed" and get_run(ledger.conn, r1.id).error == "timeout after 1s"
-    assert get_run(ledger.conn, r2.id).status == "ok"
+    assert get_run(ledger.conn, r2.id).status == "ok", get_run(ledger.conn, r2.id).error
 
 def test_accept_proposal_creates_human_txn_with_provenance(ledger, human, settings, logged_in):
     p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
@@ -139,3 +145,37 @@ def test_accept_unknown_slug_writes_nothing(ledger, human, settings, logged_in):
     with pytest.raises(UnknownProject, match="known projects: b"):
         s.apply_proposal(run.id, 0, actor=human)
     assert len(ledger.list_txns()) == n
+
+
+def test_execute_on_finished_run_is_a_noop(ledger, human, settings, logged_in):
+    create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    s = svc(ledger, settings)
+    done = s.execute(s.enqueue(AskRequest(question="q")).id)
+    log = settings.runs_dir / f"{done.id}.log"
+    log.unlink()
+    again = s.execute(done.id)
+    assert again == done and not log.exists()
+    assert ledger.conn.execute("select count(*) from token").fetchone()[0] == 0
+
+
+def test_version_probe_runs_without_the_ledger_lock(ledger, human, settings, logged_in):
+    owned = []
+    def version(binary):
+        owned.append(ledger._lock._is_owned())
+        return "2.1.309"
+    env = {"PATH": os.environ["PATH"], "FAKE_CLAUDE_MODE": "ok", "FAKE_CLAUDE_STRUCTURED": STRUCTURED}
+    s = RunService(ledger, settings, version=version, base_env=env)
+    assert s.execute(s.enqueue(AskRequest(question="q")).id).status == "ok"
+    assert owned == [False]
+
+
+def test_launch_exception_marks_failed_and_revokes_token(ledger, human, settings, logged_in):
+    def boom(*a, **kw):
+        raise RuntimeError("launch exploded")
+    s = RunService(ledger, settings, launch=boom, base_env={"PATH": os.environ["PATH"]})
+    run = s.enqueue(AskRequest(question="q"))
+    with pytest.raises(RuntimeError):
+        s.execute(run.id)
+    after = get_run(ledger.conn, run.id)
+    assert after.status == "failed" and after.error == "launch exploded" and after.finished is not None
+    assert ledger.conn.execute("select count(*) from token").fetchone()[0] == 0
