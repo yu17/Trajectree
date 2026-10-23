@@ -49,6 +49,21 @@ describe("api client", () => {
     expect(api.reportExportUrl("r1", "pdf")).toBe("/api/reports/r1/export?format=pdf");
     expect(f).toHaveBeenCalledTimes(5);
   });
+  it("calls the token, connector and mounts endpoints", async () => {
+    const f = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({})));
+    vi.stubGlobal("fetch", f);
+    const call = (i: number) => [String(f.mock.calls[i][0]), f.mock.calls[i][1]?.method, f.mock.calls[i][1]?.body];
+    await api.tokens();
+    await api.createToken({ label: "hooks", scope: { tools: ["hooks"], write: false } });
+    await api.revokeToken("t/1");
+    await api.connectors();
+    await api.mounts();
+    expect(call(0)).toEqual(["/api/tokens", "GET", undefined]);
+    expect(call(1)).toEqual(["/api/tokens", "POST", JSON.stringify({ label: "hooks", scope: { tools: ["hooks"], write: false } })]);
+    expect(call(2)).toEqual(["/api/tokens/t%2F1", "DELETE", undefined]);
+    expect(call(3)).toEqual(["/api/connectors/status", "GET", undefined]);
+    expect(call(4)).toEqual(["/api/mounts", "GET", undefined]);
+  });
   it("posts a session summary request with the id encoded", async () => {
     const f = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({})));
     vi.stubGlobal("fetch", f);

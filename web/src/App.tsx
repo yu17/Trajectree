@@ -8,13 +8,14 @@ import { InboxView, pendingTxnsQuery } from "./views/InboxView";
 import { LedgerView } from "./views/LedgerView";
 import { ProjectView } from "./views/ProjectView";
 import { RunsView } from "./views/RunsView";
+import { SettingsView } from "./views/SettingsView";
 import { TimelineView } from "./views/TimelineView";
 import "./views/views.css";
 
 // Marp (with its MathJax) and CodeMirror are most of the bundle; load them with the Reports tab.
 const ReportsView = lazy(() => import("./views/ReportsView").then(m => ({ default: m.ReportsView })));
 
-type Tab = "timeline" | "ledger" | "runs" | "reports" | "project" | "inbox";
+type Tab = "timeline" | "ledger" | "runs" | "reports" | "project" | "inbox" | "settings";
 type Panel = "project" | "capture" | "ask" | null;
 
 const isUnauthorized = (err: unknown) => err instanceof ApiError && err.status === 401;
@@ -74,6 +75,9 @@ export default function App() {
           <button role="tab" aria-selected={tab === "inbox"} onClick={() => setTab("inbox")}>
             {pendingCount > 0 ? `Inbox (${pendingCount})` : "Inbox"}
           </button>
+          <button role="tab" aria-selected={tab === "settings"} onClick={() => setTab("settings")}>
+            Settings
+          </button>
         </div>
         <div className="header-actions">
           <button onClick={() => toggle("project")}>+ Project</button>
@@ -107,6 +111,8 @@ export default function App() {
           <Suspense fallback={<p className="muted">Loading</p>}>
             <ReportsView />
           </Suspense>
+        ) : tab === "settings" ? (
+          <SettingsView />
         ) : (
           <InboxView />
         )}

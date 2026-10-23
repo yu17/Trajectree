@@ -526,5 +526,53 @@ export interface EdgeIn {
   valid_to?: string | null;
 }
 
+export interface TokenScope {
+  projects?: string[] | null;
+  tools?: string[] | null;
+  write?: boolean;
+}
+
+export type TokenActorKind = "agent" | "session" | "connector";
+
+export interface TokenCreate {
+  label: string;
+  scope: TokenScope;
+  ttl_s?: number | null;
+  actor_kind?: TokenActorKind;
+}
+
+export interface TokenOut {
+  id: string;
+  label: string;
+  scope: TokenScope;
+  actor_kind: string;
+  expires_at: string | null;
+  created_at: string;
+}
+
+export interface TokenSecret extends TokenOut {
+  secret: string;
+}
+
+export type ConnectorName =
+  | "claude-sessions" | "local-git" | "folders" | "github" | "gitlab" | "slurm" | "chatmaid" | "recurrence";
+
+export interface ConnectorStatus {
+  name: ConnectorName;
+  configured: boolean;
+  last_run: string | null;
+  errors: string[];
+  detail: string | null;
+}
+
+export interface Mounts {
+  claude_home: string | null;
+  backends_root: string | null;
+  path_map: string[][];
+  data_dir: string;
+  cfg_dir: string;
+  exports_dir: string;
+}
+
 export type EventPatch = Partial<EventIn>;
 export type TodoPatch = Partial<TodoIn>;

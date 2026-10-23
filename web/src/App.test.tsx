@@ -24,7 +24,7 @@ describe("App", () => {
     expect(screen.getByRole("tab", { name: /Inbox/ })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Timeline" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Ledger" })).toBeTruthy();
-    expect(screen.getAllByRole("tab").map(t => t.textContent)).toEqual(["Timeline", "Ledger", "Runs", "Reports", "Inbox"]);
+    expect(screen.getAllByRole("tab").map(t => t.textContent)).toEqual(["Timeline", "Ledger", "Runs", "Reports", "Inbox", "Settings"]);
   });
 
   it("renders the Runs tab", async () => {
@@ -56,7 +56,7 @@ describe("App", () => {
     await waitFor(() => expect(container.querySelector("g.lab text.lbl-name")).not.toBeNull());
     fireEvent.click(container.querySelector("g.lab text.lbl-name")!);
     expect(screen.getByRole("tab", { name: "Project" }).getAttribute("aria-selected")).toBe("true");
-    expect(screen.getAllByRole("tab").map(t => t.textContent)).toEqual(["Timeline", "Ledger", "Runs", "Reports", "Project", "Inbox"]);
+    expect(screen.getAllByRole("tab").map(t => t.textContent)).toEqual(["Timeline", "Ledger", "Runs", "Reports", "Project", "Inbox", "Settings"]);
     expect(await screen.findByRole("heading", { name: "CLMI" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("tab", { name: "Project" })).toBeNull();

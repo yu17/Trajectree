@@ -56,3 +56,45 @@ def test_chatmaid_message_rejects_anonymous_cookie_and_missing_inbox(anon, clien
     ledger.conn.execute("DELETE FROM project WHERE slug = 'inbox'")
     r = client.post("/api/connectors/chatmaid/messages", json=msg)
     assert r.status_code == 422 and r.json()["detail"] == "no inbox project"
+
+
+def test_connector_status_reports_configuration_without_secrets(client, settings):
+    import json
+
+    client.post("/api/connectors/github/credentials", json={"token": "ghp_secret"})
+    resp = client.get("/api/connectors/status")
+    assert resp.status_code == 200
+    rows = {r["name"]: r for r in resp.json()}
+    assert list(rows) == ["claude-sessions", "local-git", "folders", "github", "gitlab", "slurm", "chatmaid", "recurrence"]
+    assert rows["github"]["configured"] is True and rows["slurm"]["configured"] is False
+    assert rows["gitlab"]["configured"] is False and rows["local-git"]["configured"] is True
+    assert "ghp_secret" not in json.dumps(rows)
+
+
+def test_connector_status_surfaces_errors_and_last_run(client, ledger):
+    from trajectree.repo.state import set_state
+
+    with ledger.locked() as conn:
+        set_state(conn, "ingest:last", {"started": "2026-01-05T10:00:00Z", "git": {"errors": [f"e{i}" for i in range(7)]}, "folders": {"errors": ["boom"]}, "recurrence": {"errors": []}})
+        set_state(conn, "folders:last", {"at": "2026-01-05T09:00:00Z"})
+    rows = {r["name"]: r for r in client.get("/api/connectors/status").json()}
+    assert rows["local-git"]["errors"] == ["e0", "e1", "e2", "e3", "e4"]
+    assert rows["local-git"]["last_run"] == "2026-01-05T10:00:00Z"
+    assert rows["folders"]["errors"] == ["boom"] and rows["folders"]["last_run"] == "2026-01-05T09:00:00Z"
+    assert rows["claude-sessions"]["last_run"] is None and rows["github"]["errors"] == []
+
+
+def test_connector_status_tolerates_malformed_state(client, ledger):
+    from trajectree.repo.state import set_state
+
+    with ledger.locked() as conn:
+        set_state(conn, "ingest:last", ["not", "a", "dict"])
+        set_state(conn, "slurm:last", 5)
+    assert client.get("/api/connectors/status").status_code == 200
+
+
+def test_mounts(client, settings):
+    body = client.get("/api/mounts").json()
+    assert body["data_dir"] == str(settings.data_dir) and body["cfg_dir"] == str(settings.cfg_root)
+    assert body["exports_dir"] == str(settings.exports_dir) and body["claude_home"] is None
+    assert body["path_map"] == []

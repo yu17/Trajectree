@@ -73,3 +73,10 @@ ul.runs{list-style:none;margin:0;padding:0}
 .project-list li{padding:3px 0;border-bottom:1px solid var(--grid)}
 .project-list code{font-size:12px;color:var(--ink2)}
 .session-summary{margin:4px 0}
+.settings section{margin-bottom:16px}
+.settings h3{font-size:13px;margin:12px 0 4px}
+.settings .token-form{max-width:280px}
+.settings .token-secret code{background:var(--plane);border:1px solid var(--grid);border-radius:4px;padding:2px 6px;user-select:all;word-break:break-all}
+.settings .mounts{display:grid;grid-template-columns:max-content 1fr;gap:2px 16px;font-size:12px;margin:4px 0}
+.settings .mounts dt{color:var(--muted)}
+.settings .mounts dd{margin:0;color:var(--ink2)}

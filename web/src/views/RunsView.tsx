@@ -1,18 +1,13 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
-import type { Caps, Run, RunnerStatus, UsageDay, UsageSlice } from "../api/types";
+import type { Caps, Run, UsageDay, UsageSlice } from "../api/types";
+import { statusLine } from "../components/runnerStatus";
 import { Proposals } from "../components/Proposals";
 import { RoutinesSection } from "../components/RoutinesSection";
 import { useRun } from "../components/useRun";
 
 const usd = (n: number) => `$${n.toFixed(2)}`;
-
-function statusLine(s: RunnerStatus): string {
-  if (!s.claude.available) return "claude: not installed";
-  if (!s.claude.authenticated) return "claude: not logged in (run trajectree login)";
-  return `claude ${s.claude.version ?? ""} · logged in`.replace("  ", " ");
-}
 
 const W = 600;
 const H = 120;

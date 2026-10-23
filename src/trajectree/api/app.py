@@ -23,6 +23,7 @@ from trajectree.api.routes_reports import router as reports_router
 from trajectree.api.routes_resources import router as resources_router
 from trajectree.api.routes_routines import router as routines_router
 from trajectree.api.routes_runs import router as runs_router
+from trajectree.api.routes_settings import router as settings_router
 from trajectree.api.routes_signals import router as signals_router
 from trajectree.api.routes_timeline import router as timeline_router
 from trajectree.api.routes_tokens import router as tokens_router
@@ -43,7 +44,7 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 # Plain routers (no prefix, no auth). create_app includes each into a fresh
 # /api router that enforces require_token. Later tasks append theirs here.
-PROTECTED_ROUTERS: list[APIRouter] = [entities_router, timeline_router, ledger_router, search_router, resources_router, context_router, signals_router, runs_router, tokens_router, routines_router, connectors_router, reports_router]
+PROTECTED_ROUTERS: list[APIRouter] = [entities_router, timeline_router, ledger_router, search_router, resources_router, context_router, signals_router, runs_router, tokens_router, routines_router, connectors_router, reports_router, settings_router]
 
 
 def _seed(ledger: Ledger, settings: Settings) -> None:

@@ -29,6 +29,7 @@ class TokenOut(BaseModel):
     id: str
     label: str
     scope: Scope
+    actor_kind: str
     expires_at: AwareDatetime | None
     created_at: AwareDatetime
 

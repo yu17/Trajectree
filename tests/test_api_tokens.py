@@ -29,3 +29,12 @@ def test_expired_token_is_not_listed_as_live(client, app):
     _, secret = mint_token(app.state.ledger.conn, label="old", scope=Scope(), actor=Actor(kind="agent", ref="x"), ttl=timedelta(seconds=-1))
     assert resolve_token(app.state.ledger.conn, secret) is None
     assert client.get("/api/tokens").json()[0]["label"] == "old"
+
+
+def test_token_out_includes_actor_kind(client, app):
+    body = {"label": "chatmaid", "scope": {"projects": [], "tools": ["chatmaid"], "write": False}}
+    created = client.post("/api/tokens", json={**body, "actor_kind": "connector"}).json()
+    assert created["actor_kind"] == "connector"
+    plain = client.post("/api/tokens", json={**body, "label": "x"}).json()
+    kinds = {t["label"]: t["actor_kind"] for t in client.get("/api/tokens").json()}
+    assert kinds == {"chatmaid": "connector", "x": "session"} and plain["actor_kind"] == "session"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Annotated
+from datetime import datetime
+from typing import Annotated, Literal
 
 import anyio.to_thread
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -10,7 +11,8 @@ from trajectree.api.deps import scoped_or_owner
 from trajectree.models import SignalIn
 from trajectree.repo.projects import get_project_by_slug, resolve_project_ref
 from trajectree.repo.signals import get_signal_by_key, upsert_signals
-from trajectree.runner.credentials import CONNECTOR_NAMES, store_connector_token
+from trajectree.repo.state import get_state
+from trajectree.runner.credentials import CONNECTOR_NAMES, load_connector_token, store_connector_token
 from trajectree.timeutil import utcnow
 
 CHATMAID_TOOL = "chatmaid"
@@ -34,6 +36,82 @@ def connector_credentials(name: str, body: ConnectorCredentials, request: Reques
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"stored": True}
+
+
+ConnectorName = Literal["claude-sessions", "local-git", "folders", "github", "gitlab", "slurm", "chatmaid", "recurrence"]
+# connector -> (ingest:last section, cursor state key); either may be absent
+_SECTIONS: dict[str, tuple[str | None, str | None]] = {
+    "claude-sessions": ("scan", None),
+    "local-git": ("git", None),
+    "folders": ("folders", "folders:last"),
+    "github": ("remote", "remote:last"),
+    "gitlab": ("remote", "remote:last"),
+    "slurm": ("slurm", "slurm:last"),
+    "chatmaid": (None, None),
+    "recurrence": ("recurrence", None),
+}
+MAX_ERRORS = 5
+
+
+class ConnectorStatus(BaseModel):
+    name: ConnectorName
+    configured: bool
+    last_run: AwareDatetime | None
+    errors: list[str]
+    detail: str | None
+
+
+def _cursor_at(value: object) -> str | None:
+    raw = value.get("at") if isinstance(value, dict) else value
+    return raw if isinstance(raw, str) else None
+
+
+def _parse_when(raw: object) -> datetime | None:
+    if not isinstance(raw, str):
+        return None
+    try:
+        when = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return when if when.tzinfo is not None else None
+
+
+@router.get("/connectors/status", response_model=list[ConnectorStatus])
+def connector_status(request: Request) -> list[ConnectorStatus]:
+    settings = request.app.state.settings
+    with request.app.state.ledger.locked() as conn:
+        report = get_state(conn, "ingest:last")
+        cursors = {key: get_state(conn, key) for key in ("folders:last", "remote:last", "slurm:last")}
+    report = report if isinstance(report, dict) else {}
+    github, gitlab = load_connector_token(settings, "github"), load_connector_token(settings, "gitlab")
+    chatmaid_token = load_connector_token(settings, "chatmaid")
+    config: dict[str, tuple[bool, str | None]] = {
+        "claude-sessions": (bool(settings.claude_home or settings.backends_root), None),
+        "local-git": (True, None),
+        "folders": (settings.folders_scan_every_h > 0, f"every {settings.folders_scan_every_h} h"),
+        "github": (github is not None, "token stored" if github else None),
+        "gitlab": (gitlab is not None, "token stored" if gitlab else None),
+        "slurm": (bool(settings.slurm_host), f"host {settings.slurm_host}" if settings.slurm_host else None),
+        "chatmaid": (
+            bool(settings.chatmaid_url) or chatmaid_token is not None,
+            f"url {settings.chatmaid_url}" if settings.chatmaid_url else ("token stored" if chatmaid_token else None),
+        ),
+        "recurrence": (True, None),
+    }
+    out: list[ConnectorStatus] = []
+    for name, (section_key, cursor_key) in _SECTIONS.items():
+        section = report.get(section_key) if section_key else None
+        errors = section.get("errors") if isinstance(section, dict) else None
+        last = _cursor_at(cursors[cursor_key]) if cursor_key else None
+        if cursor_key is None and isinstance(section, dict):
+            last = report.get("started")
+        configured, detail = config[name]
+        out.append(ConnectorStatus(
+            name=name, configured=configured, last_run=_parse_when(last),
+            errors=[str(e) for e in errors[:MAX_ERRORS]] if isinstance(errors, list) else [],
+            detail=detail,
+        ))
+    return out
 
 
 class ChatmaidMessage(BaseModel):
