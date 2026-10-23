@@ -5,6 +5,7 @@
 web/node_modules
 src/trajectree/static
 data
+cfg
 docs
 tests
 *.db

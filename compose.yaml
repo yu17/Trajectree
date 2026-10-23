@@ -1,6 +1,8 @@
 services:
   trajectree:
-    build: .
+    build:
+      context: .
+      target: ${TRAJECTREE_IMAGE_TARGET:-app}
     ports: ["127.0.0.1:8742:8742"]
     volumes:
       - ./data:/data
@@ -15,6 +17,7 @@ services:
       TRAJECTREE_CFG_DIR: /cfg
       HOME: /cfg/home
       DISABLE_AUTOUPDATER: "1"
+      TRAJECTREE_TZ: ${TZ:-UTC}
     read_only: true
     tmpfs: ["/tmp"]
     cap_drop: [ALL]

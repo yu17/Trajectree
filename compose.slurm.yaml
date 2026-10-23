@@ -1,0 +1,9 @@
+# Slurm connector overlay: docker compose -f compose.yaml -f compose.slurm.yaml up -d
+services:
+  trajectree:
+    volumes:
+      - ${TRAJECTREE_SLURM_KEY:?set TRAJECTREE_SLURM_KEY to the private key for the login node}:/run/slurm_key:ro
+    environment:
+      TRAJECTREE_SLURM_KEY: /run/slurm_key
+      TRAJECTREE_SLURM_HOST: ${TRAJECTREE_SLURM_HOST:?set TRAJECTREE_SLURM_HOST}
+      TRAJECTREE_SLURM_USER: ${TRAJECTREE_SLURM_USER:-}
