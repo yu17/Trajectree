@@ -67,6 +67,7 @@ export interface RenderInput {
   uid: string;
   onSelect: (s: Selection | null) => void;
   onHover: (id: string | null) => void;
+  onChip?: (projectId: string, kind: "running" | "stale") => void;
 }
 
 interface Lane {
@@ -74,7 +75,7 @@ interface Lane {
   stripTop: number; cells: StripCell[]; live: boolean; stale: boolean;
 }
 interface PlacedCell extends StripCell { id: string; laneId: string; y: number }
-interface Chip { kind: "running" | "stale"; text: string; x: number; w: number }
+interface Chip { kind: "running" | "stale"; projectId: string; text: string; x: number; w: number }
 interface PlacedBlock extends PlacedItem { y: number; ev: Event }
 interface TodoMark { todo: Todo; x: number; y: number }
 
@@ -91,7 +92,7 @@ export function renderTimeline(
   wrapEl: HTMLDivElement,
   input: RenderInput,
 ): void {
-  const { data, now, range, width, transform, selected, hovered, showAllWires, uid, onSelect, onHover } = input;
+  const { data, now, range, width, transform, selected, hovered, showAllWires, uid, onSelect, onHover, onChip } = input;
   const W = width;
   const plotW = Math.max(200, W - GUTTER);
   // Zoom acts in svg coordinates; shift the rescaled range back to plot coordinates.
@@ -186,7 +187,7 @@ export function renderTimeline(
     const out: Chip[] = [];
     const add = (kind: Chip["kind"], text: string) => {
       const prev = out[out.length - 1];
-      out.push({ kind, text, x: prev ? prev.x + prev.w + 6 : 0, w: text.length * 6 + 12 });
+      out.push({ kind, projectId: d.id, text, x: prev ? prev.x + prev.w + 6 : 0, w: text.length * 6 + 12 });
     };
     if (d.live) add("running", "● running");
     if (d.stale) add("stale", "stale");
@@ -201,6 +202,11 @@ export function renderTimeline(
   chip.attr("class", (c: Chip) => `chip ${c.kind}`).attr("transform", (c: Chip) => `translate(${c.x},0)`);
   chip.select("rect").attr("width", (c: Chip) => c.w);
   chip.select("text").text((c: Chip) => c.text);
+  chip.selectAll("title").data((c: Chip) => (c.kind === "stale" ? [c] : [])).join("title").text("Regenerate summary");
+  chip.on("click", (ev: MouseEvent, c: Chip) => {
+    ev.stopPropagation();
+    onChip?.(c.projectId, c.kind);
+  });
 
   // ---- axis, grid, now ----
   const ticks = Math.max(3, Math.floor(plotW / 120));
@@ -303,7 +309,8 @@ export function renderTimeline(
     marks.push({ todo: t, x, y: lane.y + PAD + ROW_H / 2 });
   }
   gTodos.selectAll<SVGPathElement, TodoMark>("path.todo-marker").data(marks, (d: TodoMark) => d.todo.id).join("path")
-    .attr("class", (d: TodoMark) => "todo-marker" + (d.todo.id === selTodo ? " sel" : ""))
+    .attr("class", (d: TodoMark) => "todo-marker" + (d.todo.id === selTodo ? " sel" : "")
+      + (data.pending.todo?.[d.todo.id] ? " pending" : ""))
     .attr("d", `M0,${-TODO_HALF} L${TODO_HALF},0 L0,${TODO_HALF} L${-TODO_HALF},0 Z`)
     .attr("transform", (d: TodoMark) => `translate(${d.x},${d.y})`)
     .on("mousemove", (ev: MouseEvent, d: TodoMark) =>

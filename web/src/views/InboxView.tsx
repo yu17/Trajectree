@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import type { Todo, Txn } from "../api/types";
 import { errorText } from "../components/errorText";
+import { Proposals } from "../components/Proposals";
 import { ActionNotice } from "./ActionNotice";
 import { Diff } from "./LedgerView";
 import { useTxnActions } from "./useTxnActions";
@@ -65,6 +66,11 @@ export function InboxView() {
     },
   });
 
+  const proposals = useQuery({
+    queryKey: ["runs", "open-proposals"],
+    queryFn: () => api.runs({ openProposals: true, limit: 50 }),
+  });
+
   const rows = pending.data ?? [];
   const open = [...(todos.data ?? [])].sort(byDue);
   const projectOf = (t: Todo) =>
@@ -88,6 +94,15 @@ export function InboxView() {
       <ul className="inbox-list">
         {rows.map(t => <PendingRow key={t.id} txn={t} actions={actions} />)}
       </ul>
+      <h2>Proposals</h2>
+      {proposals.isError && <p className="form-error">{errorText(proposals.error)}</p>}
+      {proposals.isSuccess && proposals.data.length === 0 && <p className="muted">No proposals</p>}
+      {(proposals.data ?? []).map(run => (
+        <div key={run.id}>
+          <p className="muted">{`${run.kind} · ${new Date(run.created_at).toLocaleString()} · ${run.result_md}`}</p>
+          <Proposals run={run} />
+        </div>
+      ))}
       <h2>Open todos</h2>
       {todos.isError && <p className="form-error">{errorText(todos.error)}</p>}
       {todos.isSuccess && open.length === 0 && <p className="muted">No open todos</p>}

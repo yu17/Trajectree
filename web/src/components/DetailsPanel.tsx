@@ -46,16 +46,26 @@ export function DetailsPanel({ data, selected, onReview, onRevert }: DetailsPane
     const todo = data.todos.find(t => t.id === selected.id);
     if (todo) {
       const project = data.projects.find(p => p.id === todo.project_id);
+      const todoTxn = data.pending.todo?.[todo.id];
       return (
         <aside className="details">
           <h2>Details</h2>
           <h3>{todo.title}</h3>
-          <div><span className="badge">{todo.state}</span><span className="badge">todo</span></div>
+          <div>
+            {todoTxn && <span className="badge warn">pending</span>}
+            <span className="badge">{todo.state}</span><span className="badge">todo</span>
+          </div>
           {todo.body_md && <div className="body">{todo.body_md}</div>}
           <dl className="meta">
             <dt>project</dt><dd>{project?.title ?? "inbox"}</dd>
             <dt>due</dt><dd>{todo.due ? fmtRecorded(new Date(todo.due)) : "—"}</dd>
           </dl>
+          {todoTxn && (
+            <div className="actions">
+              <button onClick={() => onReview(todoTxn, "accepted")}>Accept</button>
+              <button onClick={() => onReview(todoTxn, "rejected")}>Reject</button>
+            </div>
+          )}
         </aside>
       );
     }

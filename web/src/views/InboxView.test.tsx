@@ -8,14 +8,28 @@ import type { Txn } from "../api/types";
 const txn = (id: string): Txn => ({ id, ts: "2026-01-05T10:00:00Z", actor_kind: "session", actor_ref: "owner", model: null, backend: null, tool: "mcp", tool_version: null, session_id: null, run_id: null, proposed_by_run: null, intent: `intent ${id}`, review: "pending", review_ts: null, reverts_txn: null, reverted_by: null });
 
 const api = vi.hoisted(() => ({
-  txns: vi.fn(), txn: vi.fn(), todos: vi.fn(), review: vi.fn(), revert: vi.fn(),
+  txns: vi.fn(), txn: vi.fn(), todos: vi.fn(), review: vi.fn(), revert: vi.fn(), runs: vi.fn(), acceptProposal: vi.fn(),
 }));
 vi.mock("../api/client", () => ({ api, ApiError: class extends Error {} }));
 
 const wrap = (ui: React.ReactElement) => render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>{ui}</QueryClientProvider>);
 
 describe("InboxView", () => {
-  beforeEach(() => { vi.clearAllMocks(); api.todos.mockResolvedValue([]); api.review.mockResolvedValue(undefined); });
+  beforeEach(() => { vi.clearAllMocks(); api.todos.mockResolvedValue([]); api.review.mockResolvedValue(undefined); api.runs.mockResolvedValue([]); });
+  it("lists runs with open proposals", async () => {
+    api.txns.mockResolvedValue([]);
+    api.runs.mockResolvedValue([{ id: "r1", kind: "quick_add", status: "ok", result_md: "Found one.", error: null, created_at: "2026-01-05T10:00:00Z",
+      proposals: [{ kind: "todo", project: "clmi", title: "Email Bob", reason: "asked", event_kind: "", when: null, due: null, body_md: "", status: "suggested", applied_txn: null, applied_id: null }] }]);
+    wrap(<InboxView />);
+    expect(await screen.findByText("Email Bob")).toBeTruthy();
+    expect(screen.getAllByRole("heading", { name: "Proposals" }).length).toBeGreaterThan(0);
+    expect(api.runs).toHaveBeenCalledWith({ openProposals: true, limit: 50 });
+  });
+  it("shows No proposals when there are none", async () => {
+    api.txns.mockResolvedValue([]);
+    wrap(<InboxView />);
+    expect(await screen.findByText("No proposals")).toBeTruthy();
+  });
   it("shows the empty state", async () => {
     api.txns.mockResolvedValue([]);
     wrap(<InboxView />);

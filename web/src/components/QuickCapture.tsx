@@ -1,7 +1,10 @@
 import { useState, type FormEvent } from "react";
+import { useMutation } from "@tanstack/react-query";
 import { api } from "../api/client";
 import type { EventStatus, Project } from "../api/types";
 import { errorText } from "./errorText";
+import { Proposals } from "./Proposals";
+import { useRun } from "./useRun";
 
 const KINDS = ["decision", "meeting", "milestone", "idea", "note", "blocker"];
 const STATUSES: EventStatus[] = ["happened", "planned", "suggested"];
@@ -33,6 +36,17 @@ export function QuickCapture({ projects, onCreated }: { projects: Project[]; onC
   const [intent, setIntent] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  const [text, setText] = useState("");
+  const [runId, setRunId] = useState<string | null>(null);
+  const parse = useMutation({
+    mutationFn: () => api.quickAdd({ text }),
+    onSuccess: r => setRunId(r.id),
+  });
+  const detail = useRun(runId);
+  const parsed = detail.data?.run;
+  const parseInFlight = parse.isPending
+    || (runId !== null && !detail.isError && (!parsed || parsed.status === "queued" || parsed.status === "running"));
 
   const isEvent = entry === "event";
   // Until the user picks one, an event defaults to the first project; a todo may have none.
@@ -86,8 +100,24 @@ export function QuickCapture({ projects, onCreated }: { projects: Project[]; onC
   }
 
   return (
-    <form className="panel-form" onSubmit={submit}>
-      <h2>Quick capture</h2>
+    <div>
+      <div className="panel-form">
+        <h2>Quick capture</h2>
+        <label htmlFor="qc-text">Describe it</label>
+        <textarea id="qc-text" rows={3} value={text} onChange={e => setText(e.target.value)} />
+        <button disabled={!text.trim() || parseInFlight} onClick={() => parse.mutate()}>Parse</button>
+        {parse.isError && <p className="form-error">{errorText(parse.error)}</p>}
+        {parseInFlight && <p className="muted">running…</p>}
+        {parsed && !parseInFlight && (
+          <>
+            {parsed.result_md && <p className="muted">{parsed.result_md}</p>}
+            {parsed.error && <p className="form-error">{parsed.error}</p>}
+            <Proposals run={parsed} onApplied={onCreated} />
+          </>
+        )}
+      </div>
+      <form className="panel-form" onSubmit={submit}>
+      <h3>Or fill the form</h3>
       <label htmlFor="qc-project">Project</label>
       <select id="qc-project" value={effectiveProject} onChange={e => setProjectId(e.target.value)}>
         {!isEvent && <option value="">(none)</option>}
@@ -126,6 +156,7 @@ export function QuickCapture({ projects, onCreated }: { projects: Project[]; onC
       {error && <p role="alert" className="form-error">{error}</p>}
       {needsProject && <p className="form-error">Create a project first</p>}
       <button type="submit" disabled={busy || needsProject}>Save</button>
-    </form>
+      </form>
+    </div>
   );
 }

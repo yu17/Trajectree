@@ -33,6 +33,7 @@
 
 .todo-marker{fill:var(--surface);stroke:var(--muted);stroke-width:1.5;cursor:pointer}
 .todo-marker:hover{stroke:var(--ink2)}
+.todo-marker.pending{stroke:var(--warn);stroke-width:2}
 .todo-marker.sel{stroke:var(--sel);stroke-width:2}
 
 .strip-cell{cursor:pointer}
@@ -45,6 +46,7 @@
 .live{fill:var(--now)}
 .chip rect{rx:7px;fill:var(--band)}
 .chip.stale rect{fill:color-mix(in srgb,var(--warn) 25%,transparent)}
+g.chip.stale{cursor:pointer}
 .chip text{fill:var(--ink2);font-size:10px}
 
 .wire{fill:none;stroke:var(--wire);stroke-width:2;stroke-opacity:.9}

@@ -1,11 +1,29 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import type { ReactElement } from "react";
+import { render as rtlRender, screen, fireEvent, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, it, expect, vi } from "vitest";
 import { QuickCapture } from "./QuickCapture";
 
-vi.mock("../api/client", () => ({ api: { createEvent: vi.fn(async (b) => ({ id: "e", ...b })), createTodo: vi.fn() } }));
+vi.mock("../api/client", () => ({ api: { createEvent: vi.fn(async (b) => ({ id: "e", ...b })), createTodo: vi.fn(), quickAdd: vi.fn(), run: vi.fn(), acceptProposal: vi.fn() } }));
 import { api } from "../api/client";
 
+const render = (ui: ReactElement) =>
+  rtlRender(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>{ui}</QueryClientProvider>);
+
 describe("QuickCapture", () => {
+  it("parses free text into proposals", async () => {
+    const base = { id: "r9", kind: "quick_add", status: "ok", result_md: "Found one.", error: null, project_id: null, created_at: "2026-01-05T10:00:00Z" };
+    const proposal = { kind: "todo", project: "clmi", title: "Email Bob", reason: "asked", event_kind: "", when: null, due: null, body_md: "", status: "suggested", applied_txn: null, applied_id: null };
+    (api.quickAdd as any).mockResolvedValue({ ...base, status: "queued", proposals: [] });
+    (api.run as any).mockResolvedValue({ run: { ...base, proposals: [proposal] }, txn_ids: [] });
+    render(<QuickCapture projects={[{ id: "p1", slug: "clmi", title: "CLMI" } as any]} onCreated={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText("Describe it"), { target: { value: "email bob tomorrow" } });
+    fireEvent.click(screen.getByRole("button", { name: "Parse" }));
+    await waitFor(() => expect(api.quickAdd).toHaveBeenCalledWith({ text: "email bob tomorrow" }));
+    expect(await screen.findByText("Email Bob")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Accept" })).toBeTruthy();
+  });
+
   it("submits an event with an ISO UTC timestamp and intent", async () => {
     const onCreated = vi.fn();
     render(<QuickCapture projects={[{ id: "p1", slug: "clmi", title: "CLMI" } as any]} onCreated={onCreated} />);

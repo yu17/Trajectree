@@ -84,6 +84,18 @@ describe("DetailsPanel", () => {
     fireEvent.click(screen.getByText("Reject"));
     expect(onReview).toHaveBeenCalledWith("txn-pending", "rejected");
   });
+  it("shows the pending badge and review buttons for a pending todo", () => {
+    const d: TimelineResponse = {
+      ...data,
+      todos: [{ id: "td5", project_id: "p1", title: "Reply", body_md: "", due: null, state: "open", priority: 0, props: {}, created_at: null, updated_at: null }],
+      pending: { event: {}, todo: { td5: "t5" }, edge: {} },
+    };
+    const onReview = vi.fn();
+    wrap(<DetailsPanel data={d} selected={{ type: "todo", id: "td5" }} onReview={onReview} onRevert={() => {}} />);
+    expect(screen.getByText("pending")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Accept" }));
+    expect(onReview).toHaveBeenCalledWith("t5", "accepted");
+  });
   it("lists a bin's sessions and copies the resume command", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });

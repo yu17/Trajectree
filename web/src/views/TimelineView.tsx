@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useCallback, useEffect, useState } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { DetailsPanel } from "../components/DetailsPanel";
 import { errorText } from "../components/errorText";
@@ -23,6 +23,16 @@ export function TimelineView() {
   const [showAllWires, setShowAllWires] = useState(false);
   const [selected, setSelected] = useState<Selection | null>(null);
   const actions = useTxnActions();
+  const [notice, setNotice] = useState<string | null>(null);
+  const summarize = useMutation({
+    mutationFn: (projectId: string) => api.summarize(projectId),
+    onSuccess: run => setNotice(`Summary regeneration queued (run ${run.id})`),
+    onError: err => setNotice(errorText(err)),
+  });
+  const { mutate: regenerate } = summarize;
+  const onChip = useCallback((projectId: string, kind: "running" | "stale") => {
+    if (kind === "stale") regenerate(projectId);
+  }, [regenerate]);
 
   const [from, to] = range;
   const q = useQuery({
@@ -47,12 +57,13 @@ export function TimelineView() {
           Show all wires
         </label>
       </div>
-      <ActionNotice conflicts={actions.conflicts} error={actions.error} onDismiss={actions.dismiss} />
+      <ActionNotice conflicts={actions.conflicts} error={actions.error ?? notice}
+        onDismiss={() => { actions.dismiss(); setNotice(null); }} />
       {q.isError && <p className="form-error">{errorText(q.error)}</p>}
       {q.data ? (
         <div className="tl-layout">
           <Timeline data={q.data} now={now} range={range} selected={selected}
-            onSelect={setSelected} showAllWires={showAllWires} />
+            onSelect={setSelected} showAllWires={showAllWires} onChip={onChip} />
           <DetailsPanel data={q.data} selected={selected}
             onReview={actions.review} onRevert={actions.revert} />
         </div>

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "./api/client";
+import { AskPanel } from "./components/AskPanel";
 import { ProjectForm } from "./components/ProjectForm";
 import { QuickCapture } from "./components/QuickCapture";
 import { InboxView, pendingTxnsQuery } from "./views/InboxView";
@@ -10,7 +11,7 @@ import { TimelineView } from "./views/TimelineView";
 import "./views/views.css";
 
 type Tab = "timeline" | "ledger" | "runs" | "inbox";
-type Panel = "project" | "capture" | null;
+type Panel = "project" | "capture" | "ask" | null;
 
 const isUnauthorized = (err: unknown) => err instanceof ApiError && err.status === 401;
 
@@ -56,6 +57,7 @@ export default function App() {
         <div className="header-actions">
           <button onClick={() => toggle("project")}>+ Project</button>
           <button onClick={() => toggle("capture")}>Quick capture</button>
+          <button onClick={() => toggle("ask")}>Ask</button>
         </div>
       </header>
       {isUnauthorized(projects.error) && (
@@ -68,6 +70,7 @@ export default function App() {
         <aside className="drawer">
           {panel === "project" && <ProjectForm onCreated={created} />}
           {panel === "capture" && <QuickCapture projects={projects.data ?? []} onCreated={created} />}
+          {panel === "ask" && <AskPanel projects={projects.data ?? []} />}
         </aside>
       )}
       <div role="tabpanel">

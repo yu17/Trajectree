@@ -87,4 +87,23 @@ describe("Timeline", () => {
     fireEvent.click(container.querySelector("rect.strip-cell")!);
     expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ type: "bin", projectId: "p1" }));
   });
+  it("clicking the stale chip reports it", () => {
+    const onChip = vi.fn();
+    const onSelect = vi.fn();
+    const d = { ...data, stale: ["p1"] };
+    const { container } = render(<Timeline data={d} now={new Date("2026-01-10T00:00:00Z")} range={[new Date("2026-01-01T00:00:00Z"), new Date("2026-02-01T00:00:00Z")]} selected={null} onSelect={onSelect} onChip={onChip} />);
+    fireEvent.click(container.querySelector("g.chip.stale")!);
+    expect(onChip).toHaveBeenCalledWith("p1", "stale");
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(container.querySelector("g.chip.stale title")!.textContent).toBe("Regenerate summary");
+  });
+  it("marks pending todos", () => {
+    const d: TimelineResponse = {
+      ...data,
+      todos: [{ id: "td1", project_id: "p1", title: "Reply", body_md: "", due: "2026-01-20T00:00:00Z", state: "open", priority: 0, props: {}, created_at: null, updated_at: null }],
+      pending: { event: {}, todo: { td1: "t9" }, edge: {} },
+    };
+    const { container } = render(<Timeline data={d} now={new Date("2026-01-10T00:00:00Z")} range={[new Date("2026-01-01T00:00:00Z"), new Date("2026-02-01T00:00:00Z")]} selected={null} onSelect={() => {}} />);
+    expect(container.querySelector("path.todo-marker.pending")).not.toBeNull();
+  });
 });
