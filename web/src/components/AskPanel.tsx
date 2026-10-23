@@ -17,16 +17,19 @@ export function AskPanel({ projects }: { projects: Project[] }) {
   const [question, setQuestion] = useState("");
   const [runId, setRunId] = useState<string | null>(null);
 
-  const slugs = projects.filter(p => !unchecked.has(p.id)).map(p => p.slug);
-  const validDates = !Number.isNaN(dayStart(from).getTime()) && !Number.isNaN(dayStart(to).getTime());
+  const active = projects.filter(p => p.status === "active");
+  const slugs = active.filter(p => !unchecked.has(p.id)).map(p => p.slug);
+  const startMs = dayStart(from).getTime();
+  const endMs = dayStart(to).getTime() + DAY; // To is inclusive: end at the start of the next day
+  const validDates = Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs;
   const pack = useQuery({
     queryKey: ["context", slugs, from, to],
-    queryFn: () => api.context(slugs, dayStart(from), dayStart(to)),
+    queryFn: () => api.context(slugs, new Date(startMs), new Date(endMs)),
     enabled: slugs.length > 0 && validDates,
   });
   const ask = useMutation({
     mutationFn: () =>
-      api.ask({ question, projects: slugs, start: dayStart(from).toISOString(), end: dayStart(to).toISOString() }),
+      api.ask({ question, projects: slugs, start: new Date(startMs).toISOString(), end: new Date(endMs).toISOString() }),
     onSuccess: r => setRunId(r.id),
   });
   const detail = useRun(runId);
@@ -44,7 +47,7 @@ export function AskPanel({ projects }: { projects: Project[] }) {
     <div className="panel-form">
       <h2>Ask</h2>
       <div>
-        {projects.map(p => (
+        {active.map(p => (
           <label key={p.id} className="check">
             <input type="checkbox" checked={!unchecked.has(p.id)} onChange={() => toggle(p.id)} /> {p.title}
           </label>
@@ -58,7 +61,7 @@ export function AskPanel({ projects }: { projects: Project[] }) {
       <textarea id="ask-q" rows={3} value={question} onChange={e => setQuestion(e.target.value)} />
       {pack.data && <p className="muted">pack ≈ {pack.data.tokens_est} tokens</p>}
       {pack.isError && <p className="form-error">{errorText(pack.error)}</p>}
-      <button disabled={!question.trim() || inFlight} onClick={() => ask.mutate()}>Ask</button>
+      <button disabled={!question.trim() || inFlight || slugs.length === 0 || !validDates} onClick={() => ask.mutate()}>Ask</button>
       {ask.isError && <p className="form-error">{errorText(ask.error)}</p>}
       {detail.isError && <p className="form-error">{errorText(detail.error)}</p>}
       {inFlight && <p className="muted">running…</p>}

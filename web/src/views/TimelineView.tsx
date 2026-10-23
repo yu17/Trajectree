@@ -29,10 +29,10 @@ export function TimelineView() {
     onSuccess: run => setNotice(`Summary regeneration queued (run ${run.id})`),
     onError: err => setNotice(errorText(err)),
   });
-  const { mutate: regenerate } = summarize;
+  const { mutate: regenerate, isPending: regenerating } = summarize;
   const onChip = useCallback((projectId: string, kind: "running" | "stale") => {
-    if (kind === "stale") regenerate(projectId);
-  }, [regenerate]);
+    if (kind === "stale" && !regenerating) regenerate(projectId);
+  }, [regenerate, regenerating]);
 
   const [from, to] = range;
   const q = useQuery({

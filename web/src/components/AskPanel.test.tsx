@@ -21,4 +21,29 @@ describe("AskPanel", () => {
     await waitFor(() => expect(api.ask).toHaveBeenCalledWith(expect.objectContaining({ question: "What is blocked?", projects: ["clmi"] })));
     expect(await screen.findByText("Blocked on data.", {}, { timeout: 4000 })).toBeTruthy();
   });
+
+  it("offers only active projects and disables Ask when none is checked", async () => {
+    api.context.mockResolvedValue({ markdown: "", tokens_est: 10, dropped: [], projects: [] });
+    api.ask.mockClear();
+    const withPaused = [...projects, { id: "p3", slug: "old", title: "Old", kind: "research", status: "paused" }] as any;
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AskPanel projects={withPaused} /></QueryClientProvider>);
+    expect(screen.queryByLabelText("Old")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Question"), { target: { value: "Q?" } });
+    expect((screen.getByRole("button", { name: "Ask" }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByLabelText("CLMI"));
+    fireEvent.click(screen.getByLabelText("ccx"));
+    expect((screen.getByRole("button", { name: "Ask" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(api.ask).not.toHaveBeenCalled();
+  });
+
+  it("excludes paused projects from the ask call", async () => {
+    api.context.mockResolvedValue({ markdown: "", tokens_est: 10, dropped: [], projects: [] });
+    api.ask.mockResolvedValue(run("queued").run);
+    api.run.mockResolvedValue(run("ok"));
+    const withPaused = [...projects, { id: "p3", slug: "old", title: "Old", kind: "research", status: "paused" }] as any;
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AskPanel projects={withPaused} /></QueryClientProvider>);
+    fireEvent.change(screen.getByLabelText("Question"), { target: { value: "Q?" } });
+    fireEvent.click(screen.getByRole("button", { name: "Ask" }));
+    await waitFor(() => expect(api.ask).toHaveBeenCalledWith(expect.objectContaining({ projects: ["clmi", "ccx"] })));
+  });
 });
