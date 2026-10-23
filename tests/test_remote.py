@@ -45,6 +45,8 @@ def test_parse_remote_urls():
     assert ssh.kind == "gitlab" and ssh.path == "g/sub/r" and ssh.web_url == "https://host/g/sub/r"
     ported = parse_remote_url("https://gitlab.lab:8443/g/r")
     assert ported.api_base == "https://gitlab.lab:8443/api/v4" and ported.web_url == "https://gitlab.lab:8443/g/r"
+    assert parse_remote_url("https://h:abc/x") is None and normalize_remote("https://h:abc/x") is None
+    assert parse_remote_url("https://[bad/x") is None
     assert parse_remote_url("file:///tmp/x") is None
     assert parse_remote_url("/tmp/x") is None
     assert parse_remote_url("nonsense") is None

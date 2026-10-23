@@ -176,16 +176,14 @@ def test_ingest_polls_discovered_remote_only_after_accept(ledger, human, setting
 
 
 def test_rejected_discovery_is_not_suggested_again(ledger, human, settings, tmp_path):
-    _discover_setup(ledger, human, tmp_path)
+    p = _discover_setup(ledger, human, tmp_path)
     settings.remote_every_m = 0
     run_ingest(ledger, settings, now=datetime(2026, 10, 22, 12, tzinfo=UTC))
     txn = [t for t in ledger.list_txns(review="pending") if t.intent.startswith("discovered git remote")][0]
     ledger.set_review(txn.id, "rejected", human)
     run_ingest(ledger, settings, now=datetime(2026, 10, 22, 13, tzinfo=UTC))
     assert [t for t in ledger.list_txns(review="pending") if t.intent.startswith("discovered git remote")] == []
-    assert get_state(ledger.conn, "remote:suggested") == {
-        next(iter(get_state(ledger.conn, "remote:suggested"))): ["https://evil.example/a/b"]
-    }
+    assert get_state(ledger.conn, "remote:suggested") == {p.id: ["https://evil.example/a/b"]}
 
 
 def test_ingest_remote_phase_runs_when_due(ledger, human, settings, monkeypatch):

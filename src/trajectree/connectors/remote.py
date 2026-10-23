@@ -81,12 +81,16 @@ def parse_remote_url(url: str) -> RemoteRepo | None:
     """
     url = url.strip()
     if "://" in url:
-        parsed = urlparse(url)
-        if parsed.scheme not in ("http", "https", "ssh", "git"):
+        try:  # urlparse and .port raise ValueError on a malformed port or bracketed host
+            parsed = urlparse(url)
+            if parsed.scheme not in ("http", "https", "ssh", "git"):
+                return None
+            host, path = parsed.hostname or "", parsed.path
+            port = parsed.port
+        except ValueError:
             return None
-        host, path = parsed.hostname or "", parsed.path
-        if parsed.scheme in ("http", "https") and parsed.port:
-            host = f"{host}:{parsed.port}"
+        if parsed.scheme in ("http", "https") and port:
+            host = f"{host}:{port}"
     else:
         match = _SCP.match(url)
         if match is None:
