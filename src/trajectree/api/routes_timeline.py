@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 from fastapi import APIRouter, Depends, Query
 from pydantic import AwareDatetime, BaseModel
 
@@ -12,7 +14,7 @@ from trajectree.models import Edge, Event, Project, StripBin, Todo
 from trajectree.repo import edges, events, projects, todos
 from trajectree.repo.review import pending_txns
 from trajectree.repo.sessions import live_sessions
-from trajectree.repo.signals import strip_bins
+from trajectree.repo.signals import stale_projects, strip_bins
 from trajectree.repo.state import get_state
 from trajectree.timeutil import utcnow
 
@@ -62,15 +64,19 @@ def timeline(
             for kind, got in returned.items()
         }
         shown = {p.id for p in project_rows}
+        now = utcnow()
         strip = strip_bins(conn, project_ids=ids, t_from=t_from, t_to=t_to)
         live = live_sessions(
             conn,
             scan_live=get_state(conn, "live_sessions"),
             shown=shown,
-            now=utcnow(),
+            now=now,
             window_s=settings.live_window_s,
         )
-        stale = [pid for pid in (get_state(conn, "stale_projects") or []) if pid in shown]
+        # Computed live so a new summary clears the flag at once; the ingest job's
+        # `stale_projects` state only feeds its report.
+        settled_before = now - timedelta(hours=settings.stale_settle_h)
+        stale = [pid for pid in stale_projects(conn, settled_before=settled_before) if pid in shown]
     return TimelineResponse(
         projects=project_rows,
         events=event_rows,
