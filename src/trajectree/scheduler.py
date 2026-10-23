@@ -37,6 +37,7 @@ from trajectree.repo.state import get_state, set_state
 from trajectree.runner.kinds import RoutineRequest
 from trajectree.runner.routines import MAX_ATTEMPTS, RETRY_BACKOFF_S
 from trajectree.runner.service import RunService
+from trajectree.runner.spec import RunsPaused
 from trajectree.timeutil import to_db, utcnow
 
 __all__ = [
@@ -167,18 +168,36 @@ class Scheduler:
                     routine = get_routine(conn, run.routine_id)
                 if routine is not None:
                     name = routine.name
-                # Same projects, runner and model as the failed attempt.
-                request = RoutineRequest.model_validate(
-                    {**run.props.get("request", {}), "routine": run.routine_id,
-                     "attempt": run.attempt + 1, "reason": "retry"}
-                )
-                retry = self.runs.enqueue(request)
+                    if not routine.enabled:
+                        self._abandon(run.id, "routine disabled")
+                        continue
+                try:
+                    # Same projects, runner and model as the failed attempt.
+                    request = RoutineRequest.model_validate(
+                        {**run.props.get("request", {}), "routine": run.routine_id,
+                         "attempt": run.attempt + 1, "reason": "retry"}
+                    )
+                    retry = self.runs.enqueue(request)
+                except RunsPaused:
+                    raise  # paused: try again on a later tick
+                except Exception as exc:
+                    # deleted routine (NotFound), removed project (UnknownProject), invalid request:
+                    # retrying every tick would never succeed
+                    self._abandon(run.id, f"{type(exc).__name__}: {exc}"[:200])
+                    raise
                 with self.ledger.locked() as conn:
                     current = get_run(conn, run.id) or run
                     update_run(conn, run.id, props={**current.props, "retried": retry.id})
                 report.retried.append(name)
             except Exception as exc:
                 self._error(report, run.routine_id, name, exc)
+
+    def _abandon(self, run_id: str, note: str) -> None:
+        """Take a failed run off the retry list for good, saying why in `props.retry_note`."""
+        with self.ledger.locked() as conn:
+            current = get_run(conn, run_id)
+            if current is not None:
+                update_run(conn, run_id, props={**current.props, "retried": "abandoned", "retry_note": note})
 
     def _fire_session_end(self, now: datetime, report: SchedulerReport) -> None:
         with self.ledger.locked() as conn:

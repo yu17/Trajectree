@@ -92,7 +92,7 @@ def _fail_infra(svc, ledger, run_id):
 
 
 def test_retry_backoff_stops_after_three(ledger, settings, logged_in):
-    rid = _routine(ledger, trigger="@daily", enabled=False).id
+    rid = _routine(ledger, trigger="@daily").id  # next cron fire is midnight: only retries run
     clock = [T0]
     svc = _svc(ledger, settings, clock=lambda: clock[0])
     sched = Scheduler(ledger, settings, svc, now=lambda: clock[0])
@@ -119,7 +119,7 @@ def test_retry_backoff_stops_after_three(ledger, settings, logged_in):
 
 def test_retry_keeps_the_original_projects(ledger, human, settings, logged_in):
     create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
-    rid = _routine(ledger, trigger="@daily", enabled=False).id
+    rid = _routine(ledger, trigger="@daily").id
     svc = _svc(ledger, settings)
     first = svc.enqueue(RoutineRequest(routine="rev", projects=["a"], reason="session_end"))
     _fail_infra(svc, ledger, first.id)
@@ -128,8 +128,59 @@ def test_retry_keeps_the_original_projects(ledger, human, settings, logged_in):
     assert retry.props["request"]["projects"] == ["a"] and retry.attempt == 2
 
 
+def test_retry_of_disabled_routine_is_abandoned(ledger, settings, logged_in):
+    rid = _routine(ledger, trigger="@daily").id
+    svc = _svc(ledger, settings)
+    first = svc.enqueue(RoutineRequest(routine="rev"))
+    _fail_infra(svc, ledger, first.id)
+    ledger.conn.execute("UPDATE routine SET enabled = 0 WHERE id = ?", (rid,))
+    sched = Scheduler(ledger, settings, svc, now=lambda: T0 + timedelta(hours=1))
+    rep = sched.tick()
+    assert rep.retried == [] and rep.errors == []
+    props = get_run(ledger.conn, first.id).props
+    assert (props["retried"], props["retry_note"]) == ("abandoned", "routine disabled")
+    assert len(list_runs(ledger.conn, routine_id=rid)) == 1
+    from trajectree.repo.runs import failed_retry_candidates
+
+    assert failed_retry_candidates(ledger.conn, now=T0 + timedelta(hours=1)) == []
+
+
+def test_retry_whose_enqueue_fails_is_abandoned_not_repeated(ledger, human, settings, logged_in):
+    p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    rid = _routine(ledger, trigger="@daily").id
+    svc = _svc(ledger, settings)
+    first = svc.enqueue(RoutineRequest(routine="rev", projects=["a"]))
+    _fail_infra(svc, ledger, first.id)
+    ledger.conn.execute("UPDATE project SET slug = 'gone' WHERE id = ?", (p.id,))  # `a` no longer resolves
+    clock = [T0 + timedelta(hours=1)]
+    sched = Scheduler(ledger, settings, svc, now=lambda: clock[0])
+    rep = sched.tick()
+    assert rep.retried == [] and len(rep.errors) == 1 and rep.errors[0].startswith("rev: UnknownProject")
+    props = get_run(ledger.conn, first.id).props
+    assert props["retried"] == "abandoned" and props["retry_note"].startswith("UnknownProject: ")
+    assert len(props["retry_note"]) <= 200
+    clock[0] += timedelta(minutes=1)
+    assert sched.tick().errors == []   # not tried again
+    assert len(list_runs(ledger.conn, routine_id=rid)) == 1
+
+
+def test_retry_while_paused_is_kept_for_later(ledger, settings, logged_in):
+    from trajectree.models import Caps
+    from trajectree.repo.caps import set_caps
+
+    rid = _routine(ledger, trigger="@daily").id
+    svc = _svc(ledger, settings)
+    first = svc.enqueue(RoutineRequest(routine="rev"))
+    _fail_infra(svc, ledger, first.id)
+    set_caps(ledger.conn, Caps(paused=True))
+    sched = Scheduler(ledger, settings, svc, now=lambda: T0 + timedelta(hours=1))
+    assert sched.tick().retried == [] and "retried" not in get_run(ledger.conn, first.id).props
+    set_caps(ledger.conn, Caps(paused=False))
+    assert sched.tick().retried == ["rev"] and len(list_runs(ledger.conn, routine_id=rid)) == 2
+
+
 def test_content_failure_not_retried(ledger, settings, logged_in):
-    rid = _routine(ledger, trigger="@daily", enabled=False).id
+    rid = _routine(ledger, trigger="@daily").id
     svc = _svc(ledger, settings)
     failed = svc.enqueue(RoutineRequest(routine="rev"))
     with ledger.locked() as conn:
