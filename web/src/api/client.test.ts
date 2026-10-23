@@ -32,4 +32,12 @@ describe("api client", () => {
     expect(call(5)).toEqual(["/api/routines/rev/runs?limit=5", "GET", undefined]);
     expect(call(6)).toEqual(["/api/scheduler", "GET", undefined]);
   });
+  it("posts a session summary request with the id encoded", async () => {
+    const f = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({})));
+    vi.stubGlobal("fetch", f);
+    await api.summarizeSession("a/b c", { runner: "codex" });
+    await api.summarizeSession("s1");
+    expect([String(f.mock.calls[0][0]), f.mock.calls[0][1]?.method, f.mock.calls[0][1]?.body]).toEqual(["/api/sessions/a%2Fb%20c/summarize", "POST", JSON.stringify({ runner: "codex" })]);
+    expect([String(f.mock.calls[1][0]), f.mock.calls[1][1]?.body]).toEqual(["/api/sessions/s1/summarize", "{}"]);
+  });
 });

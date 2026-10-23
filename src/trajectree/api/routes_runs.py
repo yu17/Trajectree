@@ -14,7 +14,13 @@ from trajectree.repo.caps import get_caps, set_caps
 from trajectree.repo.routines import resolve_routine_ref, routine_names
 from trajectree.repo.runs import get_run, list_runs, spent_usd, txn_ids_for_run, usage_by, usage_days
 from trajectree.runner.credentials import RunnerStatus, runner_status, store_oauth_token, sync_backends
-from trajectree.runner.kinds import AskRequest, QuickAddRequest, RunRequest, SummarizeRequest
+from trajectree.runner.kinds import (
+    AskRequest,
+    QuickAddRequest,
+    RunRequest,
+    SummarizeRequest,
+    SummarizeSessionRequest,
+)
 from trajectree.runner.service import RunService
 
 router = APIRouter()
@@ -58,7 +64,13 @@ def summarize(project_id: str, request: Request, body: SummarizeBody | None = No
     return _enqueue(request, SummarizeRequest(project=project_id, runner=body.runner, model=body.model))
 
 
-@router.post("/ask", response_model=Run, status_code=202)
+@router.post("/sessions/{session_id}/summarize", response_model=Run, status_code=202)
+def summarize_session(session_id: str, request: Request, body: SummarizeBody | None = None):
+    body = body or SummarizeBody()
+    return _enqueue(request, SummarizeSessionRequest(session_id=session_id, runner=body.runner, model=body.model))
+
+
+@router.post("/ask",response_model=Run, status_code=202)
 def ask(body: AskRequest, request: Request):
     return _enqueue(request, body)
 

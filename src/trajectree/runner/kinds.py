@@ -16,13 +16,16 @@ from pydantic import AwareDatetime, BaseModel, Field
 
 from trajectree.auth.scopes import Scope
 from trajectree.config import Settings
+from trajectree.connectors.claude_sessions import digest_transcript
 from trajectree.connectors.paths import to_local
+from trajectree.context.digest import activity_digest
 from trajectree.context.pack import build_context_pack
 from trajectree.models import RUNNER_PATTERN, Delivery, Project, Run, RunKind
 from trajectree.repo import NotFound
 from trajectree.repo.projects import get_project_by_slug, list_projects, resolve_project_ref
 from trajectree.repo.resources import list_resources
 from trajectree.repo.routines import resolve_routine_ref
+from trajectree.repo.signals import get_signal_by_key
 from trajectree.runner.spec import ToolPolicy
 
 
@@ -58,10 +61,17 @@ class RoutineRequest(BaseModel):
     model: str | None = None
 
 
-RunRequest = SummarizeRequest | AskRequest | QuickAddRequest | RoutineRequest
+class SummarizeSessionRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=128)
+    runner: str | None = None
+    model: str | None = None
+
+
+RunRequest = SummarizeRequest | SummarizeSessionRequest | AskRequest | QuickAddRequest | RoutineRequest
 
 KIND_OF: dict[type[BaseModel], RunKind] = {
     SummarizeRequest: "summarize",
+    SummarizeSessionRequest: "summarize_session",
     AskRequest: "ask",
     QuickAddRequest: "quick_add",
     RoutineRequest: "routine",
@@ -167,6 +177,8 @@ def plan_run(
     """Turn a run request into a plan. The caller holds the lock and has seeded the prompts."""
     if isinstance(request, SummarizeRequest):
         return _plan_summarize(conn, settings, run, request, now)
+    if isinstance(request, SummarizeSessionRequest):
+        return _plan_summarize_session(conn, settings, run, request, now)
     if isinstance(request, AskRequest):
         return _plan_ask(conn, settings, run, request, now)
     if isinstance(request, RoutineRequest):
@@ -189,6 +201,7 @@ def _plan_summarize(
             "project_slug": project.slug,
             "previous_summary": project.summary_md or "_none yet_",
             "context_pack": pack.markdown,
+            "activity_digest": activity_digest(conn, project_ids=[project.id], since=since, until=now),
             "since": _day(since),
             "today": _day(now),
         },
@@ -232,6 +245,42 @@ def _read_only_plan(settings: Settings, run: Run, prompt: str) -> RunPlan:
         json_schema=PROPOSAL_SCHEMA,
         scope=Scope(write=False),
     )
+
+
+def _plan_summarize_session(
+    conn: apsw.Connection, settings: Settings, run: Run, request: SummarizeSessionRequest, now: datetime
+) -> RunPlan:
+    signal = get_signal_by_key(conn, f"claude_session:{request.session_id}")
+    if signal is None:
+        raise NotFound(f"unknown session {request.session_id}")
+    transcript_path = signal.payload.get("transcript_path")
+    if not isinstance(transcript_path, str) or not transcript_path:
+        raise NotFound("transcript unreadable")
+    try:
+        digest = digest_transcript(Path(transcript_path), max_chars=settings.digest_max_chars)
+    except OSError:
+        raise NotFound("transcript unreadable") from None
+    project = resolve_project_ref(conn, signal.project_id)
+    pack = build_context_pack(
+        conn,
+        project_ids=[project.id],
+        t_from=now - timedelta(days=30),
+        t_to=now + timedelta(days=30),
+        token_budget=2000,
+    )
+    prompt = render_prompt(
+        load_prompt(settings, "summarize_session"),
+        {
+            "session_id": request.session_id,
+            "session_title": str(signal.payload.get("title") or request.session_id[:8]),
+            "project_slug": project.slug,
+            "project_title": project.title,
+            "transcript_digest": digest or "_empty transcript_",
+            "context_pack": pack.markdown,
+            "today": _day(now),
+        },
+    )
+    return _read_only_plan(settings, run, prompt)
 
 
 def _plan_ask(

@@ -6,6 +6,7 @@ look as expected is skipped, never raised on. Files are only ever opened for rea
 """
 
 import json
+from collections import Counter, deque
 from collections.abc import Iterable, Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -143,6 +144,73 @@ def parse_lines(lines: Iterable[bytes], acc: SessionSummary) -> SessionSummary:
         if isinstance(rec, dict):
             _apply(out, rec)
     return out
+
+
+def _text_blocks(content: Any) -> list[str]:
+    """The non-empty text of a message `content` (a string, or a list of typed blocks)."""
+    if isinstance(content, str):
+        return [content] if content.strip() else []
+    blocks = content if isinstance(content, list) else []
+    texts = [_str(_dict(b).get("text")) for b in blocks if _dict(b).get("type") == "text"]
+    return [t for t in texts if t is not None and t.strip()]
+
+
+def digest_transcript(path: Path, *, max_chars: int = 12000) -> str:
+    """A compact Markdown digest of a transcript: prompts, tools used, assistant text, last message.
+
+    Streams the file once and skips lines it cannot read; `OSError` from opening or reading
+    the file propagates. The raw JSONL never leaves this function.
+    """
+    prompts: list[str] = []
+    tools: Counter[str] = Counter()
+    head: list[str] = []
+    tail: deque[str] = deque(maxlen=10)
+    texts = 0
+    last = ""
+    with path.open("rb") as f:
+        for line in f:
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(rec, dict):
+                continue
+            content = _dict(rec.get("message")).get("content")
+            if rec.get("type") == "user" and _is_prompt(rec):
+                prompts.extend(" ".join(t.split())[:300] for t in _text_blocks(content))
+            elif rec.get("type") == "assistant":
+                for block in content if isinstance(content, list) else []:
+                    block = _dict(block)
+                    if block.get("type") == "tool_use":
+                        tools[_str(block.get("name")) or "unknown"] += 1
+                for text in _text_blocks(content):
+                    texts += 1
+                    last = text.strip()
+                    short = " ".join(text.split())[:300]
+                    if len(head) < 10:
+                        head.append(short)
+                    else:
+                        tail.append(short)
+    sections: list[str] = []
+    if prompts:
+        sections.append("## Prompts\n" + "\n".join(f"{i}. {p}" for i, p in enumerate(prompts, 1)))
+    if tools:
+        ranked = sorted(tools.items(), key=lambda kv: (-kv[1], kv[0]))
+        sections.append("## Tools used\n" + "\n".join(f"- {name} × {n}" for name, n in ranked))
+    if head:
+        skipped = texts - len(head) - len(tail)
+        lines = [f"- {t}" for t in head]
+        if skipped > 0:
+            lines.append(f"(… {skipped} more)")
+        lines.extend(f"- {t}" for t in tail)
+        sections.append("## Assistant\n" + "\n".join(lines))
+    if last:
+        sections.append("## Final message\n" + last[:1500])
+    digest = "\n\n".join(sections)
+    if len(digest) <= max_chars:
+        return digest
+    marker = "(digest truncated)"
+    return digest[: max(0, max_chars - len(marker) - 1)] + "\n" + marker
 
 
 def transcript_roots(settings: Settings) -> list[tuple[str, Path]]:

@@ -26,6 +26,7 @@ class Settings(BaseModel):
     tz: str = "UTC"
     scheduler_interval_s: int = 30
     scheduler_grace_s: int = 3600
+    digest_max_chars: int = 12000
 
     @property
     def cfg_root(self) -> Path:
@@ -96,6 +97,7 @@ _INT_ENV = {
     "TRAJECTREE_SCAN_SINCE_DAYS": "scan_since_days",
     "TRAJECTREE_SCHEDULER_EVERY": "scheduler_interval_s",
     "TRAJECTREE_SCHEDULER_GRACE_S": "scheduler_grace_s",
+    "TRAJECTREE_DIGEST_MAX_CHARS": "digest_max_chars",
 }
 
 

@@ -9,6 +9,10 @@ class UnknownProject(Exception):
     """A project name given by a caller matches no project; see `projects.unknown_project`."""
 
 
+class UnknownSession(Exception):
+    """A session id given by a caller matches no recorded session signal."""
+
+
 class DuplicateSlug(Exception):
     """A project with this slug already exists."""
 

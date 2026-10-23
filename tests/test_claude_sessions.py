@@ -160,3 +160,40 @@ def test_large_transcript_streams_and_resumes(ledger, human, settings, tmp_path)
     assert r.files_read == 1
     assert list_signals(ledger.conn, project_ids=[p.id])[0].payload["prompts"] == 20002
     assert get_state(ledger.conn, f"scan:{path.absolute()}")["offset"] == path.stat().st_size
+
+
+def rec_assistant_text(ts, text, cwd=CWD, sid=SID):
+    return {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": text}]},
+            "timestamp": ts, "cwd": cwd, "sessionId": sid}
+
+def rec_assistant_tool(ts, name, cwd=CWD, sid=SID):
+    return {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": name, "input": {}}]},
+            "timestamp": ts, "cwd": cwd, "sessionId": sid}
+
+def test_digest_transcript_sections_and_cap(tmp_path):
+    from trajectree.connectors.claude_sessions import digest_transcript
+    path = write_transcript(tmp_path, CWD, SID, [rec_user("2026-01-05T10:00:00.000Z", text="fix the encoder"), rec_assistant_tool("2026-01-05T10:01:00.000Z", "Read"), rec_assistant_text("2026-01-05T10:02:00.000Z", "Froze the encoder.")])
+    d = digest_transcript(path)
+    assert "## Prompts\n1. fix the encoder" in d and "Read × 1" in d and d.rstrip().endswith("Froze the encoder.")
+    assert digest_transcript(path, max_chars=60).endswith("(digest truncated)")
+
+def test_digest_transcript_skips_noise_and_keeps_first_and_last_assistant(tmp_path):
+    from trajectree.connectors.claude_sessions import digest_transcript
+    recs = [rec_user("2026-01-05T10:00:00.000Z", text="go"), rec_user("2026-01-05T10:00:01.000Z", tool_result=True), rec_user("2026-01-05T10:00:02.000Z", text="meta", meta=True)]
+    recs += [rec_assistant_text(f"2026-01-05T10:{i:02d}:00.000Z", f"step {i} " + "x" * 400) for i in range(1, 26)]
+    recs += [rec_assistant_tool("2026-01-05T11:00:00.000Z", "Bash"), rec_assistant_tool("2026-01-05T11:01:00.000Z", "Bash"), rec_assistant_tool("2026-01-05T11:02:00.000Z", "Read")]
+    path = write_transcript(tmp_path, CWD, SID, recs)
+    with path.open("ab") as f:
+        f.write(b"not json\n[1,2]\n")
+    d = digest_transcript(path, max_chars=50000)
+    assert "1. go" in d and "meta" not in d and "tool_result" not in d
+    assert d.index("Bash × 2") < d.index("Read × 1")
+    assert "step 1 " in d and "step 10 " in d and "step 11 " not in d and "step 15 " not in d and "step 16 " in d and "step 25 " in d
+    assert "x" * 301 not in d.split("## Final message")[0]
+    assert "## Final message\nstep 25 " in d
+
+def test_digest_transcript_missing_file_raises(tmp_path):
+    from trajectree.connectors.claude_sessions import digest_transcript
+    import pytest
+    with pytest.raises(OSError):
+        digest_transcript(tmp_path / "nope.jsonl")

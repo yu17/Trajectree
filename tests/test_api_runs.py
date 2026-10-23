@@ -124,3 +124,19 @@ def test_summarize_run_end_to_end_over_http(ledger, human, settings, monkeypatch
     finally:
         server.should_exit = True
         thread.join(10)
+
+
+def test_summarize_session_endpoint(client, ledger, tmp_path):
+    from datetime import datetime, timezone
+    from trajectree.models import SignalIn
+    from trajectree.repo.signals import upsert_signals
+    p = mk_project(client)
+    path = tmp_path / "t.jsonl"
+    path.write_text(json.dumps({"type": "user", "message": {"role": "user", "content": "hello"}}) + "\n")
+    with ledger.locked() as conn:
+        upsert_signals(conn, [SignalIn(project_id=p["id"], kind="session", t_start=datetime(2026, 1, 5, tzinfo=timezone.utc),
+                                       dedupe_key="claude_session:sess1", payload={"session_id": "sess1", "transcript_path": str(path)})])
+    r = client.post("/api/sessions/sess1/summarize", json={})
+    assert r.status_code == 202 and r.json()["kind"] == "summarize_session" and r.json()["project_id"] == p["id"]
+    bad = client.post("/api/sessions/nope/summarize")
+    assert bad.status_code == 422 and "unknown session 'nope'" in bad.json()["detail"]

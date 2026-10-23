@@ -33,6 +33,12 @@ def test_cli_summarize_no_wait_and_runs_listing(app, client, anon, capsys):
     line = capsys.readouterr().out.splitlines()[0]
     assert "summarize" in line and line.endswith("clmi")
 
+def test_cli_summarize_session_posts_and_validates_args(app, client, anon, capsys):
+    assert cli.main(["summarize", "--session", "nope", "--no-wait"], client=anon, env=env_for(app)) == 1   # 422 unknown session
+    assert "unknown session 'nope'" in capsys.readouterr().err
+    assert cli.main(["summarize", "clmi", "--session", "x"], client=anon, env=env_for(app)) == 2
+    assert cli.main(["summarize"], client=anon, env=env_for(app)) == 2
+
 def test_cli_caps_usage_login_and_status(app, anon, capsys):
     assert cli.main(["caps", "--usd-per-day", "2", "--pause"], client=anon, env=env_for(app)) == 0
     assert capsys.readouterr().out.strip() == "caps: run $1.0 · day $2.0 · timeout 600s · paused yes"

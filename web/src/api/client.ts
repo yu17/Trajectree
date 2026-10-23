@@ -122,6 +122,8 @@ export const api = {
   run: (id: string) => request<RunDetail>("GET", `/api/runs/${encodeURIComponent(id)}`),
   summarize: (projectId: string, body: { runner?: string; model?: string } = {}) =>
     request<Run>("POST", `/api/projects/${encodeURIComponent(projectId)}/summarize`, body),
+  summarizeSession: (sessionId: string, body: { runner?: string; model?: string } = {}) =>
+    request<Run>("POST", `/api/sessions/${encodeURIComponent(sessionId)}/summarize`, body),
   ask: (body: AskRequest) => request<Run>("POST", "/api/ask", body),
   quickAdd: (body: QuickAddRequest) => request<Run>("POST", "/api/quick-add", body),
   acceptProposal: (runId: string, index: number) =>

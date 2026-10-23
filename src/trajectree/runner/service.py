@@ -21,10 +21,11 @@ from trajectree.auth.tokens import mint_token, revoke_token
 from trajectree.config import Settings
 from trajectree.db.ledger import Ledger
 from trajectree.models import SLOT_OF, Actor, EventIn, Proposal, Run, RunSlot, TodoIn
-from trajectree.repo import NotFound, UnknownProject, events, todos
+from trajectree.repo import NotFound, UnknownProject, UnknownSession, events, todos
 from trajectree.repo.caps import get_caps
 from trajectree.repo.projects import get_project_by_slug, resolve_project_ref
 from trajectree.repo.routines import resolve_routine_ref
+from trajectree.repo.signals import get_signal_by_key
 from trajectree.repo.runs import (
     create_run,
     find_active_summarize,
@@ -43,6 +44,7 @@ from trajectree.runner.kinds import (
     RunPlan,
     RunRequest,
     SummarizeRequest,
+    SummarizeSessionRequest,
     ensure_prompts,
     plan_run,
     request_from_props,
@@ -110,6 +112,11 @@ class RunService:
                 active = find_active_summarize(conn, project_id)
                 if active is not None:
                     return active  # one summary per project in flight
+            elif isinstance(request, SummarizeSessionRequest):
+                session = get_signal_by_key(conn, f"claude_session:{request.session_id}")
+                if session is None:
+                    raise UnknownSession(f"unknown session '{request.session_id}'")
+                project_id = session.project_id
             elif isinstance(request, (AskRequest, RoutineRequest)):
                 for ref in request.projects or []:
                     resolve_project_ref(conn, ref)

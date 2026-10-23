@@ -29,7 +29,7 @@ from trajectree.db.ledger import AlreadyReverted, Ledger, RevertConflict
 from trajectree.ingest.job import IngestBusy
 from trajectree.ingest.scheduler import ingest_loop
 from trajectree.mcpserver.server import build_mcp
-from trajectree.repo import DuplicateEdge, DuplicateRoutine, DuplicateSlug, InvalidRange, NotFound, UnknownProject
+from trajectree.repo import DuplicateEdge, DuplicateRoutine, DuplicateSlug, InvalidRange, NotFound, UnknownProject, UnknownSession
 from trajectree.runner.seeds import ensure_inbox_project, ensure_seed_routines
 from trajectree.runner.service import RunService
 from trajectree.runner.spec import AlreadyApplied, RunsPaused
@@ -117,6 +117,7 @@ def create_app(settings: Settings, *, ledger: Ledger | None = None) -> FastAPI:
     app.add_exception_handler(InvalidRange, _error_handler(422))
     app.add_exception_handler(IngestBusy, _error_handler(409))
     app.add_exception_handler(UnknownProject, _error_handler(422))
+    app.add_exception_handler(UnknownSession, _error_handler(422))
     app.add_exception_handler(RunsPaused, lambda r, e: JSONResponse({"detail": "runs are paused"}, status_code=409))
     app.add_exception_handler(
         AlreadyApplied, lambda r, e: JSONResponse({"detail": str(e)}, status_code=409)

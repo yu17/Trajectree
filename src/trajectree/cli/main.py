@@ -98,8 +98,9 @@ def _parser() -> argparse.ArgumentParser:
         sp.add_argument("--model")
         sp.add_argument("--no-wait", action="store_true")
 
-    summ = sub.add_parser("summarize", help="summarize a project with the runner")
-    summ.add_argument("project")
+    summ = sub.add_parser("summarize", help="summarize a project, or one session, with the runner")
+    summ.add_argument("project", nargs="?")
+    summ.add_argument("--session", help="summarize this Claude Code session id instead of a project")
     run_opts(summ)
 
     ask = sub.add_parser("ask", help="ask a question over project context")
@@ -277,6 +278,11 @@ def _launch(api: _Api, args: argparse.Namespace, path: str, body: dict[str, Any]
 
 
 def _cmd_summarize(args: argparse.Namespace, api: _Api) -> None:
+    if bool(args.session) == bool(args.project):
+        raise _Fail("give either a project or --session <id>", 2)
+    if args.session:
+        _launch(api, args, f"/api/sessions/{quote(args.session, safe='')}/summarize", {})
+        return
     pid = api.project_id(args.project)
     _launch(api, args, f"/api/projects/{pid}/summarize", {})
 
