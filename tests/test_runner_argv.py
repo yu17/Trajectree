@@ -74,3 +74,8 @@ def test_run_env_missing_credentials(settings):
 
 def test_mask():
     assert mask(["--mcp-config", '{"Authorization": "Bearer trj_s"}', "x"], ["trj_s", ""]) == ["--mcp-config", '{"Authorization": "Bearer ***"}', "x"]
+
+def test_mcp_config_path_is_absolute(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    argv = claude_argv(spec(), binary="claude", mcp_config_path=Path("runs/x/mcp.json"))
+    assert argv[argv.index("--mcp-config") + 1].startswith("/")

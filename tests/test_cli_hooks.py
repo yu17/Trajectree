@@ -116,3 +116,16 @@ def test_uninstall_without_our_hooks_leaves_file_alone(app, anon, tmp_path):
     env = {**env_for(app), "HOME": str(tmp_path)}
     assert cli.main(["hooks", "uninstall", "--settings-file", str(f)], client=anon, env=env) == 0
     assert f.read_bytes() == before and not (tmp_path / "settings.json.trajectree.bak").exists()
+
+def test_install_follows_symlink_and_rotates_legacy_tokens(app, client, anon, tmp_path, capsys):
+    real = tmp_path / "real.json"
+    real.write_text("{}")
+    link = tmp_path / "settings.json"
+    link.symlink_to(real)
+    legacy = client.post("/api/tokens", json={"label": "hooks", "scope": {"projects": [], "tools": ["hooks"], "write": False}}).json()
+    env = {**env_for(app), "HOME": str(tmp_path)}
+    assert cli.main(["hooks", "install", "--yes", "--settings-file", str(link)], client=anon, env=env) == 0
+    assert link.is_symlink() and json.loads(real.read_text())["hooks"]
+    assert (tmp_path / "real.json.trajectree.bak").exists()
+    assert f"rotated legacy token {legacy['id']}" in capsys.readouterr().out
+    assert [t["label"] for t in client.get("/api/tokens").json()] == [token_label(real)]

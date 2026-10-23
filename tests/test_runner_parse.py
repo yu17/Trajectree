@@ -48,3 +48,8 @@ def test_parse_codex():
     r = parse_codex(events, '{"answer": "A", "proposals": []}')
     assert r.ok and r.structured == {"answer": "A", "proposals": []} and r.usage.tokens_in == 50 and r.usage.tokens_out == 9
     assert not parse_codex("", None).ok
+
+def test_non_finite_usage_is_zero():
+    out = parse_claude_json(json.dumps({"type": "result", "subtype": "success", "is_error": False,
+        "result": "x", "total_cost_usd": float("nan"), "usage": {"input_tokens": float("inf")}, "num_turns": 1}))
+    assert out.est_usd == 0 and out.usage.tokens_in == 0

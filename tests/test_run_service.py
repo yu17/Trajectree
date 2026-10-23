@@ -302,6 +302,40 @@ def _run_with(ledger, settings, proposals):
     return s, s.execute(s.enqueue(QuickAddRequest(text="x")).id)
 
 
+def test_worker_mark_failed_keeps_abort_error(ledger, human, settings, logged_in):
+    def boom(argv, **kw):
+        cfg = json.loads(open(argv[argv.index("--mcp-config") + 1]).read())
+        token = cfg["mcpServers"]["trajectree"]["headers"]["Authorization"].split()[1]
+        raise RuntimeError(f"boom {token}")
+    s = RunService(ledger, settings, launch=boom, base_env={"PATH": os.environ["PATH"]})
+    run = s.enqueue(AskRequest(question="q"))
+    with pytest.raises(RuntimeError) as info:
+        s.execute(run.id)
+    s._mark_failed(run.id, str(info.value))   # what the worker does with the unmasked text
+    stored = get_run(ledger.conn, run.id)
+    assert "trj_" not in (stored.error or "") and stored.props["failure"] == "infra" and "request" in stored.props
+
+
+def test_failure_flag_is_set_for_infra_only(ledger, human, settings, logged_in):
+    s = svc(ledger, settings)
+    run = s.enqueue(AskRequest(question="q"))
+    with ledger.locked() as conn:
+        s._fail(conn, run.id, "no")
+    assert "failure" not in get_run(ledger.conn, run.id).props
+    other = s.enqueue(AskRequest(question="q"))
+    update_run(ledger.conn, other.id, status="running")
+    s.recover()
+    assert get_run(ledger.conn, other.id).props["failure"] == "infra"
+
+
+def test_dismissed_proposal_409_text(ledger, human, settings, logged_in):
+    create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    s, run = _run_with(ledger, settings, [{"kind": "todo", "project": "a", "title": "T1", "reason": "r"}])
+    s.dismiss_proposal(run.id, 0)
+    with pytest.raises(AlreadyApplied, match="was dismissed"):
+        s.apply_proposal(run.id, 0, actor=human)
+
+
 def test_lenient_proposal_dates_apply_and_unparseable_ones_are_dropped(ledger, human, settings, logged_in):
     from trajectree.repo.todos import list_todos
     p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))

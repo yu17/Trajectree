@@ -113,8 +113,15 @@ class RunService:
 
     # -- execute ---------------------------------------------------------------------------
 
-    def _fail(self, conn, run_id: str, error: str, status: str = "failed") -> Run:
-        return update_run(conn, run_id, status=status, error=error, finished=self.now())
+    def _fail(self, conn, run_id: str, error: str, status: str = "failed", *, infra: bool = False) -> Run:
+        """Finish a run unsuccessfully. `infra` marks a failure of ours (not the agent's) in `props`."""
+        fields: dict = {}
+        if infra:
+            run = get_run(conn, run_id)
+            if run is None:
+                raise NotFound(f"run {run_id} not found")
+            fields["props"] = {**run.props, "failure": "infra"}
+        return update_run(conn, run_id, status=status, error=error, finished=self.now(), **fields)
 
     def execute(self, run_id: str) -> Run:
         with self.ledger.locked() as conn:
@@ -149,7 +156,7 @@ class RunService:
                     # The run token lives in a private file and the prompt goes on stdin, so
                     # neither shows up in the process table.
                     _write_private(mcp_path, mcp_config_json(spec))
-                    argv = claude_argv(spec, binary=self.settings.claude_bin, mcp_config_path=mcp_path)
+                    argv = claude_argv(spec, binary=self.settings.claude_bin, mcp_config_path=mcp_path.absolute())
                     stdin_text = spec.prompt
                 outcome = self.launch(
                     argv,
@@ -175,7 +182,7 @@ class RunService:
     def _abort(self, run_id: str, token_id: str, error: str) -> None:
         with self.ledger.locked() as conn:
             try:
-                self._fail(conn, run_id, error)
+                self._fail(conn, run_id, error, infra=True)
             finally:
                 revoke_token(conn, token_id)
 
@@ -240,7 +247,7 @@ class RunService:
                 )
             except MissingCredentials as exc:
                 revoke_token(conn, token_id)
-                return self._fail(conn, run_id, str(exc))
+                return self._fail(conn, run_id, str(exc), infra=True)
         except BaseException:
             revoke_token(conn, token_id)
             token_id = None
@@ -249,9 +256,9 @@ class RunService:
 
     def _finalize(self, conn, run: Run, timeout_s: int, outcome, last_path, secrets: list[str]) -> Run:
         if outcome.timed_out:
-            return self._fail(conn, run.id, f"timeout after {timeout_s}s")
+            return self._fail(conn, run.id, f"timeout after {timeout_s}s", infra=True)
         if outcome.exit_code is None:
-            return self._fail(conn, run.id, outcome.stderr_tail)
+            return self._fail(conn, run.id, outcome.stderr_tail, infra=True)
         try:
             if run.runner == "codex":
                 last = last_path.read_text(encoding="utf-8") if last_path.exists() else None
@@ -260,7 +267,9 @@ class RunService:
                 parsed = parse_claude_json(outcome.stdout)
         except ValueError:
             # stderr_tail is masked by launch; stdout is raw, so mask it before storing.
-            return self._fail(conn, run.id, (outcome.stderr_tail or mask_text(outcome.stdout, secrets))[:500])
+            return self._fail(
+                conn, run.id, (outcome.stderr_tail or mask_text(outcome.stdout, secrets))[:500], infra=True
+            )
         if parsed.ok:
             status = "ok"
         elif parsed.subtype == "error_max_budget_usd":
@@ -299,14 +308,17 @@ class RunService:
 
     def _mark_failed(self, run_id: str, error: str) -> None:
         with self.ledger.locked() as conn:
-            self._fail(conn, run_id, error)
+            run = get_run(conn, run_id)
+            # `execute` already finished (and masked) a run it aborted: never overwrite that.
+            if run is not None and run.status in ("queued", "running"):
+                self._fail(conn, run_id, error)
 
     def recover(self) -> int:
         """Fail every run left `running` by a previous daemon and revoke its token."""
         with self.ledger.locked() as conn:
             orphans = running_runs(conn)
             for run in orphans:
-                self._fail(conn, run.id, "daemon restarted")
+                self._fail(conn, run.id, "daemon restarted", infra=True)
                 if run.token_id:
                     revoke_token(conn, run.token_id)  # already gone is fine
                 (self.settings.runs_dir / run.id / "mcp.json").unlink(missing_ok=True)

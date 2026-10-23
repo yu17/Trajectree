@@ -25,9 +25,9 @@ def hooks_url(base: str) -> str:
 def settings_path(env: Mapping[str, str]) -> Path:
     config_dir = env.get("CLAUDE_CONFIG_DIR")
     if config_dir:
-        return Path(config_dir) / "settings.json"
+        return (Path(config_dir) / "settings.json").resolve()
     home = env.get("HOME") if env is not os.environ else None
-    return (Path(home) if home else Path.home()) / ".claude" / "settings.json"
+    return ((Path(home) if home else Path.home()) / ".claude" / "settings.json").resolve()
 
 
 def handler(url: str, secret: str) -> dict[str, Any]:
@@ -126,7 +126,7 @@ def _load(path: Path) -> dict[str, Any] | None:
 def _write(path: Path, settings: dict[str, Any]) -> None:
     backup = path.with_name(path.name + ".trajectree.bak")
     if path.exists() and not backup.exists():
-        shutil.copyfile(path, backup)
+        shutil.copy2(path, backup)
     path.parent.mkdir(parents=True, exist_ok=True)
     existed = path.exists()
     # Write a sibling and rename it over the file, so a crash never leaves a half-written
@@ -160,7 +160,7 @@ def install(
     yes: bool = False,
     settings_file: Path | None = None,
 ) -> int:
-    path = settings_file or settings_path(env)
+    path = (settings_file or settings_path(env)).resolve()
     current = _load(path)
     if current is None:
         return 1
@@ -186,6 +186,11 @@ def install(
         return 1
     for token in old_tokens:
         api.delete(f"/api/tokens/{token['id']}")
+    # Tokens from before the per-file label were all named plain `hooks`.
+    for token in api.get("/api/tokens"):
+        if token["label"] == HOOK_LABEL:
+            api.delete(f"/api/tokens/{token['id']}")
+            print(f"rotated legacy token {token['id']}", file=out)
     print(f"hooks: installed ({len(HOOK_EVENTS)} events)", file=out)
     return 0
 
@@ -193,7 +198,7 @@ def install(
 def uninstall(
     api: Any, env: Mapping[str, str], *, out: TextIO, settings_file: Path | None = None
 ) -> int:
-    path = settings_file or settings_path(env)
+    path = (settings_file or settings_path(env)).resolve()
     current = _load(path)
     if current is None:
         return 1
@@ -213,7 +218,7 @@ def uninstall(
 def show(
     api: Any, env: Mapping[str, str], *, out: TextIO, settings_file: Path | None = None
 ) -> int:
-    path = settings_file or settings_path(env)
+    path = (settings_file or settings_path(env)).resolve()
     current = _load(path)
     if current is None:
         return 1

@@ -33,7 +33,7 @@ def claude_argv(spec: RunSpec, *, binary: str, mcp_config_path: Path) -> list[st
         "--permission-mode", "dontAsk",
         "--setting-sources", "user",
         "--strict-mcp-config",
-        "--mcp-config", str(mcp_config_path),
+        "--mcp-config", str(mcp_config_path.absolute()),
         "--tools", ",".join(spec.tools.tools),
         "--allowedTools", *spec.tools.allowed,
         "--max-budget-usd", str(spec.usd_cap),

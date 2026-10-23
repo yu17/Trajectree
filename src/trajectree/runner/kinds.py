@@ -99,17 +99,15 @@ READ_ONLY_SYSTEM = (
     "put anything worth recording into `proposals` instead of writing."
 )
 
-_PROMPT_KINDS: tuple[RunKind, ...] = ("summarize", "ask", "quick_add")
-
-
 def ensure_prompts(settings: Settings) -> None:
     """Create `prompts_dir` and copy each packaged prompt that is missing; never overwrite edits."""
     settings.prompts_dir.mkdir(parents=True, exist_ok=True)
-    packaged = resources.files("trajectree.runner.prompts")
-    for kind in _PROMPT_KINDS:
-        target = settings.prompts_dir / f"{kind}.md"
+    for source in resources.files("trajectree.runner.prompts").iterdir():
+        if not source.name.endswith(".md"):
+            continue
+        target = settings.prompts_dir / source.name
         if not target.exists():
-            target.write_text(packaged.joinpath(f"{kind}.md").read_text(encoding="utf-8"), encoding="utf-8")
+            target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
 
 
 def load_prompt(settings: Settings, kind: RunKind) -> str:

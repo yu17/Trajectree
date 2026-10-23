@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 
 from pydantic import BaseModel
 
@@ -37,12 +38,12 @@ def _number(value: object) -> bool:
 
 
 def _int(value: object) -> int:
-    """An int for a JSON number; 0 for null, bools, strings and anything else."""
-    return int(value) if _number(value) else 0  # type: ignore[arg-type]
+    """An int for a finite JSON number; 0 for null, bools, strings, NaN, infinities and anything else."""
+    return int(value) if _number(value) and math.isfinite(value) else 0  # type: ignore[arg-type]
 
 
 def _float(value: object) -> float:
-    return float(value) if _number(value) else 0.0  # type: ignore[arg-type]
+    return float(value) if _number(value) and math.isfinite(value) else 0.0  # type: ignore[arg-type]
 
 
 def _session_id(value: object) -> str | None:

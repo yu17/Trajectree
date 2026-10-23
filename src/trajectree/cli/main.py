@@ -229,8 +229,10 @@ def _print_run(detail: dict[str, Any], out: TextIO) -> None:
         print(file=out)
         print(run["result_md"], file=out)
     for n, p in enumerate(run.get("proposals") or [], 1):
-        print(f"  [{n}] {p['kind']} · {p['project']} · {p['title']} ({p['reason']})", file=out)
-        print(f"accept with: trajectree accept {run['id']} {n}", file=out)
+        state = " [applied]" if p.get("applied_txn") else " [dismissed]" if p.get("dismissed") else ""
+        print(f"  [{n}] {p['kind']} · {p['project']} · {p['title']} ({p['reason']}){state}", file=out)
+        if not state:
+            print(f"accept with: trajectree accept {run['id']} {n}", file=out)
     if run.get("error"):
         print(f"error: {run['error']}", file=sys.stderr)
 

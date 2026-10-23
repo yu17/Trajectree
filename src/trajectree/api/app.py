@@ -96,7 +96,7 @@ def create_app(settings: Settings, *, ledger: Ledger | None = None) -> FastAPI:
     app.add_exception_handler(UnknownProject, _error_handler(422))
     app.add_exception_handler(RunsPaused, lambda r, e: JSONResponse({"detail": "runs are paused"}, status_code=409))
     app.add_exception_handler(
-        AlreadyApplied, lambda r, e: JSONResponse({"detail": "proposal already applied"}, status_code=409)
+        AlreadyApplied, lambda r, e: JSONResponse({"detail": str(e)}, status_code=409)
     )
 
     def revert_conflict(request: Request, exc: Exception) -> JSONResponse:

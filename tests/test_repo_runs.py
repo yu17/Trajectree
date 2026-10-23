@@ -40,3 +40,11 @@ def test_parse_iso():
     for bad in ("2026-01-05T10:00:00", "yesterday", ""):
         with pytest.raises(ValueError):
             parse_iso(bad)
+
+def test_get_caps_keeps_paused_when_invalid(conn, caplog):
+    import json
+    conn.execute("INSERT INTO setting (key, value) VALUES ('caps', ?)", (json.dumps({"usd_per_run": 50, "usd_per_day": 5, "paused": True}),))
+    with caplog.at_level("WARNING", logger="trajectree.caps"):
+        caps = get_caps(conn)
+    assert caps.paused is True and caps.usd_per_run == Caps().usd_per_run
+    assert any(r.name == "trajectree.caps" for r in caplog.records)

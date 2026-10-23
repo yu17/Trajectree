@@ -45,7 +45,7 @@ def test_dismiss_proposal_api(client, settings, monkeypatch):
     r = client.post(f"/api/runs/{run_id}/proposals/0/dismiss")
     assert r.status_code == 200 and r.json()["proposals"][0]["dismissed"] is True and r.json()["proposals"][0]["applied_txn"] is None
     assert client.post(f"/api/runs/{run_id}/proposals/0/dismiss").status_code == 409
-    assert client.post(f"/api/runs/{run_id}/proposals/0/accept").status_code == 409
+    assert client.post(f"/api/runs/{run_id}/proposals/0/accept").json()["detail"] == "proposal 0 was dismissed"
     assert client.post(f"/api/runs/{run_id}/proposals/5/dismiss").status_code == 404
     assert client.post("/api/runs/nope/proposals/0/dismiss").status_code == 404
     assert client.get("/api/runs", params={"open_proposals": "true"}).json() == []

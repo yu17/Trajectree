@@ -48,3 +48,13 @@ def test_cli_caps_usage_login_and_status(app, anon, capsys):
     assert "claude:" in capsys.readouterr().out
     assert cli.main(["backends", "sync"], client=anon, env=env_for(app)) == 0
     assert capsys.readouterr().out.strip() == "synced: none"
+
+def test_print_run_hides_applied_and_dismissed_hints(capsys):
+    import sys
+    detail = {"run": {"id": "r1", "status": "ok", "result_md": "", "est_usd": 0, "turns": 1, "duration_ms": 1, "error": None,
+              "proposals": [{"kind": "todo", "project": "a", "title": "t1", "reason": "", "applied_txn": "x", "dismissed": False, "when": None, "due": None},
+                            {"kind": "todo", "project": "a", "title": "t2", "reason": "", "applied_txn": None, "dismissed": True, "when": None, "due": None},
+                            {"kind": "todo", "project": "a", "title": "t3", "reason": "", "applied_txn": None, "dismissed": False, "when": None, "due": None}]}, "txn_ids": []}
+    cli._print_run(detail, sys.stdout)
+    out = capsys.readouterr().out
+    assert "[applied]" in out and "[dismissed]" in out and out.count("trajectree accept r1") == 1
