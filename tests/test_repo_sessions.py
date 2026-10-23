@@ -15,6 +15,16 @@ def test_session_lifecycle(conn):
     assert running_sessions(conn, since=T0)[0].started_at == T0  # reopened, original start kept
     assert end_session(conn, session_id="ghost", reason="other", now=T0) is None
 
+def test_ended_sessions_since_oldest_first(conn):
+    from trajectree.repo.sessions import ended_sessions_since
+    for sid, minute in (("late", 30), ("early", 10), ("old", -60)):
+        start_session(conn, session_id=sid, cwd="/p", transcript_path=None, project_id="p1", source="startup", now=T0 - timedelta(hours=2))
+        end_session(conn, session_id=sid, reason="other", now=T0 + timedelta(minutes=minute))
+    start_session(conn, session_id="open", cwd="/p", transcript_path=None, project_id="p1", source="startup", now=T0)
+    assert [s.id for s in ended_sessions_since(conn, since=T0)] == ["early", "late"]
+    assert [s.id for s in ended_sessions_since(conn, since=T0 + timedelta(minutes=10))] == ["early", "late"]
+    assert ended_sessions_since(conn, since=T0 + timedelta(hours=1)) == []
+
 def test_touch_unknown_session_creates_it(conn):
     s = touch_session(conn, session_id="s9", cwd="/x", project_id=None, now=T0)
     assert s.started_at == T0 and s.source == "stop" and s.project_id is None

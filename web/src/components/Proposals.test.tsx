@@ -9,7 +9,7 @@ vi.mock("../api/client", () => ({ api, ApiError: class extends Error {} }));
 const base: Run = { id: "r1", kind: "quick_add", project_id: null, status: "ok", runner: "claude", backend: "claude", model: null, session_id: null, started: null, finished: null, tokens_in: 0, tokens_out: 0, tokens_cache: 0, est_usd: 0, turns: 0, duration_ms: 0, result_md: "", proposals: [
   { kind: "event", project: "clmi", title: "Decided X", reason: "decision", event_kind: "decision", when: "2026-01-05T10:00:00Z", due: null, body_md: "", status: "happened", applied_txn: null, applied_id: null, dismissed: false },
   { kind: "todo", project: "clmi", title: "Done one", reason: "r", event_kind: "note", when: null, due: null, body_md: "", status: "happened", applied_txn: "t9", applied_id: "x", dismissed: false },
-], error: null, log_path: null, token_id: null, props: {}, created_at: "2026-01-05T10:00:00Z" };
+], error: null, log_path: null, token_id: null, props: {}, routine_id: null, slot: "interactive", attempt: 1, created_at: "2026-01-05T10:00:00Z" };
 
 describe("Proposals", () => {
   it("accepts a proposal and marks applied ones", async () => {

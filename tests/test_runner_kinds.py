@@ -141,9 +141,27 @@ def test_plan_routine_propose_is_read_only(ledger, human, settings, tmp_path):
 
 def test_plan_routine_missing_prompt_raises_not_found(ledger, human, settings):
     ensure_prompts(settings)
+    create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
     r = create_routine(ledger.conn, RoutineIn(name="gone", trigger="@daily", prompt_ref="nope.md"), now=NOW)
     with pytest.raises(NotFound, match="prompt nope.md missing"):
         plan_run(ledger.conn, settings, run=_routine_run(ledger, r), request=RoutineRequest(routine="gone"), now=NOW)
+
+
+def test_plan_routine_without_projects_raises_not_found(ledger, human, settings):
+    ensure_prompts(settings)
+    r = create_routine(ledger.conn, RoutineIn(name="rev", trigger="@daily", prompt_ref="cross_project_review.md"), now=NOW)
+    with pytest.raises(NotFound, match="no projects in scope"):
+        plan_run(ledger.conn, settings, run=_routine_run(ledger, r), request=RoutineRequest(routine="rev"), now=NOW)
+
+
+def test_plan_routine_today_uses_routine_tz(ledger, human, settings):
+    ensure_prompts(settings)
+    create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    # 12:00 UTC on 2026-01-10 is already 02:00 on 2026-01-11 at UTC+14.
+    r = create_routine(ledger.conn, RoutineIn(name="rev", trigger="@daily", tz="Pacific/Kiritimati",
+                                              prompt_ref="cross_project_review.md"), now=NOW)
+    plan = plan_run(ledger.conn, settings, run=_routine_run(ledger, r), request=RoutineRequest(routine="rev"), now=NOW)
+    assert "2026-01-11" in plan.prompt and "2026-01-10" not in plan.prompt and plan.routine_tz == "Pacific/Kiritimati"
 
 
 def test_routine_request_roundtrip_and_attempt_bounds():

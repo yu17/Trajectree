@@ -8,6 +8,10 @@ import type {
   RunKind,
   RunnerStatus,
   RunStatus,
+  Routine,
+  RoutineIn,
+  RoutinePatch,
+  SchedulerStatus,
   UsageReport,
   Edge,
   EdgeIn,
@@ -128,6 +132,15 @@ export const api = {
   caps: () => request<Caps>("GET", "/api/caps"),
   setCaps: (caps: Caps) => request<Caps>("PUT", "/api/caps", caps),
   runnerStatus: () => request<RunnerStatus>("GET", "/api/runner/status"),
+  routines: () => request<Routine[]>("GET", "/api/routines"),
+  createRoutine: (body: RoutineIn) => request<Routine>("POST", "/api/routines", body),
+  patchRoutine: (ref: string, patch: RoutinePatch) =>
+    request<Routine>("PATCH", `/api/routines/${encodeURIComponent(ref)}`, patch),
+  runRoutine: (ref: string, projects?: string[]) =>
+    request<Run>("POST", `/api/routines/${encodeURIComponent(ref)}/run`, projects ? { projects } : {}),
+  routineRuns: (ref: string, limit = 20) =>
+    request<Run[]>("GET", `/api/routines/${encodeURIComponent(ref)}/runs?limit=${limit}`),
+  scheduler: () => request<SchedulerStatus>("GET", "/api/scheduler"),
   context(projects: string[], from: Date, to: Date, budget = 4000) {
     const q = new URLSearchParams({ from: from.toISOString(), to: to.toISOString(), budget: String(budget) });
     if (projects.length) q.set("projects", projects.join(","));

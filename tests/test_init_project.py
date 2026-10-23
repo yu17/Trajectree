@@ -27,6 +27,11 @@ def make_repo(tmp_path):
     return repo
 
 
+def user_projects(client):
+    """Projects other than the `inbox` the daemon seeds at startup."""
+    return [p for p in client.get("/api/projects").json() if p["slug"] != "inbox"]
+
+
 def test_slug_from_path(tmp_path):
     assert slug_from_path(tmp_path / "My Proj_v2") == "my-proj-v2"
     assert slug_from_path(tmp_path / "---x---") == "x"
@@ -38,7 +43,7 @@ def test_init_project_creates_project_resources_rules_and_mcp(tmp_path, client, 
     assert main(["init-project", str(repo)], client=client, env=env_for(app), runner=fake) == 0
     out = capsys.readouterr().out.splitlines()
     assert out[0].startswith("project: my-proj (") and out[1] == "resources: folder, git_local" and out[3] == "mcp: configured"
-    assert client.get("/api/projects").json()[0]["slug"] == "my-proj"
+    assert user_projects(client)[0]["slug"] == "my-proj"
     kinds = {r["kind"]: r["locator"] for r in client.get("/api/resources").json()}
     assert kinds == {"folder": str(repo.resolve()), "git_local": str(repo.resolve())}
     rules = (repo / ".claude" / "rules" / "trajectree.md").read_text()
@@ -55,7 +60,7 @@ def test_init_project_twice_is_idempotent(tmp_path, client, app, capsys):
     (repo / ".claude" / "rules" / "trajectree.md").write_text("edited")
     assert main(["init-project", str(repo)], client=client, env=env_for(app), runner=fake) == 0
     assert capsys.readouterr().out.splitlines()[-1] == "mcp: already configured"
-    assert len(client.get("/api/projects").json()) == 1 and len(client.get("/api/resources").json()) == 2
+    assert len(user_projects(client)) == 1 and len(client.get("/api/resources").json()) == 2
     assert (repo / ".git" / "info" / "exclude").read_text().count(".claude/rules/trajectree.md") == 1
     assert (repo / ".claude" / "rules" / "trajectree.md").read_text() != "edited"
     assert (repo / ".claude" / "rules" / "trajectree.md").read_text().startswith("<!-- managed by trajectree init-project; edits are overwritten -->")
@@ -72,7 +77,7 @@ def test_init_project_without_git_or_claude(tmp_path, client, app, capsys):
     assert main(["init-project", str(plain), "--slug", "plain-one", "--title", "Plain", "--kind", "tooling"], client=client, env=env_for(app), runner=missing) == 0
     out = capsys.readouterr().out.splitlines()
     assert out[1] == "resources: folder" and out[3].startswith("mcp: claude not found; run: claude mcp add --scope user trajectree")
-    p = client.get("/api/projects").json()[0]
+    p = user_projects(client)[0]
     assert (p["slug"], p["title"], p["kind"]) == ("plain-one", "Plain", "tooling")
     assert not (plain / ".git").exists()
 
@@ -96,7 +101,7 @@ def test_init_project_rejects_missing_or_file_path(tmp_path, client, app, capsys
     for bad in (tmp_path / "nope", afile):
         assert main(["init-project", str(bad), "--slug", "zz"], client=client, env=env_for(app), runner=FakeClaude()) == 2
         assert "not a directory" in capsys.readouterr().err
-    assert client.get("/api/projects").json() == []
+    assert user_projects(client) == []
 
 
 def test_init_project_handles_git_file_pointer(tmp_path, client, app, capsys):

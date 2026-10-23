@@ -11,6 +11,7 @@ from trajectree.db.ledger import Ledger
 from trajectree.models import Caps, Run, RunKind, RunStatus, UsageDay, UsageSlice
 from trajectree.repo import NotFound
 from trajectree.repo.caps import get_caps, set_caps
+from trajectree.repo.routines import resolve_routine_ref, routine_names
 from trajectree.repo.runs import get_run, list_runs, spent_usd, txn_ids_for_run, usage_by, usage_days
 from trajectree.runner.credentials import RunnerStatus, runner_status, store_oauth_token, sync_backends
 from trajectree.runner.kinds import AskRequest, QuickAddRequest, RunRequest, SummarizeRequest
@@ -28,6 +29,7 @@ class UsageReport(BaseModel):
     days: list[UsageDay]
     by_kind: list[UsageSlice]
     by_runner: list[UsageSlice]
+    by_routine: list[UsageSlice]  # keyed by routine name, `-` for runs of no routine
     spent_today: float
     caps: Caps
 
@@ -72,10 +74,14 @@ def runs_list(
     kind: RunKind | None = None,
     status: RunStatus | None = None,
     open_proposals: bool = False,
+    routine: str | None = None,
     ledger: Ledger = Depends(get_ledger),
 ):
     with ledger.locked() as conn:
-        return list_runs(conn, limit=limit, kind=kind, status=status, with_open_proposals=open_proposals)
+        routine_id = resolve_routine_ref(conn, routine).id if routine else None
+        return list_runs(
+            conn, limit=limit, kind=kind, status=status, with_open_proposals=open_proposals, routine_id=routine_id
+        )
 
 
 @router.get("/runs/{run_id}", response_model=RunDetail)
@@ -108,10 +114,15 @@ def usage(days: int = Query(30, ge=1, le=365), ledger: Ledger = Depends(get_ledg
     with ledger.locked() as conn:
         by_day = usage_days(conn, days=days, now=now)
         since = datetime.strptime(by_day[0].day, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        names = routine_names(conn)
         return UsageReport(
             days=by_day,
             by_kind=usage_by(conn, field="kind", since=since),
             by_runner=usage_by(conn, field="runner", since=since),
+            by_routine=[
+                s.model_copy(update={"key": names.get(s.key, s.key)})
+                for s in usage_by(conn, field="routine_id", since=since)
+            ],
             spent_today=spent_usd(conn, day=now.strftime("%Y-%m-%d")),
             caps=get_caps(conn),
         )

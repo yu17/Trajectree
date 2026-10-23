@@ -462,6 +462,14 @@ class RoutinePatch(BaseModel):
     _valid_trigger = field_validator("trigger")(_check_trigger)
     _valid_tz = field_validator("tz")(_check_tz)
 
+    @model_validator(mode="after")
+    def _required_not_null(self) -> "RoutinePatch":
+        # Only `runner` and `model` may be cleared; an omitted field stays unset.
+        for name in sorted(self.model_fields_set - {"runner", "model"}):
+            if getattr(self, name) is None:
+                raise ValueError(f"{name} cannot be null")
+        return self
+
 
 class Routine(RoutineIn):
     id: str

@@ -557,3 +557,78 @@ def test_mark_failed_is_an_infra_failure(ledger, human, settings):
     s._mark_failed(run.id, "planner crashed")
     after = get_run(ledger.conn, run.id)
     assert after.status == "failed" and after.props["failure"] == "infra"
+
+
+def test_infra_failure_of_routine_run_schedules_retry(ledger, human, settings):
+    from datetime import timedelta
+    from trajectree.timeutil import to_db
+    _routine(ledger)
+    s = RunService(ledger, settings, now=lambda: R_NOW)
+    runs = [s.enqueue(RoutineRequest(routine="rev", attempt=n)) for n in (1, 2, 3)]
+    with ledger.locked() as conn:
+        failed = [s._fail(conn, r.id, "timeout after 1s", infra=True) for r in runs]
+    assert [f.props.get("retry_at") for f in failed] == [
+        to_db(R_NOW + timedelta(seconds=60)), to_db(R_NOW + timedelta(seconds=300)), None]
+    assert all(f.props["failure"] == "infra" for f in failed)
+
+
+def test_routine_delivery_runs_without_the_ledger_lock(ledger, human, settings, logged_in, monkeypatch):
+    import threading
+    import trajectree.runner.routines as routines_mod
+    from trajectree.delivery import DeliveryResult
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "ok")
+    monkeypatch.setenv("FAKE_CLAUDE_RESULT", "Agenda")
+    monkeypatch.delenv("FAKE_CLAUDE_STRUCTURED", raising=False)
+    create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    _routine(ledger, delivery="log")
+    free = []
+    def probe(*a, **kw):
+        t = threading.Thread(target=lambda: ledger._lock.acquire(timeout=2) and (free.append(1), ledger._lock.release()))
+        t.start()
+        t.join(5)
+        return DeliveryResult(channel="log", ok=True)
+    monkeypatch.setattr(routines_mod, "deliver", probe)
+    s = RunService(ledger, settings)
+    run = s.execute(s.enqueue(RoutineRequest(routine="rev")).id)
+    assert run.status == "ok" and run.props["delivery"] == {"channel": "log", "ok": True, "detail": None, "event_id": None}
+    assert free == [1]   # another thread could take the lock while delivering
+    assert ledger.conn.execute("select count(*) from token").fetchone()[0] == 0
+    assert get_routine(ledger.conn, run.routine_id).last_run_id == run.id
+
+
+def test_routine_delivery_title_uses_routine_tz(ledger, human, settings, logged_in, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "ok")
+    monkeypatch.setenv("FAKE_CLAUDE_RESULT", "Agenda")
+    monkeypatch.delenv("FAKE_CLAUDE_STRUCTURED", raising=False)
+    p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    _routine(ledger, delivery="inbox", tz="Pacific/Kiritimati", scope=RoutineScope(projects=["a"]))
+    s = RunService(ledger, settings, now=lambda: R_NOW)   # 12:00 UTC is 02:00 the next day at UTC+14
+    run = s.execute(s.enqueue(RoutineRequest(routine="rev")).id)
+    assert run.status == "ok", run.error
+    assert [e.title for e in list_events(ledger.conn, project_ids=[p.id], kinds=["note"])] == ["rev · 2026-01-11"]
+
+
+def test_routine_without_projects_fails_without_a_token(ledger, human, settings, logged_in):
+    _routine(ledger)
+    s = svc(ledger, settings)
+    run = s.execute(s.enqueue(RoutineRequest(routine="rev")).id)
+    assert run.status == "failed" and run.error == "no projects in scope" and run.token_id is None
+    assert "failure" not in run.props
+
+
+@pytest.mark.anyio
+async def test_worker_crash_stores_masked_error(ledger, human, settings):
+    s = svc(ledger, settings)
+    run = s.enqueue(AskRequest(question="q"))
+    def crash(run_id):
+        raise RuntimeError("planner died holding trj_abc-DEF_123 and more")
+    s.execute = crash
+    stop = asyncio.Event()
+    task = asyncio.create_task(s.worker(stop, poll_s=0.02))
+    for _ in range(200):
+        await asyncio.sleep(0.02)
+        if get_run(ledger.conn, run.id).status == "failed":
+            break
+    stop.set()
+    await asyncio.wait_for(task, 5)
+    assert get_run(ledger.conn, run.id).error == "RuntimeError: planner died holding *** and more"

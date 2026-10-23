@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { RunsView } from "./RunsView";
 import type { Run } from "../api/types";
 
-const run = (id: string, over: Partial<Run> = {}): Run => ({ id, kind: "ask", project_id: null, status: "ok", runner: "claude", backend: "claude", model: null, session_id: "s", started: "2026-01-05T10:00:00Z", finished: "2026-01-05T10:01:00Z", tokens_in: 100, tokens_out: 20, tokens_cache: 12, est_usd: 0.0123, turns: 2, duration_ms: 345, result_md: "Answer.", proposals: [], error: null, log_path: "/data/runs/r1.log", token_id: null, props: {}, created_at: "2026-01-05T10:00:00Z", ...over });
+const run = (id: string, over: Partial<Run> = {}): Run => ({ id, kind: "ask", project_id: null, status: "ok", runner: "claude", backend: "claude", model: null, session_id: "s", started: "2026-01-05T10:00:00Z", finished: "2026-01-05T10:01:00Z", tokens_in: 100, tokens_out: 20, tokens_cache: 12, est_usd: 0.0123, turns: 2, duration_ms: 345, result_md: "Answer.", proposals: [], error: null, log_path: "/data/runs/r1.log", token_id: null, props: {}, routine_id: null, slot: "interactive", attempt: 1, created_at: "2026-01-05T10:00:00Z", ...over });
 const api = vi.hoisted(() => ({ runs: vi.fn(), run: vi.fn(), usage: vi.fn(), caps: vi.fn(), setCaps: vi.fn(), runnerStatus: vi.fn(), projects: vi.fn(), acceptProposal: vi.fn() }));
 vi.mock("../api/client", () => ({ api, ApiError: class extends Error {} }));
 const wrap = (ui: React.ReactElement) => render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>{ui}</QueryClientProvider>);

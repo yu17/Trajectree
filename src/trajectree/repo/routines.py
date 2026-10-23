@@ -13,7 +13,7 @@ from trajectree.ids import new_id
 from trajectree.models import Routine, RoutineIn, RoutinePatch
 from trajectree.repo import DuplicateRoutine, NotFound
 from trajectree.repo._rows import select_row, select_rows, update_fields
-from trajectree.timeutil import to_db
+from trajectree.timeutil import from_db, to_db
 
 _DATETIME_FIELDS = ("next_fire", "last_fired", "paused_until")
 _STATE_FIELDS = ("next_fire", "last_fired", "last_run_id", "last_error", "paused_until")
@@ -127,20 +127,55 @@ def set_run_state(conn: apsw.Connection, routine_id: str, **fields: Any) -> Rout
     return routine
 
 
+_DUE = (
+    "enabled = 1 AND trigger != 'session_end' AND next_fire IS NOT NULL AND next_fire <= ?"
+    " AND (paused_until IS NULL OR paused_until <= ?)"
+)
+
+
 def due_routines(conn: apsw.Connection, *, now: datetime) -> list[Routine]:
     """Enabled, time-triggered routines whose `next_fire` has passed and that are not paused."""
     stamp = to_db(now)
-    rows = select_rows(
-        conn,
-        "routine",
-        [
-            "enabled = 1",
-            "trigger != 'session_end'",
-            "next_fire IS NOT NULL",
-            "next_fire <= ?",
-            "(paused_until IS NULL OR paused_until <= ?)",
-        ],
-        [stamp, stamp],
-        "next_fire, name",
-    )
+    rows = select_rows(conn, "routine", [_DUE], [stamp, stamp], "next_fire, name")
     return [_to_routine(conn, r) for r in rows]
+
+
+# The scheduler lists routines by (id, name) without validating rows, so one corrupt routine is
+# reported on its own instead of failing the listing for every other routine.
+
+
+def due_routine_refs(conn: apsw.Connection, *, now: datetime) -> list[tuple[str, str]]:
+    """`(id, name)` of each routine `due_routines` would return."""
+    stamp = to_db(now)
+    return [
+        (r[0], r[1])
+        for r in conn.execute(f"SELECT id, name FROM routine WHERE {_DUE} ORDER BY next_fire, name", (stamp, stamp))
+    ]
+
+
+def session_end_routine_refs(conn: apsw.Connection) -> list[tuple[str, str]]:
+    """`(id, name)` of each enabled routine triggered by `session_end`."""
+    return [
+        (r[0], r[1])
+        for r in conn.execute(
+            "SELECT id, name FROM routine WHERE enabled = 1 AND trigger = 'session_end' ORDER BY name"
+        )
+    ]
+
+
+def routine_names(conn: apsw.Connection) -> dict[str, str]:
+    return {r[0]: r[1] for r in conn.execute("SELECT id, name FROM routine")}
+
+
+def next_fires(conn: apsw.Connection) -> list[tuple[str, datetime]]:
+    """`(name, next_fire)` of each enabled routine with a next fire time, soonest first."""
+    rows = conn.execute(
+        "SELECT name, next_fire FROM routine WHERE enabled = 1 AND next_fire IS NOT NULL"
+        " ORDER BY next_fire, name"
+    )
+    return [(name, from_db(at)) for name, at in rows]
+
+
+def record_error(conn: apsw.Connection, routine_id: str, error: str) -> None:
+    """Store `last_error` without reading the routine back (it may not validate)."""
+    conn.execute("UPDATE routine SET last_error = ? WHERE id = ?", (error, routine_id))

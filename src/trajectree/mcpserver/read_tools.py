@@ -12,15 +12,17 @@ from typing import Annotated
 import anyio.to_thread
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
+from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import BaseModel, Field
 
 from trajectree.context.pack import ContextPack, build_context_pack
 from trajectree.db import fts
 from trajectree.db.fts import SearchHit
 from trajectree.mcpserver.server import ToolDeps, parse_when, resolve_project
-from trajectree.models import Edge, Event, Project, Resource, Signal, Todo
+from trajectree.models import Edge, Event, Project, Resource, Run, Signal, Todo
 from trajectree.repo import edges, events, projects, resources, signals, todos
 from trajectree.repo import projects as projects_repo
+from trajectree.repo import runs as runs_repo
 from trajectree.timeutil import utcnow
 
 OPEN_STATES = ["open", "doing"]
@@ -203,5 +205,20 @@ def register_read_tools(mcp: MCPServer, deps: ToolDeps) -> None:
                 return signals.list_signals(
                     conn, project_ids=[p.id], t_from=t_from, t_to=t_to, kinds=kinds, limit=limit
                 )
+
+        return await anyio.to_thread.run_sync(body)
+
+    @mcp.tool()
+    async def get_run(run_id: str, ctx: Context) -> Run:
+        """Return one runner run by id: its status, usage, result and proposals."""
+
+        def body() -> Run:
+            deps.resolve(ctx)
+            with deps.ledger.locked() as conn:
+                run = runs_repo.get_run(conn, run_id)
+            if run is None:
+                raise ToolError(f"unknown run {run_id}")
+            # Never hand out the run's token id or the daemon's log path.
+            return run.model_copy(update={"token_id": None, "log_path": None})
 
         return await anyio.to_thread.run_sync(body)

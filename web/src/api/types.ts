@@ -182,7 +182,7 @@ export interface IngestReport {
   exports_errors: string[];
 }
 
-export type RunKind = "summarize" | "ask" | "quick_add";
+export type RunKind = "summarize" | "ask" | "quick_add" | "routine";
 export type RunStatus = "queued" | "running" | "ok" | "failed" | "capped" | "cancelled";
 
 export interface Proposal {
@@ -223,6 +223,9 @@ export interface Run {
   log_path: string | null;
   token_id: string | null;
   props: Record<string, unknown>;
+  routine_id: string | null;
+  slot: "interactive" | "scheduled";
+  attempt: number;
   created_at: string;
 }
 
@@ -256,8 +259,78 @@ export interface UsageReport {
   days: UsageDay[];
   by_kind: UsageSlice[];
   by_runner: UsageSlice[];
+  /** Keyed by routine name; `-` for runs of no routine. */
+  by_routine: UsageSlice[];
   spent_today: number;
   caps: Caps;
+}
+
+export type WriteMode = "direct" | "propose";
+export type Delivery = "none" | "inbox" | "log" | "chatmaid";
+export type CwdMode = "project_folder" | "data_dir";
+
+export interface RoutineScope {
+  projects: string[] | null;
+  lookback_days: number;
+}
+
+export interface RoutineCaps {
+  usd_per_run: number;
+  usd_per_day: number;
+}
+
+export interface RoutineIn {
+  name: string;
+  /** A cron expression or "session_end". */
+  trigger: string;
+  tz?: string;
+  enabled?: boolean;
+  runner?: string | null;
+  model?: string | null;
+  prompt_ref: string;
+  scope?: RoutineScope;
+  cwd_mode?: CwdMode;
+  tool_policy?: string[];
+  caps?: RoutineCaps;
+  write_mode?: WriteMode;
+  delivery?: Delivery;
+  props?: Record<string, unknown>;
+}
+
+/** Only `runner` and `model` may be set to null. */
+export type RoutinePatch = Partial<Omit<RoutineIn, "runner" | "model">> & {
+  runner?: string | null;
+  model?: string | null;
+};
+
+export interface Routine extends Required<RoutineIn> {
+  id: string;
+  next_fire: string | null;
+  last_fired: string | null;
+  last_run_id: string | null;
+  last_error: string | null;
+  paused_until: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NextFire {
+  routine: string;
+  at: string;
+}
+
+export interface SchedulerStatus {
+  last_tick: string | null;
+  interval_s: number;
+  next_fires: NextFire[];
+}
+
+export interface SchedulerReport {
+  ticked: string;
+  fired: string[];
+  skipped: string[];
+  retried: string[];
+  errors: string[];
 }
 
 export interface RunnerInfo {

@@ -1,6 +1,7 @@
 """RunService: queue, caps, per-run token lifecycle, execution and proposal application.
 
-Lock discipline: every DB access happens inside `ledger.locked()`; `launch` runs with no lock held.
+Lock discipline: every DB access happens inside `ledger.locked()`; `launch` and a routine run's
+delivery run with no lock held.
 """
 
 from __future__ import annotations
@@ -9,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import subprocess
 from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta, timezone
@@ -48,7 +50,7 @@ from trajectree.runner.kinds import (
 )
 from trajectree.runner.launch import launch
 from trajectree.runner.parse import ParsedResult, parse_claude_json, parse_codex
-from trajectree.runner.routines import after_routine, deliver_result, routine_cap
+from trajectree.runner.routines import after_routine, finish_routine_run, retry_props, routine_cap
 from trajectree.runner.spec import (
     AlreadyApplied,
     MissingCredentials,
@@ -58,6 +60,8 @@ from trajectree.runner.spec import (
 from trajectree.timeutil import parse_when_lenient, to_db, utcnow
 
 log = logging.getLogger("trajectree.runner")
+
+_TOKEN_RE = re.compile(r"trj_[A-Za-z0-9_-]+")  # our run tokens, wherever an error message echoes one
 
 
 class RunService:
@@ -127,13 +131,14 @@ class RunService:
     # -- execute ---------------------------------------------------------------------------
 
     def _fail(self, conn, run_id: str, error: str, status: str = "failed", *, infra: bool = False) -> Run:
-        """Finish a run unsuccessfully. `infra` marks a failure of ours (not the agent's) in `props`."""
+        """Finish a run unsuccessfully. `infra` marks a failure of ours (not the agent's) in `props`,
+        with the time of the next attempt for a routine run that has attempts left."""
         fields: dict = {}
         if infra:
             run = get_run(conn, run_id)
             if run is None:
                 raise NotFound(f"run {run_id} not found")
-            fields["props"] = {**run.props, "failure": "infra"}
+            fields["props"] = {**run.props, "failure": "infra", **retry_props(run, now=self.now())}
         failed = update_run(conn, run_id, status=status, error=error, finished=self.now(), **fields)
         after_routine(conn, failed)
         return failed
@@ -188,11 +193,15 @@ class RunService:
                 raise
             with self.ledger.locked() as conn:
                 try:
-                    return self._finalize(conn, run, plan, actor, caps.timeout_s, outcome, last_path, secrets)
+                    done = self._finalize(conn, run, plan, actor, caps.timeout_s, outcome, last_path, secrets)
                 finally:
                     revoke_token(conn, token_id)
         finally:
             mcp_path.unlink(missing_ok=True)
+        if done.kind != "routine":
+            return done
+        # Delivery runs with the lock released; the token is already revoked.
+        return finish_routine_run(self.ledger, self.settings, done, plan, actor=actor, now=self.now())
 
     def _abort(self, run_id: str, token_id: str, error: str) -> None:
         with self.ledger.locked() as conn:
@@ -314,16 +323,7 @@ class RunService:
             log_path=outcome.log_path,
             finished=self.now(),
         )
-        if done.kind == "routine":
-            if done.status == "ok" and done.result_md:
-                done = self._deliver(conn, done, plan, actor)
-            after_routine(conn, done)
-        return done
-
-    def _deliver(self, conn, run: Run, plan: RunPlan, actor: Actor) -> Run:
-        """Deliver an ok routine run's result; `create_event` re-enters the held ledger lock."""
-        result = deliver_result(self.ledger, self.settings, run, plan, actor=actor, now=self.now())
-        return update_run(conn, run.id, props={**run.props, "delivery": result.model_dump(mode="json")})
+        return done  # a routine run's delivery and routine state follow in `execute`, unlocked
 
     # -- worker ----------------------------------------------------------------------------
 
@@ -366,7 +366,10 @@ class RunService:
                     except Exception as exc:
                         # No traceback or exception text: a launch error can carry the run token.
                         log.error("run %s crashed: %s", run.id, type(exc).__name__)
-                        await asyncio.to_thread(self._mark_failed, run.id, str(exc)[:500])
+                        masked = _TOKEN_RE.sub("***", str(exc))
+                        await asyncio.to_thread(
+                            self._mark_failed, run.id, f"{type(exc).__name__}: {masked}"[:500]
+                        )
                     continue
             except Exception:
                 log.exception("worker iteration failed")

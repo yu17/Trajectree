@@ -84,6 +84,14 @@ def running_sessions(conn: apsw.Connection, *, since: datetime) -> list[SessionR
     return [_to_session(conn, r) for r in rows]
 
 
+def ended_sessions_since(conn: apsw.Connection, *, since: datetime) -> list[SessionRow]:
+    """Sessions that ended at or after `since`, oldest `ended_at` first."""
+    rows = select_rows(
+        conn, "session", ["ended_at IS NOT NULL", "ended_at >= ?"], [to_db(since)], "ended_at, id"
+    )
+    return [_to_session(conn, r) for r in rows]
+
+
 def session_for_cwd(conn: apsw.Connection, *, cwd: str, since: datetime) -> SessionRow | None:
     rows = select_rows(
         conn,

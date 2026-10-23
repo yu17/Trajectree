@@ -18,6 +18,7 @@ from trajectree.api.routes_entities import router as entities_router
 from trajectree.api.routes_ledger import router as ledger_router
 from trajectree.api.routes_search import router as search_router
 from trajectree.api.routes_resources import router as resources_router
+from trajectree.api.routes_routines import router as routines_router
 from trajectree.api.routes_runs import router as runs_router
 from trajectree.api.routes_signals import router as signals_router
 from trajectree.api.routes_timeline import router as timeline_router
@@ -28,15 +29,25 @@ from trajectree.db.ledger import AlreadyReverted, Ledger, RevertConflict
 from trajectree.ingest.job import IngestBusy
 from trajectree.ingest.scheduler import ingest_loop
 from trajectree.mcpserver.server import build_mcp
-from trajectree.repo import DuplicateEdge, DuplicateSlug, InvalidRange, NotFound, UnknownProject
+from trajectree.repo import DuplicateEdge, DuplicateRoutine, DuplicateSlug, InvalidRange, NotFound, UnknownProject
+from trajectree.runner.seeds import ensure_inbox_project, ensure_seed_routines
 from trajectree.runner.service import RunService
 from trajectree.runner.spec import AlreadyApplied, RunsPaused
+from trajectree.scheduler import Scheduler
+from trajectree.timeutil import utcnow
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 # Plain routers (no prefix, no auth). create_app includes each into a fresh
 # /api router that enforces require_token. Later tasks append theirs here.
-PROTECTED_ROUTERS: list[APIRouter] = [entities_router, timeline_router, ledger_router, search_router, resources_router, context_router, signals_router, runs_router, tokens_router]
+PROTECTED_ROUTERS: list[APIRouter] = [entities_router, timeline_router, ledger_router, search_router, resources_router, context_router, signals_router, runs_router, tokens_router, routines_router]
+
+
+def _seed(ledger: Ledger, settings: Settings) -> None:
+    """The inbox project, then the seed routines that deliver to it."""
+    ensure_inbox_project(ledger)
+    with ledger.locked() as conn:
+        ensure_seed_routines(conn, settings, now=utcnow())
 
 
 def _error_handler(status: int):
@@ -60,8 +71,12 @@ def create_app(settings: Settings, *, ledger: Ledger | None = None) -> FastAPI:
             stop = asyncio.Event()
             # Runs left `running` by a previous process can never finish: fail them first.
             await asyncio.to_thread(app.state.runs.recover)
-            # Exactly one worker: the serial run slot depends on it.
-            tasks = [asyncio.create_task(app.state.runs.worker(stop))]
+            await asyncio.to_thread(_seed, ledger, settings)
+            # Exactly one worker per slot: each slot runs serially.
+            tasks = [
+                asyncio.create_task(app.state.runs.worker(stop, slot="interactive")),
+                asyncio.create_task(app.state.runs.worker(stop, slot="scheduled")),
+            ]
             if settings.ingest_interval_s > 0:
                 tasks.append(
                     asyncio.create_task(
@@ -69,6 +84,12 @@ def create_app(settings: Settings, *, ledger: Ledger | None = None) -> FastAPI:
                     )
                 )
                 app.state.ingest_stop, app.state.ingest_task = stop, tasks[-1]
+            if settings.scheduler_interval_s > 0:
+                tasks.append(
+                    asyncio.create_task(
+                        app.state.scheduler.loop(stop, interval_s=settings.scheduler_interval_s)
+                    )
+                )
             try:
                 yield
             finally:
@@ -87,9 +108,11 @@ def create_app(settings: Settings, *, ledger: Ledger | None = None) -> FastAPI:
     app.state.token = token
     app.state.mcp = mcp
     app.state.runs = RunService(ledger, settings)
+    app.state.scheduler = Scheduler(ledger, settings, app.state.runs)
 
     app.add_exception_handler(NotFound, _error_handler(404))
     app.add_exception_handler(DuplicateSlug, _error_handler(409))
+    app.add_exception_handler(DuplicateRoutine, lambda r, e: JSONResponse({"detail": f"routine {e} exists"}, status_code=409))
     app.add_exception_handler(DuplicateEdge, _error_handler(409))
     app.add_exception_handler(InvalidRange, _error_handler(422))
     app.add_exception_handler(IngestBusy, _error_handler(409))

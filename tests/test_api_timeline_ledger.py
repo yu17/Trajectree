@@ -13,7 +13,7 @@ def test_timeline_returns_window_and_pending(client, app, agent):
     pending = create_event(app.state.ledger, agent, EventIn(project_id=p["id"], kind="milestone", title="draft",
                            t_start=datetime(2026, 1, 6, tzinfo=timezone.utc), source="agent"))
     tl = client.get("/api/timeline", params={"from": "2026-01-01T00:00:00Z", "to": "2026-02-01T00:00:00Z"}).json()
-    assert [x["id"] for x in tl["projects"]] == [p["id"]]
+    assert [x["id"] for x in tl["projects"] if x["slug"] != "inbox"] == [p["id"]]   # inbox is seeded
     assert {x["id"] for x in tl["events"]} == {e["id"], pending.id}
     assert tl["pending"]["event"] == {pending.id: client.get("/api/ledger/txns").json()[0]["id"]} and tl["live"] == []
 
@@ -76,7 +76,8 @@ def test_ledger_filters(client, app, agent):
     create_event(app.state.ledger, agent, EventIn(project_id=p["id"], kind="note", title="n",
                  t_start=datetime(2026, 1, 6, tzinfo=timezone.utc), source="agent"))
     assert [t["actor_kind"] for t in client.get("/api/ledger/txns", params={"review": "pending"}).json()] == ["agent"]
-    assert len(client.get("/api/ledger/txns", params={"actor_kind": "human"}).json()) == 2
+    human = client.get("/api/ledger/txns", params={"actor_kind": "human"}).json()
+    assert len([t for t in human if t["tool"] != "seed"]) == 2   # the seeded inbox project is a human txn too
     assert client.get("/api/ledger/txns", params={"review": "bogus"}).status_code == 422
 
 

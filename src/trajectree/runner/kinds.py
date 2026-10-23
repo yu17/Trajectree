@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from importlib import resources
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import apsw
 from pydantic import AwareDatetime, BaseModel, Field
@@ -153,10 +154,11 @@ class RunPlan(BaseModel):
     routine_id: str | None = None
     delivery_project_id: str | None = None
     routine_name: str | None = None
+    routine_tz: str | None = None
 
 
-def _day(moment: datetime) -> str:
-    return moment.astimezone(timezone.utc).strftime("%Y-%m-%d")
+def _day(moment: datetime, tz: str | None = None) -> str:
+    return moment.astimezone(ZoneInfo(tz) if tz else timezone.utc).strftime("%Y-%m-%d")
 
 
 def plan_run(
@@ -289,6 +291,8 @@ def _plan_routine(
     projects: list[Project] = (
         [resolve_project_ref(conn, ref) for ref in refs] if refs else list_projects(conn, status="active")
     )
+    if not projects:
+        raise NotFound("no projects in scope")  # never mint an unrestricted token
     ids = [p.id for p in projects]
     pack = build_context_pack(
         conn,
@@ -307,12 +311,12 @@ def _plan_routine(
             "routine_name": routine.name,
             "projects": ", ".join(p.slug for p in projects),
             "context_pack": pack.markdown,
-            "today": _day(now),
+            "today": _day(now, routine.tz),
             "lookback_days": str(routine.scope.lookback_days),
         },
     )
     cwd = settings.runs_dir / run.id
-    if routine.cwd_mode == "project_folder" and ids:
+    if routine.cwd_mode == "project_folder":
         cwd = _folder_cwd(conn, settings, ids[0]) or cwd
     direct = routine.write_mode == "direct"
     return RunPlan(
@@ -327,11 +331,12 @@ def _plan_routine(
             ),
         ),
         json_schema=PROPOSAL_SCHEMA,
-        scope=Scope(projects=ids or None, write=direct),
+        scope=Scope(projects=ids, write=direct),
         usd_cap=routine.caps.usd_per_run,
         delivery=routine.delivery,
         routine_id=routine.id,
         # Inbox delivery goes to the first explicitly scoped project, else the `inbox` project.
         delivery_project_id=ids[0] if refs else None,
         routine_name=routine.name,
+        routine_tz=routine.tz,
     )

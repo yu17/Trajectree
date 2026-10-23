@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, TextIO
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 
@@ -26,6 +26,8 @@ class _Client(Protocol):
     def post(self, url: str, **kwargs: Any) -> Any: ...
 
     def put(self, url: str, **kwargs: Any) -> Any: ...
+
+    def patch(self, url: str, **kwargs: Any) -> Any: ...
 
     def delete(self, url: str, **kwargs: Any) -> Any: ...
 
@@ -130,6 +132,26 @@ def _parser() -> argparse.ArgumentParser:
     pause.add_argument("--pause", action="store_true")
     pause.add_argument("--resume", action="store_true")
 
+    sub.add_parser("routines", help="list routines")
+
+    rt = sub.add_parser("routine", help="routine commands")
+    rt_sub = rt.add_subparsers(dest="sub", required=True)
+    for name in ("enable", "disable"):
+        rt_sub.add_parser(name, help=f"{name} a routine").add_argument("name")
+
+    def routine_opts(sp: argparse.ArgumentParser) -> None:
+        sp.add_argument("--projects", help="comma-separated slugs")
+        sp.add_argument("--no-wait", action="store_true")
+
+    run_routine = sub.add_parser("run", help="run a routine now")
+    run_routine.add_argument("routine")
+    routine_opts(run_routine)
+    routine_opts(sub.add_parser("review", help="run cross-project-review now"))
+    routine_opts(sub.add_parser("prep", help="run meeting-prep now"))
+
+    sched = sub.add_parser("scheduler", help="show the scheduler, or tick it now")
+    sched.add_argument("action", nargs="?", choices=["tick"])
+
     sub.add_parser("login", help="store a Claude OAuth token for the runner")
 
     back = sub.add_parser("backends", help="backend commands")
@@ -188,6 +210,9 @@ class _Api:
     def put(self, path: str, body: dict[str, Any]) -> Any:
         return self._handle(self.client.put(self.base + path, json=body, headers=self.headers))
 
+    def patch(self, path: str, body: dict[str, Any]) -> Any:
+        return self._handle(self.client.patch(self.base + path, json=body, headers=self.headers))
+
     def delete(self, path: str) -> None:
         self._handle(self.client.delete(self.base + path, headers=self.headers))
 
@@ -239,7 +264,7 @@ def _print_run(detail: dict[str, Any], out: TextIO) -> None:
 
 def _launch(api: _Api, args: argparse.Namespace, path: str, body: dict[str, Any]) -> None:
     for key in ("runner", "model"):
-        if getattr(args, key):
+        if getattr(args, key, None):
             body[key] = getattr(args, key)
     run = api.post(path, body)
     print(f"run {run['id']} queued")
@@ -322,6 +347,49 @@ def _cmd_caps(args: argparse.Namespace, api: _Api) -> None:
     )
 
 
+ROUTINE_ALIASES = {"review": "cross-project-review", "prep": "meeting-prep"}
+
+
+def _cmd_routines(args: argparse.Namespace, api: _Api) -> None:
+    for r in api.get("/api/routines"):
+        last = api.get(f"/api/runs/{r['last_run_id']}")["run"]["status"] if r["last_run_id"] else "-"
+        enabled = "on" if r["enabled"] else "off"
+        print(f"{r['name']}  {enabled}  {r['trigger']}  {r['tz']}  {r['next_fire'] or '-'}  {last}")
+
+
+def _cmd_routine(args: argparse.Namespace, api: _Api) -> None:
+    enable = args.sub == "enable"
+    r = api.patch(f"/api/routines/{quote(args.name, safe='')}", {"enabled": enable})
+    if enable:
+        print(f"{r['name']} enabled · next fire {r['next_fire'] or '-'}")
+    else:
+        print(f"{r['name']} disabled")
+
+
+def _cmd_run_routine(args: argparse.Namespace, api: _Api) -> None:
+    name = ROUTINE_ALIASES.get(args.cmd) or args.routine
+    body: dict[str, Any] = {}
+    if args.projects:
+        body["projects"] = [s for s in args.projects.split(",") if s]
+    _launch(api, args, f"/api/routines/{quote(name, safe='')}/run", body)
+
+
+def _cmd_scheduler(args: argparse.Namespace, api: _Api) -> None:
+    if args.action == "tick":
+        rep = api.post("/api/scheduler/tick", {})
+        print(
+            f"tick: {len(rep['fired'])} fired, {len(rep['skipped'])} skipped,"
+            f" {len(rep['retried'])} retried, {len(rep['errors'])} errors"
+        )
+        for error in rep["errors"]:
+            print(f"error: {error}", file=sys.stderr)
+        return
+    st = api.get("/api/scheduler")
+    print(f"scheduler: every {st['interval_s']}s · last tick {st['last_tick'] or 'never'}")
+    for nf in st["next_fires"]:
+        print(f"  {nf['routine']}  {nf['at']}")
+
+
 def _cmd_login(api: _Api, stdin: TextIO) -> None:
     print(
         "Run 'claude setup-token' on this machine, then paste the token (input is not echoed):",
@@ -363,6 +431,8 @@ def _run(
     simple: dict[str, Callable[[argparse.Namespace, _Api], None]] = {
         "summarize": _cmd_summarize, "ask": _cmd_ask, "add": _cmd_add, "accept": _cmd_accept,
         "runs": _cmd_runs, "usage": _cmd_usage, "caps": _cmd_caps,
+        "routines": _cmd_routines, "routine": _cmd_routine, "run": _cmd_run_routine,
+        "review": _cmd_run_routine, "prep": _cmd_run_routine, "scheduler": _cmd_scheduler,
     }
     if cmd in simple:
         simple[cmd](args, api)

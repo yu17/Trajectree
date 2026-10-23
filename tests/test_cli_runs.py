@@ -58,3 +58,38 @@ def test_print_run_hides_applied_and_dismissed_hints(capsys):
     cli._print_run(detail, sys.stdout)
     out = capsys.readouterr().out
     assert "[applied]" in out and "[dismissed]" in out and out.count("trajectree accept r1") == 1
+
+
+def test_cli_routines_review_and_prep(app, client, anon, capsys):
+    env = env_for(app)
+    assert cli.main(["routines"], client=anon, env=env) == 0
+    rows = [line.split("  ") for line in capsys.readouterr().out.splitlines()]
+    assert rows == [["cross-project-review", "off", "0 7 * * 1", "UTC", "-", "-"],
+                    ["meeting-prep", "off", "0 7 * * 1-5", "UTC", "-", "-"]]
+    assert cli.main(["review", "--no-wait"], client=anon, env=env) == 0
+    assert capsys.readouterr().out.endswith(" queued\n")
+    assert len(client.get("/api/routines/cross-project-review/runs").json()) == 1
+    client.post("/api/projects", json={"slug": "clmi", "title": "CLMI", "kind": "research"})
+    assert cli.main(["prep", "--projects", "clmi"], client=anon, env=env) == 0   # waits for the run
+    out = capsys.readouterr().out
+    assert " ok " in out and "Parsed" in out
+    [prep] = client.get("/api/routines/meeting-prep/runs").json()
+    assert prep["props"]["request"]["projects"] == ["clmi"] and prep["status"] == "ok"
+    assert cli.main(["run", "nope", "--no-wait"], client=anon, env=env) == 1
+
+
+def test_cli_routine_enable_disable_and_scheduler(app, client, anon, capsys):
+    env = env_for(app)
+    assert cli.main(["routine", "enable", "meeting-prep"], client=anon, env=env) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("meeting-prep enabled · next fire ")
+    assert client.get("/api/routines/meeting-prep").json()["enabled"] is True
+    assert cli.main(["scheduler"], client=anon, env=env) == 0
+    out = capsys.readouterr().out
+    assert "every 30s" in out and "meeting-prep" in out
+    assert cli.main(["routine", "disable", "meeting-prep"], client=anon, env=env) == 0
+    assert capsys.readouterr().out.strip() == "meeting-prep disabled"
+    assert client.get("/api/routines/meeting-prep").json()["next_fire"] is None
+    assert cli.main(["scheduler", "tick"], client=anon, env=env) == 0
+    assert capsys.readouterr().out.startswith("tick: 0 fired, 0 skipped, 0 retried")
+    assert cli.main(["routine", "enable", "nope"], client=anon, env=env) == 1

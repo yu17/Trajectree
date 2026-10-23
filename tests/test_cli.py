@@ -8,7 +8,7 @@ def env_for(app):
 def test_cli_creates_event_by_slug(app, client, anon, capsys):
     client.post("/api/projects", json={"slug": "clmi", "title": "CLMI", "kind": "research"})
     assert main(["event", "clmi", "Encoder frozen", "--kind", "decision", "--at", "2026-01-05T10:00:00Z"], client=anon, env=env_for(app)) == 0
-    pid = client.get("/api/projects").json()[0]["id"]
+    pid = next(p["id"] for p in client.get("/api/projects").json() if p["slug"] == "clmi")
     events = client.get("/api/events", params={"projects": pid}).json()
     assert events[0]["title"] == "Encoder frozen" and events[0]["kind"] == "decision"
     assert client.get("/api/ledger/txns").json()[0]["tool"] == "cli"
@@ -41,7 +41,7 @@ def test_cli_token_file_and_projects_listing(app, client, anon, tmp_path, capsys
     tok.write_text(app.state.token + "\n")
     env = {"TRAJECTREE_URL": "http://testserver", "HOME": str(tmp_path)}
     assert main(["projects"], client=anon, env=env) == 0
-    assert capsys.readouterr().out.split() == ["clmi", "CLMI", "active"]
+    assert capsys.readouterr().out.splitlines() == ["inbox  Inbox  active", "clmi  CLMI  active"]   # inbox is seeded
 
 
 def test_cli_usage_error_exits_2(app, anon):

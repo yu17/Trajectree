@@ -30,7 +30,7 @@ def seed(ledger, human):
 async def test_tool_names(mcp):
     async with Client(mcp) as c:
         names = {t.name for t in (await c.list_tools()).tools}
-        assert {"list_projects", "get_project", "timeline", "search", "list_todos", "get_signals"} <= names
+        assert {"list_projects", "get_project", "timeline", "search", "list_todos", "get_signals", "get_run"} <= names
 
 
 async def test_get_project_by_slug(mcp, ledger, human):
@@ -69,6 +69,19 @@ async def test_search_and_todos(mcp, ledger, human):
         assert [x["id"] for x in todos] == [t.id]
         assert not (await c.call_tool("get_signals", {"project": "a"})).is_error
         assert (await c.call_tool("get_signals", {"project": "a", "limit": -1})).is_error
+
+
+async def test_get_run_tool(mcp, ledger):
+    from trajectree.repo.runs import create_run, update_run
+    run = create_run(ledger.conn, kind="ask", runner="claude", backend="claude", model=None, project_id=None)
+    update_run(ledger.conn, run.id, status="ok", result_md="Answer", token_id="tok-1", log_path="/runs/x.log")
+    async with Client(mcp) as c:
+        r = await c.call_tool("get_run", {"run_id": run.id})
+        assert not r.is_error
+        d = r.structured_content
+        assert d["id"] == run.id and d["result_md"] == "Answer" and d["token_id"] is None and d["log_path"] is None
+        missing = await c.call_tool("get_run", {"run_id": "nope"})
+        assert missing.is_error and "unknown run nope" in missing.content[0].text
 
 
 def test_parse_when():

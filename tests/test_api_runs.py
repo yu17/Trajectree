@@ -119,7 +119,8 @@ def test_summarize_run_end_to_end_over_http(ledger, human, settings, monkeypatch
         assert len(d["txn_ids"]) == 1
         t = httpx.get(base + f"/api/ledger/txns/{d['txn_ids'][0]}", headers=h).json()["txn"]
         assert (t["actor_kind"], t["actor_ref"], t["run_id"], t["review"], t["tool"]) == ("agent", run["id"], run["id"], "pending", "claude")
-        assert httpx.get(base + "/api/projects", headers=h).json()[0]["summary_md"] == "# Fresh summary"
+        summaries = {x["slug"]: x["summary_md"] for x in httpx.get(base + "/api/projects", headers=h).json()}
+        assert summaries["clmi"] == "# Fresh summary"
     finally:
         server.should_exit = True
         thread.join(10)

@@ -103,3 +103,12 @@ def test_routine_in_rejects_bad_trigger_and_tz():
         RoutinePatch(trigger="nope")
     with pytest.raises(ValidationError, match="unknown timezone"):
         RoutinePatch(tz="Mars/Olympus")
+
+
+def test_routine_patch_rejects_explicit_null_for_required_fields():
+    for name in ("name", "trigger", "tz", "prompt_ref", "enabled", "scope", "cwd_mode", "tool_policy", "caps",
+                 "write_mode", "delivery", "props"):
+        with pytest.raises(ValidationError, match="cannot be null"):
+            RoutinePatch.model_validate({name: None})
+    assert RoutinePatch(runner=None, model=None).model_fields_set == {"runner", "model"}
+    assert RoutinePatch().model_dump(exclude_unset=True) == {}

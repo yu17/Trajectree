@@ -185,11 +185,12 @@ def usage_days(conn: apsw.Connection, *, days: int, now: datetime) -> list[Usage
 def usage_by(
     conn: apsw.Connection, *, field: Literal["kind", "runner", "routine_id"], since: datetime
 ) -> list[UsageSlice]:
+    """Spend and run count per value of `field`; runs without a value (no routine) are keyed `-`."""
     if field not in ("kind", "runner", "routine_id"):
         raise ValueError(f"cannot group usage by {field!r}")
     rows = conn.execute(
-        f"SELECT {field}, SUM(est_usd), COUNT(*) FROM run"
-        f" WHERE coalesce(started, created_at) >= ? AND {field} IS NOT NULL"
+        f"SELECT coalesce({field}, '-'), SUM(est_usd), COUNT(*) FROM run"
+        " WHERE coalesce(started, created_at) >= ?"
         " GROUP BY 1 ORDER BY 2 DESC, 1",
         (to_db(since),),
     )
