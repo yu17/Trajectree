@@ -121,8 +121,7 @@ def install(
     current = _load(path)
     if current is None:
         return 1
-    for token in _hook_tokens(api):
-        api.delete(f"/api/tokens/{token['id']}")
+    old_tokens = _hook_tokens(api)
     created = api.post(
         "/api/tokens",
         {"label": HOOK_LABEL, "scope": {"projects": [], "tools": ["hooks"], "write": False}},
@@ -136,7 +135,14 @@ def install(
         api.delete(f"/api/tokens/{created['id']}")
         print("aborted", file=out)
         return 1
-    _write(path, merged)
+    try:
+        _write(path, merged)
+    except OSError as exc:
+        api.delete(f"/api/tokens/{created['id']}")
+        print(f"cannot write {path}: {exc}", file=sys.stderr)
+        return 1
+    for token in old_tokens:
+        api.delete(f"/api/tokens/{token['id']}")
     print(f"hooks: installed ({len(HOOK_EVENTS)} events)", file=out)
     return 0
 

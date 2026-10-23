@@ -41,8 +41,10 @@ def test_install_writes_backup_rotates_token_and_authenticates(app, client, anon
 def test_install_aborts_without_confirmation(app, client, anon, tmp_path, capsys):
     f = tmp_path / "settings.json"
     env = {**env_for(app), "HOME": str(tmp_path)}
+    old = client.post("/api/tokens", json={"label": "hooks", "scope": {"projects": [], "tools": ["hooks"], "write": False}, "ttl_s": None}).json()
     assert cli.main(["hooks", "install", "--settings-file", str(f)], client=anon, env=env) == 1   # stdin is not a tty
-    assert "aborted" in capsys.readouterr().out and not f.exists() and client.get("/api/tokens").json() == []
+    assert "aborted" in capsys.readouterr().out and not f.exists()
+    assert [t["id"] for t in client.get("/api/tokens").json()] == [old["id"]]   # old token survives the abort
 
 def test_install_default_path_and_bad_json(app, anon, tmp_path, capsys):
     cfg = tmp_path / ".claude"
