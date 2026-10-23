@@ -52,3 +52,26 @@ def test_install_default_path_and_bad_json(app, anon, tmp_path, capsys):
     (cfg / "settings.json").write_text("{not json")
     assert cli.main(["hooks", "install", "--yes"], client=anon, env={**env_for(app), "HOME": str(tmp_path)}) == 1
     assert "cannot parse" in capsys.readouterr().err
+
+def test_backup_keeps_the_original_across_installs(app, anon, tmp_path):
+    f = tmp_path / "settings.json"
+    f.write_text(json.dumps(EXISTING))
+    env = {**env_for(app), "HOME": str(tmp_path)}
+    for _ in range(2):
+        assert cli.main(["hooks", "install", "--yes", "--settings-file", str(f)], client=anon, env=env) == 0
+    assert json.loads((tmp_path / "settings.json.trajectree.bak").read_text()) == EXISTING
+
+def test_malformed_structure_is_rejected_before_minting(app, client, anon, tmp_path, capsys):
+    f = tmp_path / "settings.json"
+    f.write_text(json.dumps({"hooks": {"Stop": "x"}}))
+    env = {**env_for(app), "HOME": str(tmp_path)}
+    assert cli.main(["hooks", "install", "--yes", "--settings-file", str(f)], client=anon, env=env) == 1
+    assert "cannot parse" in capsys.readouterr().err and client.get("/api/tokens").json() == []
+
+def test_uninstall_without_our_hooks_leaves_file_alone(app, anon, tmp_path):
+    f = tmp_path / "settings.json"
+    f.write_text(json.dumps(EXISTING))
+    before = f.read_bytes()
+    env = {**env_for(app), "HOME": str(tmp_path)}
+    assert cli.main(["hooks", "uninstall", "--settings-file", str(f)], client=anon, env=env) == 0
+    assert f.read_bytes() == before and not (tmp_path / "settings.json.trajectree.bak").exists()

@@ -84,24 +84,45 @@ def _default_confirm(prompt: str) -> bool:
     return sys.stdin.isatty() and input(prompt).strip().lower() == "y"
 
 
+def _well_formed(data: Any) -> bool:
+    if not isinstance(data, dict):
+        return False
+    hooks = data.get("hooks")
+    if hooks is None:
+        return "hooks" not in data
+    if not isinstance(hooks, dict):
+        return False
+    for groups in hooks.values():
+        if not isinstance(groups, list):
+            return False
+        for group in groups:
+            if not isinstance(group, dict):
+                return False
+            handlers = group.get("hooks", [])
+            if not isinstance(handlers, list) or not all(isinstance(h, dict) for h in handlers):
+                return False
+    return True
+
+
 def _load(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return {}
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         data = None
-    if not isinstance(data, dict):
+    if not _well_formed(data):
         print(f"cannot parse {path}", file=sys.stderr)
         return None
     return data
 
 
 def _write(path: Path, settings: dict[str, Any]) -> None:
-    if path.exists():
-        shutil.copyfile(path, path.with_name(path.name + ".trajectree.bak"))
+    backup = path.with_name(path.name + ".trajectree.bak")
+    if path.exists() and not backup.exists():
+        shutil.copyfile(path, backup)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(settings, indent=2) + "\n")
+    path.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
 def _hook_tokens(api: Any) -> list[dict[str, Any]]:
@@ -154,8 +175,13 @@ def uninstall(
     current = _load(path)
     if current is None:
         return 1
-    if path.exists():
-        _write(path, remove_hooks(current, hooks_url(api.base)))
+    cleaned = remove_hooks(current, hooks_url(api.base))
+    if cleaned != current:
+        try:
+            _write(path, cleaned)
+        except OSError as exc:
+            print(f"cannot write {path}: {exc}", file=sys.stderr)
+            return 1
     for token in _hook_tokens(api):
         api.delete(f"/api/tokens/{token['id']}")
     print("hooks: removed", file=out)
