@@ -298,6 +298,7 @@ class Proposal(BaseModel):
     status: Literal["happened", "planned", "suggested"] = "happened"
     applied_txn: str | None = None
     applied_id: str | None = None
+    dismissed: bool = False
 
 
 class Run(BaseModel):
@@ -344,6 +345,12 @@ class Caps(BaseModel):
     usd_per_day: float = Field(5.0, gt=0, le=1000)
     timeout_s: int = Field(600, ge=1, le=7200)
     paused: bool = False
+
+    @model_validator(mode="after")
+    def _run_within_day(self) -> "Caps":
+        if self.usd_per_run > self.usd_per_day:
+            raise ValueError("usd_per_run must not exceed usd_per_day")
+        return self
 
 
 class UsageDay(BaseModel):

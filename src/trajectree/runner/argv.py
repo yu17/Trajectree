@@ -25,18 +25,21 @@ def mcp_config_json(spec: RunSpec) -> str:
     return json.dumps(cfg, separators=(",", ":"))
 
 
-def claude_argv(spec: RunSpec, *, binary: str) -> list[str]:
+def claude_argv(spec: RunSpec, *, binary: str, mcp_config_path: Path) -> list[str]:
+    """The headless argv. The prompt goes on stdin and the run token stays in the config file."""
     argv = [
-        binary, "-p", spec.prompt,
+        binary, "-p",
         "--output-format", "json",
         "--permission-mode", "dontAsk",
         "--setting-sources", "user",
         "--strict-mcp-config",
-        "--mcp-config", mcp_config_json(spec),
+        "--mcp-config", str(mcp_config_path),
         "--tools", ",".join(spec.tools.tools),
         "--allowedTools", *spec.tools.allowed,
         "--max-budget-usd", str(spec.usd_cap),
     ]
+    if spec.tools.disallowed:
+        argv += ["--disallowedTools", *spec.tools.disallowed]
     if spec.model:
         argv += ["--model", spec.model]
     if spec.json_schema is not None:
@@ -90,11 +93,12 @@ def run_env(spec: RunSpec, settings: Settings, *, base: Mapping[str, str], oauth
     return env
 
 
+def mask_text(text: str, secrets: list[str]) -> str:
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "***")
+    return text
+
+
 def mask(argv: list[str], secrets: list[str]) -> list[str]:
-    out = []
-    for arg in argv:
-        for secret in secrets:
-            if secret:
-                arg = arg.replace(secret, "***")
-        out.append(arg)
-    return out
+    return [mask_text(arg, secrets) for arg in argv]

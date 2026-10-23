@@ -49,6 +49,7 @@ def settings(tmp_path):
             "FAKE_CLAUDE_PROJECT",
             "FAKE_CLAUDE_ARGV_FILE",
             "FAKE_CLAUDE_ENV_FILE",
+            "FAKE_CLAUDE_PROMPT_FILE",
         ],
     )
 

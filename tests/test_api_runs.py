@@ -34,6 +34,37 @@ def test_quick_add_run_and_accept_proposal(client, settings, monkeypatch):
     assert [x["id"] for x in client.get("/api/runs", params={"open_proposals": "true"}).json()] == []
     assert client.get("/api/runs").json()[0]["id"] == d["run"]["id"]
 
+def test_dismiss_proposal_api(client, settings, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "ok")
+    monkeypatch.setenv("FAKE_CLAUDE_STRUCTURED", STRUCTURED)
+    store_oauth_token(settings, "fake")
+    mk_project(client)
+    d = wait_run(client, client.post("/api/quick-add", json={"text": "we decided X"}).json()["id"])
+    run_id = d["run"]["id"]
+    assert [x["id"] for x in client.get("/api/runs", params={"open_proposals": "true"}).json()] == [run_id]
+    r = client.post(f"/api/runs/{run_id}/proposals/0/dismiss")
+    assert r.status_code == 200 and r.json()["proposals"][0]["dismissed"] is True and r.json()["proposals"][0]["applied_txn"] is None
+    assert client.post(f"/api/runs/{run_id}/proposals/0/dismiss").status_code == 409
+    assert client.post(f"/api/runs/{run_id}/proposals/0/accept").status_code == 409
+    assert client.post(f"/api/runs/{run_id}/proposals/5/dismiss").status_code == 404
+    assert client.post("/api/runs/nope/proposals/0/dismiss").status_code == 404
+    assert client.get("/api/runs", params={"open_proposals": "true"}).json() == []
+
+def test_startup_fails_runs_left_running(settings, ledger):
+    from fastapi.testclient import TestClient
+    from trajectree.repo.runs import create_run, get_run, update_run
+    run = create_run(ledger.conn, kind="ask", runner="claude", backend="claude", model=None, project_id=None)
+    update_run(ledger.conn, run.id, status="running")
+    with TestClient(create_app(settings, ledger=ledger)):
+        after = get_run(ledger.conn, run.id)
+    assert after.status == "failed" and after.error == "daemon restarted"
+
+def test_caps_per_run_must_not_exceed_per_day(client):
+    r = client.put("/api/caps", json={"usd_per_run": 3, "usd_per_day": 2, "timeout_s": 120, "paused": False})
+    assert r.status_code == 422 and "usd_per_run must not exceed usd_per_day" in json.dumps(r.json())
+    assert client.get("/api/caps").json()["usd_per_run"] == 1.0
+    assert client.put("/api/caps", json={"usd_per_run": 2, "usd_per_day": 2, "timeout_s": 120, "paused": False}).status_code == 200
+
 def test_caps_pause_and_usage(client):
     assert client.get("/api/caps").json()["paused"] is False
     assert client.put("/api/caps", json={"usd_per_run": 0.5, "usd_per_day": 2, "timeout_s": 120, "paused": True}).status_code == 200

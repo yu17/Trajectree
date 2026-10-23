@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 import pytest
-from trajectree.runner.argv import claude_argv, codex_argv, mask, run_env
+from trajectree.runner.argv import claude_argv, codex_argv, mask, mcp_config_json, run_env
 from trajectree.runner.spec import MissingCredentials, RunSpec, ToolPolicy
 
 def spec(**over):
@@ -13,11 +13,12 @@ def spec(**over):
 def test_claude_argv_fixed_shape():
     s = spec(model="sonnet", json_schema={"type": "object"}, system_prompt="Be brief.",
              tools=ToolPolicy(tools=["Read", "Grep", "Glob", "Bash"], allowed=["Read", "Grep", "Glob", "Bash(git log *)", "mcp__trajectree__*"]))
-    argv = claude_argv(s, binary="claude")
-    assert argv[:5] == ["claude", "-p", "Q?", "--output-format", "json"]
+    argv = claude_argv(s, binary="claude", mcp_config_path=Path("/data/runs/r1/mcp.json"))
+    assert argv[:4] == ["claude", "-p", "--output-format", "json"]
+    assert "Q?" not in argv and not any("trj_secret" in a for a in argv)   # prompt on stdin, token in the config file
     assert argv[argv.index("--permission-mode") + 1] == "dontAsk" and argv[argv.index("--setting-sources") + 1] == "user"
-    assert "--strict-mcp-config" in argv
-    cfg = json.loads(argv[argv.index("--mcp-config") + 1])
+    assert "--strict-mcp-config" in argv and argv[argv.index("--mcp-config") + 1] == "/data/runs/r1/mcp.json"
+    cfg = json.loads(mcp_config_json(s))
     assert cfg["mcpServers"]["trajectree"] == {"type": "http", "url": "http://127.0.0.1:8742/mcp", "headers": {"Authorization": "Bearer trj_secret"}}
     assert argv[argv.index("--tools") + 1] == "Read,Grep,Glob,Bash"
     i = argv.index("--allowedTools")
@@ -25,10 +26,18 @@ def test_claude_argv_fixed_shape():
     assert argv[argv.index("--max-budget-usd") + 1] == "0.5" and argv[argv.index("--model") + 1] == "sonnet"
     assert json.loads(argv[argv.index("--json-schema") + 1]) == {"type": "object"}
     assert argv[argv.index("--append-system-prompt") + 1] == "Be brief." and "--max-turns" not in argv
+    assert "--disallowedTools" not in argv
 
 def test_claude_argv_no_tools_and_optional_flags_absent():
-    argv = claude_argv(spec(), binary="/opt/claude")
+    argv = claude_argv(spec(), binary="/opt/claude", mcp_config_path=Path("/m.json"))
     assert argv[argv.index("--tools") + 1] == "" and "--model" not in argv and "--json-schema" not in argv and "--append-system-prompt" not in argv
+    assert "--disallowedTools" not in argv
+
+def test_claude_argv_disallowed_tools():
+    s = spec(tools=ToolPolicy(tools=["Read"], allowed=["Read"], disallowed=["Read(//cfg/**)", "Read(//data/**)"]))
+    argv = claude_argv(s, binary="claude", mcp_config_path=Path("/m.json"))
+    i = argv.index("--disallowedTools")
+    assert argv[i + 1:i + 3] == ["Read(//cfg/**)", "Read(//data/**)"]
 
 def test_codex_argv():
     argv = codex_argv(spec(runner="codex", backend="codex", model="gpt-5", system_prompt="Sys."), binary="codex",

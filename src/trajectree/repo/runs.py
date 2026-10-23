@@ -86,7 +86,8 @@ def list_runs(
     if with_open_proposals:
         where.append(
             "EXISTS (SELECT 1 FROM json_each(run.proposals)"
-            " WHERE json_extract(value, '$.applied_txn') IS NULL)"
+            " WHERE json_extract(value, '$.applied_txn') IS NULL"
+            " AND coalesce(json_extract(value, '$.dismissed'), 0) != 1)"
         )
     rows = select_rows(conn, "run", where, params, f"created_at DESC, id DESC LIMIT {int(limit)}")
     return [_to_run(conn, r) for r in rows]
@@ -94,6 +95,23 @@ def list_runs(
 
 def oldest_queued(conn: apsw.Connection) -> Run | None:
     rows = select_rows(conn, "run", ["status = 'queued'"], [], "created_at, id LIMIT 1")
+    return _to_run(conn, rows[0]) if rows else None
+
+
+def running_runs(conn: apsw.Connection) -> list[Run]:
+    rows = select_rows(conn, "run", ["status = 'running'"], [], "created_at, id")
+    return [_to_run(conn, r) for r in rows]
+
+
+def find_active_summarize(conn: apsw.Connection, project_id: str) -> Run | None:
+    """The queued or running summarize run for `project_id`, if any."""
+    rows = select_rows(
+        conn,
+        "run",
+        ["kind = 'summarize'", "project_id = ?", "status IN ('queued', 'running')"],
+        [project_id],
+        "created_at, id LIMIT 1",
+    )
     return _to_run(conn, rows[0]) if rows else None
 
 

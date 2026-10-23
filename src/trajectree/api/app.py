@@ -58,6 +58,8 @@ def create_app(settings: Settings, *, ledger: Ledger | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         async with mcp.session_manager.run():
             stop = asyncio.Event()
+            # Runs left `running` by a previous process can never finish: fail them first.
+            await asyncio.to_thread(app.state.runs.recover)
             # Exactly one worker: the serial run slot depends on it.
             tasks = [asyncio.create_task(app.state.runs.worker(stop))]
             if settings.ingest_interval_s > 0:

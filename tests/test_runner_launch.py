@@ -11,6 +11,13 @@ def test_launch_captures_and_masks(tmp_path):
     text = log.read_text()
     assert "trj_x" not in text and "Bearer ***" in text and "--- stdout ---" in text and out.duration_ms >= 0
 
+def test_launch_feeds_stdin_text(tmp_path):
+    got = tmp_path / "prompt.txt"
+    out = launch([FAKE, "-p", "--output-format", "json"], env={**os.environ, "FAKE_CLAUDE_MODE": "ok", "FAKE_CLAUDE_PROMPT_FILE": str(got)},
+                 cwd=tmp_path, timeout_s=20, log_path=tmp_path / "r.log", secrets=[], stdin_text="Prompt via stdin")
+    assert out.exit_code == 0 and got.read_text() == "Prompt via stdin"
+    assert "Prompt via stdin" not in (tmp_path / "r.log").read_text().split("--- stdout ---")[0]   # not in the argv header
+
 def test_launch_kills_on_timeout(tmp_path):
     t0 = time.monotonic()
     out = launch([FAKE], env={**os.environ, "FAKE_CLAUDE_MODE": "sleep"}, cwd=tmp_path, timeout_s=1, log_path=tmp_path / "r.log", secrets=[])

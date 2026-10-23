@@ -22,6 +22,7 @@ class AlreadyApplied(Exception):
 class ToolPolicy(BaseModel):
     tools: list[str]
     allowed: list[str]
+    disallowed: list[str] = []
 
 
 class RunSpec(BaseModel):

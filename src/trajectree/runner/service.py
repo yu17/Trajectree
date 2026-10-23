@@ -22,8 +22,16 @@ from trajectree.models import Actor, EventIn, Proposal, Run, TodoIn
 from trajectree.repo import NotFound, UnknownProject, events, todos
 from trajectree.repo.caps import get_caps
 from trajectree.repo.projects import get_project_by_slug, resolve_project_ref
-from trajectree.repo.runs import create_run, get_run, oldest_queued, spent_usd, update_run
-from trajectree.runner.argv import claude_argv, codex_argv, run_env
+from trajectree.repo.runs import (
+    create_run,
+    find_active_summarize,
+    get_run,
+    oldest_queued,
+    running_runs,
+    spent_usd,
+    update_run,
+)
+from trajectree.runner.argv import claude_argv, codex_argv, mask_text, mcp_config_json, run_env
 from trajectree.runner.credentials import cli_version, ensure_cfg_dirs, load_oauth_token
 from trajectree.runner.kinds import (
     KIND_OF,
@@ -43,7 +51,7 @@ from trajectree.runner.spec import (
     RunsPaused,
     RunSpec,
 )
-from trajectree.timeutil import parse_iso, utcnow
+from trajectree.timeutil import parse_when_lenient, to_db, utcnow
 
 log = logging.getLogger("trajectree.runner")
 
@@ -85,6 +93,9 @@ class RunService:
             project_id = None
             if isinstance(request, SummarizeRequest):
                 project_id = resolve_project_ref(conn, request.project).id
+                active = find_active_summarize(conn, project_id)
+                if active is not None:
+                    return active  # one summary per project in flight
             elif isinstance(request, AskRequest):
                 for ref in request.projects or []:
                     resolve_project_ref(conn, ref)
@@ -119,37 +130,47 @@ class RunService:
             if isinstance(prepared, Run):
                 return prepared
             run, caps, plan, spec, env, token_id, oauth_token = prepared
-        secret = spec.mcp_token
+        secrets = [spec.mcp_token, oauth_token or ""]
+        run_dir = self.settings.runs_dir / run_id
+        mcp_path = run_dir / "mcp.json"
         try:
-            ensure_cfg_dirs(self.settings)
-            run_dir = self.settings.runs_dir / run_id
-            run_dir.mkdir(parents=True, exist_ok=True)
-            last_path = run_dir / "last.md"
-            if run.runner == "codex":
-                schema_path = run_dir / "schema.json"
-                schema_path.write_text(json.dumps(plan.json_schema))
-                argv = codex_argv(
-                    spec, binary=self.settings.codex_bin, schema_path=schema_path, last_message_path=last_path
-                )
-            else:
-                argv = claude_argv(spec, binary=self.settings.claude_bin)
-            outcome = self.launch(
-                argv,
-                env=env,
-                cwd=plan.cwd,
-                timeout_s=caps.timeout_s,
-                log_path=self.settings.runs_dir / f"{run_id}.log",
-                secrets=[secret, oauth_token or ""],
-                popen=self.popen,
-            )
-        except BaseException as exc:
-            self._abort(run_id, token_id, str(exc)[:500])
-            raise
-        with self.ledger.locked() as conn:
             try:
-                return self._finalize(conn, run, caps.timeout_s, outcome, last_path)
-            finally:
-                revoke_token(conn, token_id)
+                ensure_cfg_dirs(self.settings)
+                run_dir.mkdir(parents=True, exist_ok=True)
+                last_path = run_dir / "last.md"
+                stdin_text: str | None = None
+                if run.runner == "codex":
+                    schema_path = run_dir / "schema.json"
+                    schema_path.write_text(json.dumps(plan.json_schema))
+                    argv = codex_argv(
+                        spec, binary=self.settings.codex_bin, schema_path=schema_path, last_message_path=last_path
+                    )
+                else:
+                    # The run token lives in a private file and the prompt goes on stdin, so
+                    # neither shows up in the process table.
+                    _write_private(mcp_path, mcp_config_json(spec))
+                    argv = claude_argv(spec, binary=self.settings.claude_bin, mcp_config_path=mcp_path)
+                    stdin_text = spec.prompt
+                outcome = self.launch(
+                    argv,
+                    env=env,
+                    cwd=plan.cwd,
+                    timeout_s=caps.timeout_s,
+                    log_path=self.settings.runs_dir / f"{run_id}.log",
+                    secrets=secrets,
+                    popen=self.popen,
+                    stdin_text=stdin_text,
+                )
+            except BaseException as exc:
+                self._abort(run_id, token_id, mask_text(str(exc), secrets)[:500])
+                raise
+            with self.ledger.locked() as conn:
+                try:
+                    return self._finalize(conn, run, caps.timeout_s, outcome, last_path, secrets)
+                finally:
+                    revoke_token(conn, token_id)
+        finally:
+            mcp_path.unlink(missing_ok=True)
 
     def _abort(self, run_id: str, token_id: str, error: str) -> None:
         with self.ledger.locked() as conn:
@@ -226,7 +247,7 @@ class RunService:
             raise
         return run, caps, plan, spec, env, token_id, oauth_token
 
-    def _finalize(self, conn, run: Run, timeout_s: int, outcome, last_path) -> Run:
+    def _finalize(self, conn, run: Run, timeout_s: int, outcome, last_path, secrets: list[str]) -> Run:
         if outcome.timed_out:
             return self._fail(conn, run.id, f"timeout after {timeout_s}s")
         if outcome.exit_code is None:
@@ -238,7 +259,8 @@ class RunService:
             else:
                 parsed = parse_claude_json(outcome.stdout)
         except ValueError:
-            return self._fail(conn, run.id, (outcome.stderr_tail or outcome.stdout)[:500])
+            # stderr_tail is masked by launch; stdout is raw, so mask it before storing.
+            return self._fail(conn, run.id, (outcome.stderr_tail or mask_text(outcome.stdout, secrets))[:500])
         if parsed.ok:
             status = "ok"
         elif parsed.subtype == "error_max_budget_usd":
@@ -267,6 +289,10 @@ class RunService:
 
     # -- worker ----------------------------------------------------------------------------
 
+    def _paused(self) -> bool:
+        with self.ledger.locked() as conn:
+            return get_caps(conn).paused
+
     def _next_queued(self) -> Run | None:
         with self.ledger.locked() as conn:
             return oldest_queued(conn)
@@ -275,10 +301,22 @@ class RunService:
         with self.ledger.locked() as conn:
             self._fail(conn, run_id, error)
 
+    def recover(self) -> int:
+        """Fail every run left `running` by a previous daemon and revoke its token."""
+        with self.ledger.locked() as conn:
+            orphans = running_runs(conn)
+            for run in orphans:
+                self._fail(conn, run.id, "daemon restarted")
+                if run.token_id:
+                    revoke_token(conn, run.token_id)  # already gone is fine
+        return len(orphans)
+
     async def worker(self, stop: asyncio.Event, *, poll_s: float = 0.5) -> None:
         while not stop.is_set():
             try:
-                run = await asyncio.to_thread(self._next_queued)
+                # Paused: queued runs stay queued until the owner resumes.
+                paused = await asyncio.to_thread(self._paused)
+                run = None if paused else await asyncio.to_thread(self._next_queued)
                 if run is not None:
                     try:
                         await asyncio.to_thread(self.execute, run.id)
@@ -295,16 +333,31 @@ class RunService:
 
     # -- proposals -------------------------------------------------------------------------
 
+    @staticmethod
+    def _open_proposal(conn, run_id: str, index: int) -> tuple[Run, Proposal]:
+        run = get_run(conn, run_id)
+        if run is None:
+            raise NotFound(f"run {run_id} not found")
+        if not 0 <= index < len(run.proposals):
+            raise NotFound(f"proposal {index} not found")
+        proposal = run.proposals[index]
+        if proposal.applied_txn:
+            raise AlreadyApplied(f"proposal {index} already applied")
+        if proposal.dismissed:
+            raise AlreadyApplied(f"proposal {index} was dismissed")
+        return run, proposal
+
+    def dismiss_proposal(self, run_id: str, index: int) -> Run:
+        with self.ledger.locked() as conn:
+            run, _ = self._open_proposal(conn, run_id, index)
+            updated = [
+                p.model_copy(update={"dismissed": True}) if i == index else p for i, p in enumerate(run.proposals)
+            ]
+            return update_run(conn, run_id, proposals=updated)
+
     def apply_proposal(self, run_id: str, index: int, *, actor: Actor) -> Run:
         with self.ledger.locked() as conn:
-            run = get_run(conn, run_id)
-            if run is None:
-                raise NotFound(f"run {run_id} not found")
-            if not 0 <= index < len(run.proposals):
-                raise NotFound(f"proposal {index} not found")
-            proposal = run.proposals[index]
-            if proposal.applied_txn:
-                raise AlreadyApplied(f"proposal {index} already applied")
+            run, proposal = self._open_proposal(conn, run_id, index)
             project_id: str | None
             if proposal.kind == "todo" and proposal.project == "inbox" and get_project_by_slug(conn, "inbox") is None:
                 project_id = None
@@ -323,7 +376,7 @@ class RunService:
                         kind=proposal.event_kind,
                         title=proposal.title,
                         body_md=proposal.body_md,
-                        t_start=parse_iso(proposal.when) if proposal.when else self.now(),
+                        t_start=parse_when_lenient(proposal.when) if proposal.when else self.now(),
                         status=proposal.status,
                         source="agent",
                     ),
@@ -338,11 +391,19 @@ class RunService:
                         project_id=project_id,
                         title=proposal.title,
                         body_md=proposal.body_md,
-                        due=parse_iso(proposal.due) if proposal.due else None,
+                        due=parse_when_lenient(proposal.due) if proposal.due else None,
                     ),
                     intent=proposal.reason,
                 )
-                txn_id, applied_id = self.ledger.list_txns(limit=1)[0].id, todo.id
+                # create_todo returns no txn id: find the txn that inserted this todo
+                # (`pk` is stored as `json.dumps` of the key list, see Ledger._record).
+                row = conn.execute(
+                    "SELECT txn_id FROM change WHERE table_name = 'todo' AND op = 'INSERT' AND pk = ?"
+                    " ORDER BY txn_id DESC LIMIT 1",
+                    (json.dumps([todo.id]),),
+                ).fetchone()
+                assert row is not None
+                txn_id, applied_id = row[0], todo.id
             updated = [
                 p.model_copy(update={"applied_txn": txn_id, "applied_id": applied_id}) if i == index else p
                 for i, p in enumerate(run.proposals)
@@ -350,12 +411,27 @@ class RunService:
             return update_run(conn, run_id, proposals=updated)
 
 
+def _write_private(path, text: str) -> None:
+    """Write `text` to a file created 0600 (never world-readable, not even briefly)."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.chmod(path, 0o600)
+
+
 def _proposals(parsed: ParsedResult) -> list[Proposal]:
     items = parsed.structured.get("proposals") if isinstance(parsed.structured, dict) else None
     out: list[Proposal] = []
     for item in items if isinstance(items, list) else []:
         try:
-            out.append(Proposal.model_validate(item))
-        except ValidationError:
+            proposal = Proposal.model_validate(item)
+            # Normalise agent-written dates now; a date that cannot be read drops the proposal.
+            dates = {
+                name: to_db(parse_when_lenient(value))
+                for name in ("when", "due")
+                if (value := getattr(proposal, name))
+            }
+        except (ValidationError, ValueError):
             continue
+        out.append(proposal.model_copy(update=dates))
     return out

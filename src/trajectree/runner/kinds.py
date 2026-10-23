@@ -18,7 +18,7 @@ from trajectree.config import Settings
 from trajectree.connectors.paths import to_local
 from trajectree.context.pack import build_context_pack
 from trajectree.models import RUNNER_PATTERN, Run, RunKind
-from trajectree.repo.projects import list_projects, resolve_project_ref
+from trajectree.repo.projects import get_project_by_slug, list_projects, resolve_project_ref
 from trajectree.repo.resources import list_resources
 from trajectree.runner.spec import ToolPolicy
 
@@ -183,10 +183,18 @@ def _plan_summarize(
         tools=ToolPolicy(
             tools=["Read", "Grep", "Glob", "Bash"],
             allowed=["Read", "Grep", "Glob", "Bash(git log *)", "mcp__trajectree__*"],
+            # Keep the daemon's secrets (OAuth token, run MCP configs, the DB) out of reach.
+            # Read deny rules also govern Grep and Glob.
+            disallowed=[_deny_read(settings.cfg_root), _deny_read(settings.data_dir)],
         ),
         json_schema=PROPOSAL_SCHEMA,
         scope=Scope(projects=[project.id], tools=["set_project_summary"], write=True),
     )
+
+
+def _deny_read(path: Path) -> str:
+    """A Read deny rule for everything under `path`; `//` anchors at the filesystem root."""
+    return f"Read(//{str(path.absolute()).lstrip('/')}/**)"
 
 
 def _read_only_plan(settings: Settings, run: Run, prompt: str) -> RunPlan:
@@ -231,7 +239,9 @@ def _plan_quick_add(
     conn: apsw.Connection, settings: Settings, run: Run, request: QuickAddRequest, now: datetime
 ) -> RunPlan:
     active = list_projects(conn, status="active")
-    if request.project:
+    if get_project_by_slug(conn, "inbox") is not None:
+        default = "inbox"
+    elif request.project:
         default = resolve_project_ref(conn, request.project).slug
     else:
         default = active[0].slug if active else "inbox"

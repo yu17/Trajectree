@@ -96,6 +96,12 @@ def accept_proposal(run_id: str, index: int, request: Request):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@router.post("/runs/{run_id}/proposals/{index}/dismiss", response_model=Run)
+def dismiss_proposal(run_id: str, index: int, request: Request):
+    runs: RunService = request.app.state.runs
+    return runs.dismiss_proposal(run_id, index)
+
+
 @router.get("/usage", response_model=UsageReport)
 def usage(days: int = Query(30, ge=1, le=365), ledger: Ledger = Depends(get_ledger)):
     now = datetime.now(timezone.utc)

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from trajectree.runner.argv import mask
+from trajectree.runner.argv import mask, mask_text
 
 STDERR_TAIL = 2000
 
@@ -21,10 +21,6 @@ class RunOutcome(BaseModel):
     stderr_tail: str
     log_path: str
     duration_ms: int
-
-
-def _mask_text(text: str, secrets: list[str]) -> str:
-    return mask([text], secrets)[0]
 
 
 def _signal_group(proc, sig: int, fallback) -> None:
@@ -43,7 +39,9 @@ def launch(
     log_path: Path,
     secrets: list[str],
     popen=subprocess.Popen,
+    stdin_text: str | None = None,
 ) -> RunOutcome:
+    """Run `argv` to completion; `stdin_text`, when given, is written to its stdin."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
     cwd.mkdir(parents=True, exist_ok=True)
     header = f"# argv: {shlex.join(mask(argv, secrets))}\n# cwd: {cwd}\n"
@@ -52,7 +50,7 @@ def launch(
     exit_code: int | None
     try:
         proc = popen(
-            argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+            argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL if stdin_text is None else subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace",
             start_new_session=True,
         )
@@ -63,7 +61,7 @@ def launch(
             log_path=str(log_path), duration_ms=int((time.monotonic() - start) * 1000),
         )
     try:
-        stdout, stderr = proc.communicate(timeout=timeout_s)
+        stdout, stderr = proc.communicate(input=stdin_text, timeout=timeout_s)
     except subprocess.TimeoutExpired:
         timed_out = True
         _signal_group(proc, signal.SIGTERM, proc.terminate)
@@ -83,11 +81,11 @@ def launch(
     stderr = stderr or ""
     log_path.write_text(
         header
-        + "--- stdout ---\n" + _mask_text(stdout, secrets) + "\n"
-        + "--- stderr ---\n" + _mask_text(stderr, secrets) + "\n"
+        + "--- stdout ---\n" + mask_text(stdout, secrets) + "\n"
+        + "--- stderr ---\n" + mask_text(stderr, secrets) + "\n"
     )
     return RunOutcome(
         exit_code=exit_code, timed_out=timed_out, stdout=stdout,
-        stderr_tail=_mask_text(stderr, secrets)[-STDERR_TAIL:],
+        stderr_tail=mask_text(stderr, secrets)[-STDERR_TAIL:],
         log_path=str(log_path), duration_ms=duration_ms,
     )

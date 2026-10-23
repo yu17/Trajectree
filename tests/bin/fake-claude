@@ -22,8 +22,18 @@ def result_line(**over):
     return json.dumps({**data, **over})
 
 
+def read_prompt(argv):
+    """The positional prompt after -p when there is one, else stdin."""
+    if "-p" in argv:
+        i = argv.index("-p") + 1
+        if i < len(argv) and not argv[i].startswith("--"):
+            return argv[i]
+    return sys.stdin.read()
+
+
 def call_mcp(argv):
-    cfg = json.loads(argv[argv.index("--mcp-config") + 1])
+    with open(argv[argv.index("--mcp-config") + 1]) as f:
+        cfg = json.load(f)
     server = next(iter(cfg["mcpServers"].values()))
     body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
         "name": "set_project_summary",
@@ -46,6 +56,10 @@ def main():
     if os.environ.get("FAKE_CLAUDE_ENV_FILE"):
         with open(os.environ["FAKE_CLAUDE_ENV_FILE"], "w") as f:
             f.write(json.dumps(dict(os.environ)))
+    prompt = read_prompt(argv)
+    if os.environ.get("FAKE_CLAUDE_PROMPT_FILE"):
+        with open(os.environ["FAKE_CLAUDE_PROMPT_FILE"], "w") as f:
+            f.write(prompt)
     mode_file = os.environ.get("FAKE_CLAUDE_MODE_FILE")
     if mode_file:
         with open(mode_file) as f:
