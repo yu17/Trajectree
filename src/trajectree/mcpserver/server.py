@@ -85,7 +85,7 @@ def principal_from_headers(
             session = running.id if running is not None else None
         return owner_principal(session)
     principal = resolve_token(conn, token)
-    if principal is None:
+    if principal is None or not principal.scope.allows_mcp():
         raise ToolError("unauthorized")
     return principal
 

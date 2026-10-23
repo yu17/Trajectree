@@ -12,10 +12,11 @@ from trajectree.repo.resources import project_for_path
 from trajectree.repo.sessions import end_session, start_session, touch_session
 
 HOOK_TOOL = "hooks"
+MAX_FIELD_CHARS = 4096
 
 
 def _text(value: Any) -> str | None:
-    return value if isinstance(value, str) and value else None
+    return value if isinstance(value, str) and 0 < len(value) <= MAX_FIELD_CHARS else None
 
 
 def handle_hook(conn: apsw.Connection, payload: Any, *, now: datetime) -> SessionRow | None:

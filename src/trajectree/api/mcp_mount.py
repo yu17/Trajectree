@@ -49,7 +49,8 @@ class BearerGate:
         if token_matches(token, self.owner_token):
             return True
         with self.ledger.locked() as conn:
-            return resolve_token(conn, token) is not None
+            principal = resolve_token(conn, token)
+        return principal is not None and principal.scope.allows_mcp()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         # the ledger lock may be held by the ingest worker: wait for it off the event loop

@@ -17,6 +17,8 @@ from trajectree.timeutil import utcnow
 
 log = logging.getLogger(__name__)
 
+MAX_BODY_BYTES = 64 * 1024
+
 
 def require_hook_token(request: Request) -> Principal:
     """The owner's token, or a live scoped token whose scope allows the hooks tool. No cookie auth."""
@@ -38,17 +40,23 @@ router = APIRouter(prefix="/api/hooks", dependencies=[Depends(require_hook_token
 @router.post("/claude")
 async def claude_hook(request: Request) -> dict:
     body = await request.body()
-    payload: Any
-    try:
-        payload = json.loads(body)
-    except ValueError:
-        payload = None
+    payload: Any = None
+    if len(body) <= MAX_BODY_BYTES:
+        try:
+            payload = json.loads(body)
+        except (ValueError, RecursionError):
+            payload = None
     ledger = request.app.state.ledger
 
     def work():
         with ledger.locked() as conn:
             return handle_hook(conn, payload, now=utcnow())
 
-    if await anyio.to_thread.run_sync(work) is None:
+    try:
+        handled = await anyio.to_thread.run_sync(work)
+    except Exception:
+        log.exception("Claude Code hook failed")
+        return {}
+    if handled is None:
         log.warning("ignored Claude Code hook payload")
     return {}

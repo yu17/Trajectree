@@ -5,10 +5,17 @@ from pydantic import BaseModel
 from trajectree.models import Actor
 
 
+NON_MCP_TOOLS = frozenset({"hooks"})
+
+
 class Scope(BaseModel):
     projects: list[str] | None = None
     tools: list[str] | None = None
     write: bool = True
+
+    def allows_mcp(self) -> bool:
+        """False for scopes naming only non-MCP tools (e.g. the hooks token)."""
+        return self.tools is None or any(t not in NON_MCP_TOOLS for t in self.tools)
 
     def allows(self, tool: str, project_id: str | None, *, write: bool) -> bool:
         if write and not self.write:

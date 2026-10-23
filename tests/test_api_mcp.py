@@ -41,6 +41,13 @@ def test_mcp_owner_write_over_http_uses_cwd_header(client, app):
     assert r.json()["result"]["structuredContent"]["project_id"] == p["id"]
     assert client.get("/api/ledger/txns", params={"review": "pending"}).json()[0]["actor_kind"] == "session"
 
+def test_hooks_only_token_is_denied_on_mcp(client, app):
+    _, secret = mint_token(app.state.ledger.conn, label="h", scope=Scope(projects=[], tools=["hooks"], write=False),
+                           actor=Actor(kind="session", ref="h"), ttl=None)
+    h = {**HDR, "Authorization": f"Bearer {secret}"}
+    assert client.post("/mcp", json=LIST, headers=h).status_code == 401
+    assert client.post("/mcp", json=call("list_projects", {}), headers=h).status_code == 401
+
 def test_spa_fallback_does_not_shadow_mcp(client):
     assert client.get("/mcp/anything").status_code in (404, 405)
 

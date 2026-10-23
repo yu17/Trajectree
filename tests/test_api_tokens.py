@@ -12,6 +12,10 @@ def test_token_create_list_delete(client, app):
     assert client.get("/api/tokens").json() == [] and client.delete(f"/api/tokens/{r.json()['id']}").status_code == 404
     assert client.post("/api/tokens", json={"label": "", "scope": {}}).status_code == 422
 
+def test_scope_allows_mcp():
+    assert Scope().allows_mcp() and Scope(tools=["record_event"]).allows_mcp()
+    assert not Scope(tools=["hooks"]).allows_mcp() and not Scope(tools=[]).allows_mcp()
+
 def test_expired_token_is_not_listed_as_live(client, app):
     _, secret = mint_token(app.state.ledger.conn, label="old", scope=Scope(), actor=Actor(kind="agent", ref="x"), ttl=timedelta(seconds=-1))
     assert resolve_token(app.state.ledger.conn, secret) is None

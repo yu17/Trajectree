@@ -38,6 +38,12 @@ def test_hook_unknown_cwd_missing_fields_bad_token(client, anon):
     assert anon.post("/api/hooks/claude", json=hook("Stop")).status_code == 401
     assert anon.post("/api/hooks/claude", json=hook("Stop"), headers={"Authorization": "Bearer trj_nope"}).status_code == 401
 
+def test_hook_bad_sizes_and_deep_json_are_ignored(client):
+    assert client.post("/api/hooks/claude", json=hook("SessionStart", cwd="x" * 5000)).json() == {}
+    assert client.post("/api/hooks/claude", content=b"[" * 100000).json() == {}
+    assert client.post("/api/hooks/claude", json=hook("SessionStart", transcript_path="y" * 70000)).json() == {}
+    assert client.get("/api/sessions").json() == []
+
 def test_registry_wins_over_scan_and_ended_hides_scan(client, app):
     p = mk_project(client)
     client.post("/api/resources", json={"project_id": p["id"], "kind": "folder", "locator": "/home/u/proj"})
