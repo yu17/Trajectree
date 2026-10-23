@@ -76,18 +76,31 @@ def list_signals(
     t_to: datetime | None = None,
     kinds: list[str] | None = None,
     limit: int = 500,
+    newest_first: bool = False,
 ) -> list[Signal]:
     where, params = _where(project_ids, t_from, t_to, kinds)
     sql = f"SELECT {', '.join(table_columns(conn, 'signal'))} FROM signal"
     if where:
         sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY t_start, id LIMIT ?"
+    sql += " ORDER BY t_start DESC, id DESC LIMIT ?" if newest_first else " ORDER BY t_start, id LIMIT ?"
     out = []
     for row in conn.execute(sql, [*params, limit]):
         data = dict(zip(table_columns(conn, "signal"), row))
         data["payload"] = json.loads(data["payload"])
         out.append(Signal.model_validate(data))
     return out
+
+
+def count_signals(
+    conn: apsw.Connection,
+    *,
+    project_ids: list[str] | None = None,
+    t_from: datetime | None = None,
+    t_to: datetime | None = None,
+) -> int:
+    where, params = _where(project_ids, t_from, t_to)
+    sql = "SELECT count(*) FROM signal" + (" WHERE " + " AND ".join(where) if where else "")
+    return conn.execute(sql, params).fetchone()[0]
 
 
 def latest_signals(

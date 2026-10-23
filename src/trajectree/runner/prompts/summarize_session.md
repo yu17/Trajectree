@@ -1,6 +1,10 @@
-Summarize the Claude Code session "$session_title" ($session_id) of the project "$project_title" ($project_slug), as of $today.
+Summarize the Claude Code session $session_id of the project "$project_title" ($project_slug), as of $today.
 
 ## Session
+
+<data name="session_title">
+$session_title
+</data>
 
 <data name="transcript_digest">
 $transcript_digest

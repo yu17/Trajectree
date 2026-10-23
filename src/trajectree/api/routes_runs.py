@@ -70,7 +70,7 @@ def summarize_session(session_id: str, request: Request, body: SummarizeBody | N
     return _enqueue(request, SummarizeSessionRequest(session_id=session_id, runner=body.runner, model=body.model))
 
 
-@router.post("/ask",response_model=Run, status_code=202)
+@router.post("/ask", response_model=Run, status_code=202)
 def ask(body: AskRequest, request: Request):
     return _enqueue(request, body)
 

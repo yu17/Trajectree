@@ -38,3 +38,26 @@ def test_activity_digest_cuts_at_max_chars(ledger, human):
     assert out[0] == "- 2026-01-10 job train ok" and out[-1].startswith("(… ") and out[-1].endswith(" more)")
     shown = len(out) - 1
     assert out[-1] == f"(… {10 - shown} more)" and 0 < shown < 10
+
+def test_activity_digest_keeps_newest_when_over_the_fetch_limit(ledger, human):
+    from datetime import timedelta
+    p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    base = datetime(2026, 1, 2, tzinfo=UTC)
+    upsert_signals(ledger.conn, [
+        SignalIn(project_id=p.id, kind="job_state", t_start=base + timedelta(minutes=i), dedupe_key=f"j{i}", payload={"name": f"n{i}", "state": "ok"})
+        for i in range(600)
+    ])
+    out = activity_digest(ledger.conn, project_ids=[p.id], since=SINCE, until=UNTIL).splitlines()
+    assert out[0] == "- 2026-01-02 job n599 ok"
+    shown = len(out) - 1
+    assert out[-1] == f"(… {600 - shown} more)"
+
+def test_activity_digest_lines_stay_single_line(ledger, human):
+    p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    upsert_signals(ledger.conn, [
+        sig(p, "message", 2, "m", {"channel": "slack", "summary": "line one\nline two " + "y" * 300}),
+        sig(p, "session", 3, "s", {"session_id": "abcdef123456", "title": "a\nb", "prompts": 1, "model": "opus"}),
+    ])
+    out = activity_digest(ledger.conn, project_ids=[p.id], since=SINCE, until=UNTIL).splitlines()
+    assert len(out) == 2 and out[0] == '- 2026-01-03 session "a b" (1 prompts, opus)'
+    assert out[1].startswith("- 2026-01-02 message via slack: line one line two ") and len(out[1]) < 170
