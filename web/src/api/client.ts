@@ -111,9 +111,12 @@ export const api = {
     request<Txn>("POST", `/api/ledger/txns/${encodeURIComponent(id)}/review`, { state }),
   search: (q: string) =>
     request<SearchHit[]>("GET", `/api/search?${new URLSearchParams({ q })}`),
-  signals(projects: string[], from: Date, to: Date) {
+  // `kinds` narrows the signal kinds; `limit` overrides the server's default of 200.
+  signals(projects: string[], from: Date, to: Date, opts: { kinds?: string[]; limit?: number } = {}) {
     const q = new URLSearchParams({ from: from.toISOString(), to: to.toISOString() });
     if (projects.length) q.set("projects", projects.join(","));
+    if (opts.kinds?.length) q.set("kinds", opts.kinds.join(","));
+    if (opts.limit !== undefined) q.set("limit", String(opts.limit));
     return request<Signal[]>("GET", `/api/signals?${q}`);
   },
   resources(projectId?: string) {

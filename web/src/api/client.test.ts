@@ -13,6 +13,17 @@ describe("api client", () => {
     await api.timeline(new Date("2026-01-01T00:00:00Z"), new Date("2026-02-01T00:00:00Z"));
     expect(String(f.mock.calls[0][0])).toContain("from=2026-01-01T00%3A00%3A00.000Z");
   });
+  it("passes signal kinds and limit only when given", async () => {
+    const f = vi.fn(async (_url: string) => new Response(JSON.stringify([])));
+    vi.stubGlobal("fetch", f);
+    const from = new Date("2026-01-01T00:00:00Z");
+    const to = new Date("2026-02-01T00:00:00Z");
+    await api.signals(["p1"], from, to, { kinds: ["job_state", "remote"], limit: 500 });
+    await api.signals([], from, to);
+    const q = (i: number) => new URL(String(f.mock.calls[i][0]), "http://x").searchParams;
+    expect([q(0).get("projects"), q(0).get("kinds"), q(0).get("limit")]).toEqual(["p1", "job_state,remote", "500"]);
+    expect([q(1).has("projects"), q(1).has("kinds"), q(1).has("limit")]).toEqual([false, false, false]);
+  });
   it("calls the routine and scheduler endpoints", async () => {
     const f = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({})));
     vi.stubGlobal("fetch", f);

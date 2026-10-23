@@ -41,7 +41,7 @@ describe("ProjectView", () => {
       { id: "sg2", project_id: "p1", resource_id: null, kind: "job_state", t_start: "2026-10-21T09:00:00Z", t_end: null, payload: { job_id: "4242", name: "train", state: "COMPLETED", partition: "gpu", workdir: "/w" }, dedupe_key: "b", updated_at: "2026-10-21T12:00:00Z" },
       { id: "sg3", project_id: "p1", resource_id: null, kind: "session", t_start: "2026-10-21T09:00:00Z", t_end: null, payload: { session_id: "x" }, dedupe_key: "c", updated_at: "2026-10-21T13:00:00Z" },
     ]);
-    api.routines.mockResolvedValue([routine("everyone", null), routine("mine", ["clmi"]), routine("theirs", ["ccx"])]);
+    api.routines.mockResolvedValue([routine("everyone", null), routine("mine", ["clmi"]), routine("byid", ["p1"]), routine("theirs", ["ccx"])]);
     api.summarize.mockResolvedValue(run("run9", "queued"));
     api.run.mockResolvedValue({ run: run("run9", "queued"), txn_ids: [] });
   });
@@ -74,8 +74,10 @@ describe("ProjectView", () => {
     const routines = screen.getByRole("list", { name: "Routines" });
     expect(within(routines).getByText("everyone", { exact: false })).toBeTruthy();
     expect(within(routines).getByText("mine", { exact: false })).toBeTruthy();
+    expect(within(routines).getByText("byid", { exact: false })).toBeTruthy(); // scope names the project by id
     expect(within(routines).queryByText("theirs", { exact: false })).toBeNull();
 
+    expect(api.signals).toHaveBeenCalledWith(["p1"], expect.any(Date), expect.any(Date), { kinds: ["job_state"], limit: 500 });
     expect(api.timeline).toHaveBeenCalledWith(expect.any(Date), expect.any(Date), ["p1"]);
     const [from, to] = api.timeline.mock.calls[0] as [Date, Date];
     expect(Math.round((to.getTime() - from.getTime()) / 86_400_000)).toBe(425);

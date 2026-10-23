@@ -37,9 +37,10 @@ export function ProjectView({ projectId, onClose }: { projectId: string; onClose
     queryFn: () => api.timeline(from, to, [projectId]),
   });
   const resources = useQuery({ queryKey: ["resources", projectId], queryFn: () => api.resources(projectId) });
+  // Only the job states feed the resource hints; ask for them alone so other kinds cannot crowd them out.
   const signals = useQuery({
-    queryKey: ["signals", projectId, "project", from.toISOString(), to.toISOString()],
-    queryFn: () => api.signals([projectId], from, to),
+    queryKey: ["signals", projectId, "project", "job_state", from.toISOString(), to.toISOString()],
+    queryFn: () => api.signals([projectId], from, to, { kinds: ["job_state"], limit: 500 }),
   });
   const routines = useQuery({ queryKey: ["routines"], queryFn: api.routines });
 
@@ -68,8 +69,10 @@ export function ProjectView({ projectId, onClose }: { projectId: string; onClose
   const stale = tl?.stale.includes(projectId) ?? false;
   const live = tl?.live.some(s => s.project_id === projectId) ?? false;
   const jobStates = latestJobStates(signals.data ?? []);
+  // A routine's scope may name a project by slug or by id.
   const touching = (routines.data ?? []).filter(r =>
-    r.scope.projects === null || (project !== undefined && r.scope.projects.includes(project.slug)));
+    r.scope.projects === null ||
+    (project !== undefined && r.scope.projects.some(ref => ref === project.slug || ref === project.id)));
 
   return (
     <section className="project">
