@@ -1,4 +1,14 @@
 import type {
+  AskRequest,
+  Caps,
+  ContextPack,
+  QuickAddRequest,
+  Run,
+  RunDetail,
+  RunKind,
+  RunnerStatus,
+  RunStatus,
+  UsageReport,
   Edge,
   EdgeIn,
   Event,
@@ -97,4 +107,28 @@ export const api = {
     return request<Resource[]>("GET", `/api/resources${q.size ? `?${q}` : ""}`);
   },
   runIngest: () => request<IngestReport>("POST", "/api/ingest/run"),
+  runs(opts: { limit?: number; kind?: RunKind; status?: RunStatus; openProposals?: boolean } = {}) {
+    const q = new URLSearchParams();
+    if (opts.limit !== undefined) q.set("limit", String(opts.limit));
+    if (opts.kind) q.set("kind", opts.kind);
+    if (opts.status) q.set("status", opts.status);
+    if (opts.openProposals) q.set("open_proposals", "true");
+    return request<Run[]>("GET", `/api/runs${q.size ? `?${q}` : ""}`);
+  },
+  run: (id: string) => request<RunDetail>("GET", `/api/runs/${encodeURIComponent(id)}`),
+  summarize: (projectId: string, body: { runner?: string; model?: string } = {}) =>
+    request<Run>("POST", `/api/projects/${encodeURIComponent(projectId)}/summarize`, body),
+  ask: (body: AskRequest) => request<Run>("POST", "/api/ask", body),
+  quickAdd: (body: QuickAddRequest) => request<Run>("POST", "/api/quick-add", body),
+  acceptProposal: (runId: string, index: number) =>
+    request<Run>("POST", `/api/runs/${encodeURIComponent(runId)}/proposals/${index}/accept`),
+  usage: (days = 30) => request<UsageReport>("GET", `/api/usage?days=${days}`),
+  caps: () => request<Caps>("GET", "/api/caps"),
+  setCaps: (caps: Caps) => request<Caps>("PUT", "/api/caps", caps),
+  runnerStatus: () => request<RunnerStatus>("GET", "/api/runner/status"),
+  context(projects: string[], from: Date, to: Date, budget = 4000) {
+    const q = new URLSearchParams({ from: from.toISOString(), to: to.toISOString(), budget: String(budget) });
+    if (projects.length) q.set("projects", projects.join(","));
+    return request<ContextPack>("GET", `/api/context?${q}`);
+  },
 };

@@ -5,10 +5,11 @@ import { ProjectForm } from "./components/ProjectForm";
 import { QuickCapture } from "./components/QuickCapture";
 import { InboxView, pendingTxnsQuery } from "./views/InboxView";
 import { LedgerView } from "./views/LedgerView";
+import { RunsView } from "./views/RunsView";
 import { TimelineView } from "./views/TimelineView";
 import "./views/views.css";
 
-type Tab = "timeline" | "ledger" | "inbox";
+type Tab = "timeline" | "ledger" | "runs" | "inbox";
 type Panel = "project" | "capture" | null;
 
 const isUnauthorized = (err: unknown) => err instanceof ApiError && err.status === 401;
@@ -45,6 +46,9 @@ export default function App() {
           <button role="tab" aria-selected={tab === "ledger"} onClick={() => setTab("ledger")}>
             Ledger
           </button>
+          <button role="tab" aria-selected={tab === "runs"} onClick={() => setTab("runs")}>
+            Runs
+          </button>
           <button role="tab" aria-selected={tab === "inbox"} onClick={() => setTab("inbox")}>
             {pendingCount > 0 ? `Inbox (${pendingCount})` : "Inbox"}
           </button>
@@ -67,7 +71,7 @@ export default function App() {
         </aside>
       )}
       <div role="tabpanel">
-        {tab === "timeline" ? <TimelineView /> : tab === "ledger" ? <LedgerView /> : <InboxView />}
+        {tab === "timeline" ? <TimelineView /> : tab === "ledger" ? <LedgerView /> : tab === "runs" ? <RunsView /> : <InboxView />}
       </div>
     </div>
   );

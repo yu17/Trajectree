@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import App from "./App";
@@ -6,7 +6,7 @@ import App from "./App";
 vi.mock("./api/client", async importOriginal => {
   const real = await importOriginal<typeof import("./api/client")>();
   const unauthorized = () => Promise.reject(new real.ApiError(401, "Unauthorized", { detail: "Unauthorized" }));
-  return { ...real, api: { ...real.api, projects: vi.fn(unauthorized), timeline: vi.fn(unauthorized), txns: vi.fn(unauthorized) } };
+  return { ...real, api: { ...real.api, projects: vi.fn(unauthorized), timeline: vi.fn(unauthorized), txns: vi.fn(unauthorized), runs: vi.fn(async () => []), usage: vi.fn(async () => ({ days: [], by_kind: [], by_runner: [], spent_today: 0, caps: { usd_per_run: 1, usd_per_day: 5, timeout_s: 600, paused: false } })), caps: vi.fn(async () => ({ usd_per_run: 1, usd_per_day: 5, timeout_s: 600, paused: false })), runnerStatus: vi.fn(async () => ({ claude: { available: false, version: null, authenticated: false }, codex: { available: false, version: null, authenticated: false }, backends: [] })) } };
 });
 import { api } from "./api/client";
 import type { Txn } from "./api/types";
@@ -24,6 +24,12 @@ describe("App", () => {
     expect(screen.getByRole("tab", { name: /Inbox/ })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Timeline" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Ledger" })).toBeTruthy();
+  });
+
+  it("renders the Runs tab", async () => {
+    render(<QueryClientProvider client={new QueryClient()}><App /></QueryClientProvider>);
+    fireEvent.click(screen.getByRole("tab", { name: "Runs" }));
+    expect(await screen.findByText("Run history")).toBeTruthy();
   });
 
   it("shows the pending count on the Inbox tab", async () => {

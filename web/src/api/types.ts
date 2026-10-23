@@ -179,6 +179,138 @@ export interface IngestReport {
   git: GitReport;
   stale: string[];
   exports_written: number;
+  exports_errors: string[];
+}
+
+export type RunKind = "summarize" | "ask" | "quick_add";
+export type RunStatus = "queued" | "running" | "ok" | "failed" | "capped" | "cancelled";
+
+export interface Proposal {
+  kind: "event" | "todo";
+  project: string;
+  title: string;
+  reason: string;
+  event_kind: string;
+  when: string | null;
+  due: string | null;
+  body_md: string;
+  status: "happened" | "planned" | "suggested";
+  applied_txn: string | null;
+  applied_id: string | null;
+}
+
+export interface Run {
+  id: string;
+  kind: RunKind;
+  project_id: string | null;
+  status: RunStatus;
+  runner: string;
+  backend: string;
+  model: string | null;
+  session_id: string | null;
+  started: string | null;
+  finished: string | null;
+  tokens_in: number;
+  tokens_out: number;
+  tokens_cache: number;
+  est_usd: number;
+  turns: number;
+  duration_ms: number;
+  result_md: string;
+  proposals: Proposal[];
+  error: string | null;
+  log_path: string | null;
+  token_id: string | null;
+  props: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface RunDetail {
+  run: Run;
+  txn_ids: string[];
+}
+
+export interface Caps {
+  usd_per_run: number;
+  usd_per_day: number;
+  timeout_s: number;
+  paused: boolean;
+}
+
+export interface UsageDay {
+  day: string;
+  est_usd: number;
+  runs: number;
+  tokens_in: number;
+  tokens_out: number;
+}
+
+export interface UsageSlice {
+  key: string;
+  est_usd: number;
+  runs: number;
+}
+
+export interface UsageReport {
+  days: UsageDay[];
+  by_kind: UsageSlice[];
+  by_runner: UsageSlice[];
+  spent_today: number;
+  caps: Caps;
+}
+
+export interface RunnerInfo {
+  available: boolean;
+  version: string | null;
+  authenticated: boolean;
+}
+
+export interface BackendInfo {
+  name: string;
+  credentials: boolean;
+}
+
+export interface RunnerStatus {
+  claude: RunnerInfo;
+  codex: RunnerInfo;
+  backends: BackendInfo[];
+}
+
+export interface SessionRow {
+  id: string;
+  cwd: string;
+  project_id: string | null;
+  transcript_path: string | null;
+  backend: string;
+  started_at: string;
+  last_seen: string;
+  ended_at: string | null;
+  end_reason: string | null;
+  source: string | null;
+}
+
+export interface ContextPack {
+  markdown: string;
+  tokens_est: number;
+  dropped: string[];
+  projects: string[];
+}
+
+export interface AskRequest {
+  question: string;
+  projects?: string[] | null;
+  start?: string | null;
+  end?: string | null;
+  token_budget?: number;
+  runner?: string | null;
+  model?: string | null;
+}
+
+export interface QuickAddRequest {
+  text: string;
+  project?: string | null;
+  runner?: string | null;
+  model?: string | null;
 }
 
 export interface TxnDetail {
