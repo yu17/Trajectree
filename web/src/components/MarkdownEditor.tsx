@@ -22,6 +22,8 @@ function CodeMirrorEditor({ value, onChange, label }: Required<Props>) {
           basicSetup,
           markdown(),
           EditorView.lineWrapping,
+          // .cm-content already has role="textbox"; give it the accessible name
+          EditorView.contentAttributes.of({ "aria-label": label }),
           EditorView.updateListener.of(u => {
             if (u.docChanged) changed.current(u.state.doc.toString());
           }),
@@ -34,7 +36,7 @@ function CodeMirrorEditor({ value, onChange, label }: Required<Props>) {
       v.destroy();
       view.current = null;
     };
-    // Mount once; later value changes are dispatched below.
+    // Mount once; later value changes are dispatched below (the label is fixed per editor).
   }, []);
 
   useEffect(() => {
@@ -44,7 +46,7 @@ function CodeMirrorEditor({ value, onChange, label }: Required<Props>) {
     }
   }, [value]);
 
-  return <div ref={host} role="textbox" aria-label={label} />;
+  return <div ref={host} />;
 }
 
 export function MarkdownEditor({ value, onChange, label = "Source" }: Props) {

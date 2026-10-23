@@ -9,6 +9,10 @@ describe("MarpPreview", () => {
     await waitFor(() => expect(frame.getAttribute("data-slides")).toBe("2"), { timeout: 2000 });
     expect(frame.getAttribute("srcdoc")).toContain("One");
     expect(frame.getAttribute("sandbox")).toBe("");
+    const doc = new DOMParser().parseFromString(frame.getAttribute("srcdoc") ?? "", "text/html");
+    const csp = doc.head.querySelector('meta[http-equiv="Content-Security-Policy"]');
+    expect(csp?.getAttribute("content")).toBe("default-src 'none'; style-src 'unsafe-inline'; img-src data:");
+    expect(doc.querySelector("script")).toBeNull(); // marp's browser script is off
   });
 
   it("does not render raw HTML from the source", async () => {
