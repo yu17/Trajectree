@@ -66,6 +66,31 @@ def test_codex_missing_cache_error(settings):
     assert r.models == [] and "codex login --device-auth" in r.error
 
 
+def test_codex_logged_in_without_cache_is_available_and_says_how_to_fill_it(settings):
+    settings.codex_home.mkdir(parents=True)
+    (settings.codex_home / "auth.json").write_text("{}")
+    r = runner(discover_with(settings), "codex")
+    assert r.available and r.models == []
+    assert r.error == ("no model cache yet; run one Codex run with --runner codex --model <slug>"
+                       " (or use Codex once) and refresh")
+    catalog = Catalog(runners=[r])
+    assert resolve_model(catalog, "gpt-new", "codex") == Resolved(
+        runner="codex", model="gpt-new", warning="model gpt-new is not in the catalog for codex")
+    with pytest.raises(UnknownModel):
+        resolve_model(catalog, "gpt-new", None)   # without --runner the name alone is unknown
+
+
+def test_one_runner_crashing_does_not_stop_the_others(settings):
+    write_cache(settings, [{"slug": "gpt-6.1-sol", "visibility": "list"}])
+    write_profile(settings, "broken", {"ANTHROPIC_API_KEY": "sk-secret", "ANTHROPIC_BASE_URL": "http://[::1"})
+    write_profile(settings, "fine", {"ANTHROPIC_API_KEY": "k", "ANTHROPIC_MODEL": "m2"})
+    c = discover_with(settings)
+    broken = runner(c, "ccx:broken")
+    assert not broken.available and broken.error == "ValueError" and "sk-secret" not in c.model_dump_json()
+    assert [m.model for m in runner(c, "ccx:fine").models] == ["m2"]
+    assert [m.model for m in runner(c, "codex").models] == ["gpt-6.1-sol"]
+
+
 def test_codex_cache_symlink_to_a_secret_lists_nothing_from_it(settings, tmp_path):
     secret = tmp_path / "secret.json"
     secret.write_text(json.dumps({"models": [{"slug": "leaked-secret-model", "visibility": "list"}]}))

@@ -32,6 +32,7 @@ STATE_KEY = "models:catalog"
 BUILTIN_CLAUDE_MODELS = ("claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5")
 ANTHROPIC_MODELS_URL = "https://api.anthropic.com/v1/models?limit=1000"
 MODELS_CACHE_MAX_BYTES = 8 * MiB
+NO_CODEX_CACHE = "no model cache yet; run one Codex run with --runner codex --model <slug> (or use Codex once) and refresh"
 _PROFILE_KEY = re.compile(r"^(ANTHROPIC_MODEL|ANTHROPIC_DEFAULT_[A-Z]+_MODEL|CLAUDE_CODE_SUBAGENT_MODEL)$")
 
 Source = Literal["api", "cache", "profile", "builtin"]
@@ -99,16 +100,19 @@ def _codex(settings: Settings, now: datetime, which) -> RunnerCatalog:
 
     if which(settings.codex_bin) is None:
         return result([], "codex binary not found", available=False)
+    logged_in = (settings.codex_home / "auth.json").exists()
     try:
         # Codex runs write the Codex home: never follow a symlink or block on a FIFO there.
         raw = read_regular(settings.codex_home / "models_cache.json", max_bytes=MODELS_CACHE_MAX_BYTES)
         if raw is None:
-            raise FileNotFoundError("models_cache.json")
+            # Logged in, still available: a run naming --runner codex and a model creates the cache.
+            return result([], NO_CODEX_CACHE if logged_in else "no model cache; log in: codex login --device-auth")
         entries = json.loads(raw)["models"]
         if not isinstance(entries, list):
             raise ValueError("models is not a list")
     except (OSError, ValueError, KeyError, TypeError):
-        return result([], "no model cache; log in: codex login --device-auth")
+        return result([], "model cache unreadable; run one Codex run and refresh" if logged_in
+                      else "no model cache; log in: codex login --device-auth")
     models = [
         CatalogModel(runner="codex", model=e["slug"], display=e.get("display_name"), source="cache")
         for e in entries
@@ -175,11 +179,22 @@ def discover(
     timeout_s: float = 5.0,
 ) -> Catalog:
     """Ask every runner what it offers. No database access; HTTP only through `http`."""
-    runners = [_claude(settings, now, http, which, timeout_s), _codex(settings, now, which)]
+    def guarded(runner: str, ask: Callable[[], RunnerCatalog]) -> RunnerCatalog:
+        # One runner's unexpected failure (say a malformed base URL) is its own error only; the
+        # class name alone, since an exception's text may carry a URL or key.
+        try:
+            return ask()
+        except Exception as exc:
+            return RunnerCatalog(runner=runner, available=False, models=[], refreshed_at=now, error=type(exc).__name__)
+
+    runners = [
+        guarded("claude", lambda: _claude(settings, now, http, which, timeout_s)),
+        guarded("codex", lambda: _codex(settings, now, which)),
+    ]
     if settings.backends_cfg_dir.is_dir():
         for d in sorted(settings.backends_cfg_dir.iterdir()):
             if d.is_dir():
-                runners.append(_ccx(settings, d.name, now, http, which, timeout_s))
+                runners.append(guarded(f"ccx:{d.name}", lambda name=d.name: _ccx(settings, name, now, http, which, timeout_s)))
     return Catalog(runners=runners)
 
 

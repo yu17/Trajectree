@@ -34,3 +34,20 @@ def test_backends_sync_refreshes(client, app, settings, tmp_path):
     assert client.post("/api/backends/sync").json() == {"synced": ["ds"]}
     ds = next(x for x in client.get("/api/models").json()["runners"] if x["runner"] == "ccx:ds")
     assert [m["model"] for m in ds["models"]] == ["deepseek-flash"]
+
+
+def test_backends_sync_answers_even_when_the_refresh_fails(client, app, settings, tmp_path, monkeypatch, caplog):
+    import trajectree.api.routes_runs as routes_runs
+
+    root = tmp_path / "backends"
+    (root / "ds").mkdir(parents=True)
+    (root / "ds" / "settings.json").write_text(json.dumps({"env": {"ANTHROPIC_API_KEY": "k"}}))
+    settings.backends_root = root
+
+    def boom(app):
+        raise RuntimeError("store failed")
+
+    monkeypatch.setattr(routes_runs, "refresh_catalog", boom)
+    r = client.post("/api/backends/sync")
+    assert (r.status_code, r.json()) == (200, {"synced": ["ds"]})
+    assert "catalog refresh after backends sync failed: RuntimeError" in caplog.text

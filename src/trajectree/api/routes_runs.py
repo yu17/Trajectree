@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -24,6 +25,7 @@ from trajectree.runner.kinds import (
 )
 from trajectree.runner.service import RunService
 
+log = logging.getLogger("trajectree.api")
 router = APIRouter()
 
 
@@ -171,5 +173,8 @@ def runner_credentials(body: CredentialsBody, request: Request) -> dict[str, boo
 @router.post("/backends/sync")
 def backends_sync(request: Request) -> dict[str, list[str]]:
     synced = sync_backends(request.app.state.settings)
-    refresh_catalog(request.app)  # profiles may have changed
+    try:
+        refresh_catalog(request.app)  # profiles may have changed
+    except Exception as exc:  # the profiles are copied either way; `models --refresh` retries
+        log.error("catalog refresh after backends sync failed: %s", type(exc).__name__)
     return {"synced": synced}
