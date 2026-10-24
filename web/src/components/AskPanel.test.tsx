@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, it, expect, vi } from "vitest";
 import { AskPanel } from "./AskPanel";
@@ -24,6 +24,20 @@ describe("AskPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Ask" }));
     await waitFor(() => expect(api.ask).toHaveBeenCalledWith(expect.objectContaining({ question: "What is blocked?", projects: ["clmi"], ...FABLE })));
     expect(await screen.findByText("Blocked on data.", {}, { timeout: 4000 })).toBeTruthy();
+  });
+
+  it("clears a picked model that a catalog refresh drops", async () => {
+    api.context.mockResolvedValue({ markdown: "", tokens_est: 10, dropped: [], projects: [] });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={qc}><AskPanel projects={projects} /></QueryClientProvider>);
+    fireEvent.change(screen.getByLabelText("Question"), { target: { value: "Q?" } });
+    await pickFable();
+    const ask = screen.getByRole("button", { name: "Ask" }) as HTMLButtonElement;
+    expect(ask.disabled).toBe(false);
+    const dropped = { runners: [{ ...testCatalog.runners[0], models: testCatalog.runners[0].models.slice(1) }, testCatalog.runners[1]] };
+    act(() => { qc.setQueryData(["models"], dropped); });
+    await waitFor(() => expect(ask.disabled).toBe(true));
+    expect((screen.getByRole("combobox", { name: "Model" }) as HTMLSelectElement).value).toBe("");
   });
 
   it("offers only active projects and disables Ask when none is checked", async () => {

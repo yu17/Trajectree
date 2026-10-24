@@ -63,7 +63,7 @@ function RoutineRow({ routine, onNotice }: { routine: Routine; onNotice: (text: 
       <td>{routine.next_fire ? new Date(routine.next_fire).toLocaleString() : "—"}</td>
       <td>{status ? <span className={`badge run-${status}`}>{status}</span> : <span className="muted">—</span>}</td>
       <td>
-        <ModelPicker value={setModel.isPending ? setModel.variables : stored} onChange={c => setModel.mutate(c)} />
+        <ModelPicker value={setModel.isPending ? setModel.variables : stored} onChange={c => c && setModel.mutate(c)} />
         {routine.model && !stored && !setModel.isPending && (
           <span className="muted">{`stored: ${routine.model}${routine.runner ? ` on ${routine.runner}` : ""}`}</span>
         )}
@@ -96,6 +96,7 @@ export function RoutinesSection() {
       {routines.isError && <p className="form-error">{errorText(routines.error)}</p>}
       {routines.isSuccess && rows.length === 0 && <p className="muted">No routines</p>}
       {rows.length > 0 && (
+        <div className="table-scroll">
         <table>
           <thead>
             <tr><th>name</th><th>trigger</th><th>next fire</th><th>last run</th><th>model</th><th /><th /></tr>
@@ -104,6 +105,7 @@ export function RoutinesSection() {
             {rows.map(r => <RoutineRow key={r.id} routine={r} onNotice={setNotice} />)}
           </tbody>
         </table>
+        </div>
       )}
     </section>
   );

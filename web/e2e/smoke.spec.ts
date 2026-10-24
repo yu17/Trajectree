@@ -96,3 +96,23 @@ test("write and export a report, run a routine, open settings", async ({ page })
   await page.getByRole("button", { name: "Refresh models" }).click();
   await expect(page.getByRole("list", { name: "claude models" }).getByText("claude-fable-5-1")).toBeVisible();
 });
+
+test("the Routines tab does not scroll sideways at phone width with a long runner error", async ({ page }) => {
+  const token = readFileSync(process.env.TRAJECTREE_DATA_DIR + "/token", "utf8").trim();
+  // Add an unavailable runner whose error is far wider than a phone screen.
+  await page.route("**/api/models", async route => {
+    const res = await route.fetch();
+    const body = await res.json();
+    body.runners.push({ runner: "codex", available: false, models: [], refreshed_at: null, error: "codex is not installed and ".repeat(8) });
+    await route.fulfill({ response: res, json: body });
+  });
+  await page.setViewportSize({ width: 375, height: 800 });
+  await page.goto(`/?token=${token}`);
+  await expect(page).toHaveURL(/\/$/);
+  await page.getByRole("tab", { name: "Runs" }).click();
+  await expect(page.getByRole("heading", { name: "Routines" })).toBeVisible();
+  const row = page.locator("tr", { hasText: "cross-project-review" });
+  await expect(row.getByRole("combobox", { name: "Model", exact: true })).toBeVisible();
+  const widths = await page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, inner: window.innerWidth }));
+  expect(widths.scroll).toBeLessThanOrEqual(widths.inner);
+});

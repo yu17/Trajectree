@@ -88,3 +88,5 @@ ul.runs{list-style:none;margin:0;padding:0}
 .models-list{list-style:none;padding:0;margin:4px 0}
 .models-list li{margin:2px 0}
 @media (max-width:600px){.model-picker,.model-picker select{width:100%}.toolbar .model-picker,.row-actions .model-picker{flex-direction:column;align-items:stretch}}
+.table-scroll{overflow-x:auto;max-width:100%}
+.routines .model-picker select{max-width:22ch}
