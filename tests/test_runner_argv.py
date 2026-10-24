@@ -86,7 +86,27 @@ def test_mcp_config_path_is_absolute(tmp_path, monkeypatch):
     argv = claude_argv(spec(), binary="claude", mcp_config_path=Path("runs/x/mcp.json"))
     assert argv[argv.index("--mcp-config") + 1].startswith("/")
 
-def test_codex_argv_disables_code_mode_host():
+def test_codex_argv_leaves_code_mode_host_on():
+    # The image ships codex-code-mode-host; turning it off only changes the per-run error.
     argv = codex_argv(spec(runner="codex", backend="codex"), binary="codex", schema_path=None,
                       last_message_path=Path("/tmp/last.md"))
-    assert any(argv[i:i + 2] == ["-c", "features.code_mode_host=false"] for i in range(len(argv) - 1))
+    assert not any("code_mode_host" in a for a in argv)
+
+def test_run_env_sets_unix_socket_for_ccx(settings, tmp_path):
+    import socket
+    prof = settings.backends_cfg_dir / "lmstudio"
+    prof.mkdir(parents=True)
+    (prof / "settings.json").write_text('{"env": {"ANTHROPIC_AUTH_TOKEN": "k"}}')
+    d = tmp_path / "sockets"
+    d.mkdir()
+    s = settings.model_copy(update={"sockets_dir": d, "run_env_passthrough": ["ANTHROPIC_UNIX_SOCKET"]})
+    base = {"PATH": "/bin", "ANTHROPIC_UNIX_SOCKET": "/elsewhere.sock"}
+    ccx = spec(runner="ccx:lmstudio", backend="lmstudio")
+    assert "ANTHROPIC_UNIX_SOCKET" not in run_env(ccx, s, base=base, oauth_token=None)
+    socks = [socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) for _ in range(3)]
+    for sock, name in zip(socks, ("lmstudio", "claude", "codex")):  # sockets named after the other runners too
+        sock.bind(str(d / f"{name}.sock"))
+    with socks[0], socks[1], socks[2]:
+        assert run_env(ccx, s, base=base, oauth_token=None)["ANTHROPIC_UNIX_SOCKET"] == str(d / "lmstudio.sock")
+        assert "ANTHROPIC_UNIX_SOCKET" not in run_env(spec(), s, base=base, oauth_token="oat")
+        assert "ANTHROPIC_UNIX_SOCKET" not in run_env(spec(runner="codex", backend="codex"), s, base=base, oauth_token=None)

@@ -18,6 +18,7 @@ class Settings(BaseModel):
     claude_home: Path | None = None
     backends_root: Path | None = None
     codex_sessions_root: Path | None = None  # the host's ~/.codex/sessions
+    sockets_dir: Path | None = None  # <profile>.sock: a ccx backend reached through a host socket
     path_map: list[tuple[str, str]] = []
     ingest_interval_s: int = 300
     live_window_s: int = 900
@@ -172,6 +173,8 @@ def load_settings() -> Settings:
         values["path_map"] = _parse_path_map(os.environ["TRAJECTREE_PATH_MAP"])
     if os.environ.get("TRAJECTREE_CFG_DIR"):
         values["cfg_dir"] = Path(os.environ["TRAJECTREE_CFG_DIR"]).expanduser()
+    if os.environ.get("TRAJECTREE_SOCKETS_DIR"):
+        values["sockets_dir"] = Path(os.environ["TRAJECTREE_SOCKETS_DIR"]).expanduser()
     for var, field in _STR_ENV.items():
         if var in os.environ:
             values[field] = os.environ[var]

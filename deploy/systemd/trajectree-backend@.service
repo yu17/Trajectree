@@ -1,0 +1,10 @@
+# Forwards the Trajectree backend socket for %i to TARGET (host:port) from the env file.
+# The socket path assumes the instance dir ~/.local/share/trajectree (see the .socket unit).
+[Unit]
+Description=Trajectree backend forwarder for %i
+Requires=trajectree-backend@%i.socket
+After=trajectree-backend@%i.socket
+
+[Service]
+EnvironmentFile=%h/.config/trajectree/backends/%i.env
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd ${TARGET}

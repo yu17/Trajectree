@@ -1,0 +1,13 @@
+# A host socket for the Trajectree container's ccx backend profile %i (systemd user unit).
+# The path assumes the instance dir ~/.local/share/trajectree; edit it if yours differs.
+# trajectree-backend@%i.service forwards each connection to the profile's TCP address.
+[Unit]
+Description=Trajectree backend socket for %i
+
+[Socket]
+ListenStream=%h/.local/share/trajectree/sockets/%i.sock
+SocketMode=0600
+DirectoryMode=0700
+
+[Install]
+WantedBy=sockets.target

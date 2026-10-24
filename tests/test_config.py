@@ -149,3 +149,15 @@ def test_public_url_from_env_and_ready_line(monkeypatch, tmp_path, capsys):
     assert load_settings().public_url == "http://127.0.0.1:40210/"
     daemon.run()
     assert capsys.readouterr().out.startswith("Trajectree ready: http://127.0.0.1:40210/?token=")
+
+
+def test_sockets_dir_from_env(monkeypatch, tmp_path):
+    from pathlib import Path
+
+    monkeypatch.setenv("TRAJECTREE_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("TRAJECTREE_SOCKETS_DIR", raising=False)
+    assert load_settings().sockets_dir is None
+    monkeypatch.setenv("TRAJECTREE_SOCKETS_DIR", "")
+    assert load_settings().sockets_dir is None
+    monkeypatch.setenv("TRAJECTREE_SOCKETS_DIR", "/host/sockets")
+    assert load_settings().sockets_dir == Path("/host/sockets")

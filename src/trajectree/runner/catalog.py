@@ -13,6 +13,7 @@ import json
 import re
 import shutil
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable, Literal
 from urllib.parse import unquote, urlsplit, urlunsplit
 
@@ -26,6 +27,7 @@ from trajectree.models import NO_MODEL_CHOSEN
 from trajectree.repo.state import get_state, set_state
 from trajectree.runner.credentials import load_oauth_token, profile_has_credentials, read_profile
 from trajectree.runner.safe_io import MiB, read_regular
+from trajectree.runner.sockets import backend_socket
 from trajectree.timeutil import utcnow
 
 STATE_KEY = "models:catalog"
@@ -36,6 +38,10 @@ NO_CODEX_CACHE = 'no model cache yet; run one Codex run (trajectree ask --runner
 _PROFILE_KEY = re.compile(r"^(ANTHROPIC_MODEL|ANTHROPIC_DEFAULT_[A-Z]+_MODEL|CLAUDE_CODE_SUBAGENT_MODEL)$")
 
 Source = Literal["api", "cache", "profile", "builtin", "manual"]
+
+
+def unix_socket_client(path: Path) -> httpx.Client:
+    return httpx.Client(transport=httpx.HTTPTransport(uds=str(path)))
 
 
 class CatalogModel(BaseModel):
@@ -126,7 +132,9 @@ def _profile_env(settings: Settings, name: str) -> dict[str, str]:
     return {k: v for k, v in env.items() if isinstance(v, str)} if isinstance(env, dict) else {}
 
 
-def _ccx(settings: Settings, name: str, now: datetime, http: httpx.Client, which, timeout_s: float) -> RunnerCatalog:
+def _ccx(
+    settings: Settings, name: str, now: datetime, http: httpx.Client, uds_client, which, timeout_s: float
+) -> RunnerCatalog:
     runner = f"ccx:{name}"
 
     def unavailable(error: str) -> RunnerCatalog:
@@ -160,12 +168,20 @@ def _ccx(settings: Settings, name: str, now: datetime, http: httpx.Client, which
                 pair = f"{unquote(parts.username)}:{unquote(parts.password or '')}".encode()
                 headers["Authorization"] = "Basic " + base64.b64encode(pair).decode()
         url = base + ("/models"if base.endswith("/v1") else "/v1/models")
-        entries, err = _get_models(http, url, headers, timeout_s)
+        # A host socket carries the request; the URL keeps the profile's host and path.
+        sock = backend_socket(settings, name)
+        if sock is None:
+            entries, err = _get_models(http, url, headers, timeout_s)
+        else:
+            with uds_client(sock) as client:
+                entries, err = _get_models(client, url, headers, timeout_s)
         if err:
             try:
                 host = httpx.URL(url).host
             except httpx.InvalidURL:
                 host = "invalid url"
+            if sock is not None:
+                host += f" through {sock.name}"
             error = f"no model list from {host} ({err}); edit the list with: trajectree models --runner {runner} --add <model>"
         for e in entries:
             if e["id"] not in seen:
@@ -178,10 +194,12 @@ def discover(
     *,
     now: datetime,
     http: httpx.Client,
+    uds_client: Callable[[Path], httpx.Client] = unix_socket_client,
     which: Callable[[str], str | None] = shutil.which,
     timeout_s: float = 5.0,
 ) -> Catalog:
-    """Ask every runner what it offers. No database access; HTTP only through `http`."""
+    """Ask every runner what it offers. No database access; HTTP only through `http`, or for a
+    ccx profile with a host socket through a `uds_client` made for it and closed after."""
     def guarded(runner: str, ask: Callable[[], RunnerCatalog]) -> RunnerCatalog:
         # One runner's unexpected failure (say a malformed base URL) is its own error only; the
         # class name alone, since an exception's text may carry a URL or key.
@@ -197,7 +215,7 @@ def discover(
     if settings.backends_cfg_dir.is_dir():
         for d in sorted(settings.backends_cfg_dir.iterdir()):
             if d.is_dir():
-                runners.append(guarded(f"ccx:{d.name}", lambda name=d.name: _ccx(settings, name, now, http, which, timeout_s)))
+                runners.append(guarded(f"ccx:{d.name}", lambda name=d.name: _ccx(settings, name, now, http, uds_client, which, timeout_s)))
     return Catalog(runners=runners)
 
 

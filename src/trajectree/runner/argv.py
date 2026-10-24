@@ -6,10 +6,12 @@ from pathlib import Path
 
 from trajectree.config import Settings
 from trajectree.runner.credentials import profile_has_credentials
+from trajectree.runner.sockets import backend_socket
 from trajectree.runner.spec import MissingCredentials, RunSpec
 
 MCP_SERVER_NAME = "trajectree"
-_NEVER_PASSTHROUGH = {"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"}
+# ANTHROPIC_UNIX_SOCKET too: only a ccx run gets one, and only its own backend's.
+_NEVER_PASSTHROUGH = {"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_UNIX_SOCKET"}
 
 
 def mcp_config_json(spec: RunSpec) -> str:
@@ -56,8 +58,6 @@ def codex_argv(spec: RunSpec, *, binary: str, schema_path: Path | None, last_mes
         "-C", str(spec.cwd),
         "-c", f'mcp_servers.{MCP_SERVER_NAME}.url="{spec.mcp_url}"',
         "-c", f'mcp_servers.{MCP_SERVER_NAME}.bearer_token_env_var="TRAJECTREE_RUN_TOKEN"',
-        # The image ships no codex-code-mode-host; without this every run logs a spawn failure.
-        "-c", "features.code_mode_host=false",
         "-o", str(last_message_path),
     ]
     if schema_path is not None:
@@ -85,6 +85,9 @@ def run_env(spec: RunSpec, settings: Settings, *, base: Mapping[str, str], oauth
         if not profile_has_credentials(profile / "settings.json"):
             raise MissingCredentials(f"backend profile {spec.backend!r} has no credentials; run: trajectree backends sync")
         env["CLAUDE_CONFIG_DIR"] = str(profile)
+        # Claude Code sends its API traffic here; the profile's base URL still names host and path.
+        if (sock := backend_socket(settings, spec.backend)) is not None:
+            env["ANTHROPIC_UNIX_SOCKET"] = str(sock)
     elif spec.runner == "codex":
         env["CODEX_HOME"] = str(settings.codex_home)
         env["TRAJECTREE_RUN_TOKEN"] = spec.mcp_token

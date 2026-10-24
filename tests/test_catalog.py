@@ -166,6 +166,52 @@ def test_unreachable_backend_keeps_profile_models(settings):
     assert [m.model for m in fine.models] == ["m2", "m3"] and fine.error is None
 
 
+def bound_socket(settings, tmp_path, name):
+    import socket
+    d = tmp_path / "sockets"
+    d.mkdir(exist_ok=True)
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.bind(str(d / f"{name}.sock"))
+    return settings.model_copy(update={"sockets_dir": d}), sock
+
+
+def test_ccx_models_over_socket(settings, tmp_path):
+    write_profile(settings, "lmstudio", {"ANTHROPIC_AUTH_TOKEN": "lm", "ANTHROPIC_BASE_URL": "http://127.0.0.1:40090", "ANTHROPIC_MODEL": "qwen"})
+    s, sock = bound_socket(settings, tmp_path, "lmstudio")
+    seen, clients = [], []
+
+    def over_socket(request):
+        seen.append(request)
+        return httpx.Response(200, json={"data": [{"id": "qwen"}, {"id": "gemma"}]})
+
+    def uds_client(path):
+        assert path == s.sockets_dir / "lmstudio.sock"
+        clients.append(httpx.Client(transport=httpx.MockTransport(over_socket)))
+        return clients[-1]
+
+    def shared(request):
+        assert request.url.port != 40090, "the shared client was used for the socket profile"
+        return httpx.Response(404)
+
+    with sock:
+        r = runner(discover_with(s, shared, uds_client=uds_client), "ccx:lmstudio")
+    assert [(m.model, m.source) for m in r.models] == [("qwen", "profile"), ("gemma", "api")] and r.error is None
+    assert len(seen) == 1 and str(seen[0].url) == "http://127.0.0.1:40090/v1/models"
+    assert seen[0].headers["Authorization"] == "Bearer lm"
+    assert clients[0].is_closed
+
+
+def test_ccx_stale_socket_keeps_list(settings, tmp_path):
+    write_profile(settings, "lmstudio", {"ANTHROPIC_AUTH_TOKEN": "lm", "ANTHROPIC_BASE_URL": "http://127.0.0.1:40090", "ANTHROPIC_MODEL": "qwen"})
+    s, sock = bound_socket(settings, tmp_path, "lmstudio")
+    sock.close()  # the path stays, nobody listens
+    fresh = discover_with(s)  # the real Unix socket client
+    r = runner(fresh, "ccx:lmstudio")
+    assert r.available and "ConnectError" in r.error and "lmstudio.sock" in r.error
+    prev = Catalog(runners=[rc("ccx:lmstudio", [cm("ccx:lmstudio", "qwen", "profile"), cm("ccx:lmstudio", "gemma", "api")])])
+    assert [m.model for m in runner(merge_refresh(prev, fresh), "ccx:lmstudio").models] == ["qwen", "gemma"]
+
+
 def test_hanging_backend_times_out(settings):
     import socket
 

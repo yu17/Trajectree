@@ -4,8 +4,9 @@ Self-hosted project tracker (Python backend, React frontend).
 
 ## Install an instance
 
-An instance is a directory that holds only `compose.yaml`, `.env`, `data/` and
-`cfg/`; the image is built from the git repository.
+An instance is a directory that holds only `compose.yaml`, `.env`, `data/`,
+`cfg/` and `sockets/` (see [Local backends through a socket](#local-backends-through-a-socket));
+the image is built from the git repository.
 
 ```bash
 # 1. Create the instance directory and copy in the two files from deploy/
@@ -17,7 +18,7 @@ curl -fsSL https://raw.githubusercontent.com/yu17/Trajectree/main/deploy/env.exa
 # 2. Create data and cfg yourself (Docker would make them root-owned), keep cfg
 #    private, then fill in .env (at least TRAJECTREE_PROJECTS_ROOT, UID and GID).
 #    Create the host folders the container mounts too, for the same reason.
-mkdir -p data cfg && chmod 700 data cfg
+mkdir -p data cfg sockets && chmod 700 data cfg sockets
 mkdir -p ~/.claude/projects ~/.config/claude-backends ~/.codex/sessions
 
 # 3. Build and start, then give the host CLI the token and the URL (use the
@@ -292,13 +293,74 @@ starts can touch.
 - **Claude** keeps its permission rules (`Bash(git log *)`, read-deny rules for
   `cfg/`, `data/` and the backend profiles) as a second layer.
 - **Still possible, by design:** a run can read its own runner's login, and
-  the network stays open (the model API needs it).
+  the network stays open (the model API needs it). Host ports stay closed once
+  the firewall rule in [Local backends through a socket](#local-backends-through-a-socket)
+  is in place.
 - The daemon's own subprocesses (`git`, `ssh`, `marp`) are not confined; no
   model controls them.
 - `bash scripts/smoke-confined-codex.sh` (needs Docker) builds the image with
   Codex and checks, against a local mock of the Responses API, that a confined
   `codex exec` reads a project file but gets `Permission denied` for the owner
   token, the Claude login and `/proc/1/root/data/token`.
+
+### Local backends through a socket
+
+A ccx profile whose `ANTHROPIC_BASE_URL` names a host port (say LM Studio at
+`http://127.0.0.1:40090`) cannot reach it from the container: there,
+`127.0.0.1` is the container itself. A systemd user socket on the host
+forwards one Unix socket per profile to that port instead. When
+`<instance>/sockets/<profile>.sock` exists, `ccx:<profile>` runs get
+`ANTHROPIC_UNIX_SOCKET` pointing at it (Claude Code then sends its API
+requests through the socket, keeping the URL's host and path), and the model
+catalog asks the models endpoint through it too. The host profile is
+unchanged, so `ccx <profile>` on the host still uses its TCP URL.
+
+The units assume the instance directory `~/.local/share/trajectree`; with
+another one, edit `ListenStream=` in the `.socket` unit.
+
+Run these in the instance directory, for a profile named `lmstudio`:
+
+```bash
+# 1. Create sockets/ (mounted read-only at /host/sockets; Install step 2 does this).
+mkdir -p sockets && chmod 700 sockets
+
+# 2. Name the TCP address the profile's socket forwards to.
+mkdir -p ~/.config/trajectree/backends
+echo TARGET=127.0.0.1:40090 > ~/.config/trajectree/backends/lmstudio.env
+
+# 3. Install the two units and start the socket.
+mkdir -p ~/.config/systemd/user
+for unit in socket service; do
+  curl -fsSL "https://raw.githubusercontent.com/yu17/Trajectree/main/deploy/systemd/trajectree-backend@.$unit" \
+    -o ~/.config/systemd/user/trajectree-backend@.$unit
+done
+systemctl --user daemon-reload && systemctl --user enable --now trajectree-backend@lmstudio.socket
+
+# 4. Recreate the container: a changed network needs down, not only up.
+docker compose down && docker compose up -d
+
+# 5. One-time firewall rule: the container reaches no host port at all.
+sudo ufw insert 1 deny in on trajectree0
+
+# 6. List the backend's models through the socket.
+trajectree models --refresh
+```
+
+- The compose file names the container's bridge `trajectree0`, so step 5 is one
+  rule. After it the socket is the container's only way to the host; internet
+  egress is unaffected.
+- Every run can connect to every socket in `sockets/`: Landlock does not
+  restrict connecting to a pathname socket. A `claude` or `codex` run never
+  gets `ANTHROPIC_UNIX_SOCKET`, but nothing stops it from opening a socket
+  itself.
+- User units stop when you log out unless lingering is on
+  (`loginctl enable-linger`).
+- A socket file with no listener behind it (the unit stopped) fails the run's
+  API calls, and a refresh shows `ConnectError` for the profile and keeps its
+  model list.
+- `bash scripts/smoke-backend-socket.sh <image>` (needs Docker and a built
+  image) checks that a confined Claude Code sends `POST /v1/messages` to
+  `ANTHROPIC_UNIX_SOCKET` and not to `ANTHROPIC_BASE_URL`.
 
 ## Log in the runner
 
@@ -580,7 +642,8 @@ The Settings tab shows:
 The instance template builds the image with Codex (`INSTALL_CODEX: "1"` in
 `deploy/compose.yaml`): the pinned release (`CODEX_VERSION`, 0.163.0, checked
 against `CODEX_SHA256`) at `/opt/codex/bin/codex`, where `TRAJECTREE_CODEX_BIN`
-points. Log Codex in inside the container, so its credentials live only in
+points, and its Code Mode helper `codex-code-mode-host` beside it (checked
+against `CODEX_CODE_MODE_HOST_SHA256`). Log Codex in inside the container, so its credentials live only in
 `cfg/codex/` (never copy or share the host's `~/.codex/auth.json`):
 
 ```bash
@@ -608,6 +671,7 @@ same name.
 | Container, `./cfg/home/.config/chromium/`, `./cfg/home/.local/share/pki/` | `reports` image only: Chromium's `Crash Reports/` settings and an empty NSS database, created on the first PDF/PPTX export (a few KB). Chromium's per-export profile goes to a private temporary directory under `/tmp` that is removed after the export |
 | Host CLI, `init-project` | `<project>/.claude/rules/trajectree.md`, `<project>/.git/info/exclude`, Claude Code's user MCP config via `claude mcp add` |
 | Host CLI, `hooks install` | `~/.claude/settings.json` after confirmation, with `settings.json.trajectree.bak` |
+| Host, you (optional) | `sockets/<profile>.sock` in the instance dir (created by systemd, 0600), `~/.config/trajectree/backends/<profile>.env`, the two units in `~/.config/systemd/user/`, one ufw rule; see [Local backends through a socket](#local-backends-through-a-socket). The container only connects to the sockets (mounted read-only) |
 | Host, anything else | Nothing |
 
 The container mounts your Claude home read-only and only `~/.claude/projects`
@@ -625,6 +689,7 @@ make sure `~/.codex/sessions` exists (`mkdir -p ~/.codex/sessions`) before
 | `TRAJECTREE_PORT` | `8742` | Port the daemon binds |
 | `TRAJECTREE_CLAUDE_HOME` | `~/.claude` if it exists (`/host/claude` in Docker) | Claude Code home to scan for transcripts; empty string disables |
 | `TRAJECTREE_BACKENDS_ROOT` | `~/.config/claude-backends` if it exists (`/host/claude-backends` in Docker) | Extra Claude homes to scan; empty string disables |
+| `TRAJECTREE_SOCKETS_DIR` | none (`/host/sockets`, bind-mounted read-only from `./sockets`, in Docker) | Where `<profile>.sock` connects a ccx backend through a host socket |
 | `TRAJECTREE_CODEX_SESSIONS` | `~/.codex/sessions` if it exists (`/host/codex/sessions` in Docker) | Codex sessions directory to scan; empty string disables |
 | `TRAJECTREE_PATH_MAP` | none | `host=container;host2=container2`: where host paths live in the container |
 | `TRAJECTREE_INGEST_EVERY` | `300` | Seconds between ingest passes; `0` disables the loop |
