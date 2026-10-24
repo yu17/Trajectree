@@ -228,3 +228,32 @@ def test_history_includes_codex_sessions(settings, tmp_path):
     assert "Fix the build script" in text and "I fixed the build." in text and "a later one" not in text
     assert "Fix the build script (1 prompts)" in text
     assert session_history(s, [CWD], [CWD], starts={"claude": date(2026, 3, 1)}, budget_chars=5000) == ""
+
+
+def test_no_secret_fields_leak(ledger, human, settings, tmp_path):
+    s, dest = install(settings, tmp_path, BASIC)
+    p = project(ledger, human)
+    scan_codex(ledger.conn, s, now=datetime.now(UTC))
+    (sig,) = list_signals(ledger.conn, project_ids=[p.id])
+    state = get_state(ledger.conn, f"scan:{dest.absolute()}")
+    seen = json.dumps(sig.payload) + json.dumps(state) + digest_codex(dest)
+    for secret in ("SECRET-BASE-INSTRUCTIONS", "SECRET-ACCOUNT-ID", "SECRET-USER-ID", "SECRET-TOKEN"):
+        assert secret in BASIC.read_text() and secret not in seen
+
+
+def test_cap_counts_only_this_folders_rollouts(settings, tmp_path, monkeypatch):
+    s, _ = install(settings, tmp_path, BASIC)  # the project's older session, mtime now
+    old = tmp_path / "codex-sessions" / "2026" / "01" / "05" / f"rollout-2026-01-05T10-00-00-{SID}-basic.jsonl"
+    os.utime(old, (1000, 1000))
+    for i in range(3):  # newer rollouts elsewhere, more than the cap
+        rollout(s.codex_sessions_root, f"019ddddd-0000-7000-8000-00000000000{i}", "/elsewhere", f"2026-02-0{i + 1}T09:00:00.000Z", "x")
+    got = project_codex_sessions(s, CWD, registered=[CWD], max_files=2)
+    assert [x.session_id for x in got.sessions] == [SID] and got.capped is False
+    real = probe_mod.project_codex_sessions
+    monkeypatch.setattr(probe_mod, "project_codex_sessions", lambda *a, **k: real(*a, **k, max_files=2))
+    probed = {x.source: x for x in probe_folder(nothing, s, CWD, now=datetime(2026, 10, 24, tzinfo=UTC)).sources}["codex"]
+    assert probed.count == 1 and probed.detail == ""
+    # a file whose first record is not a session_meta is skipped
+    bad = s.codex_sessions_root / "2026" / "01" / "05" / "rollout-bad.jsonl"
+    bad.write_text('{"type": "turn_context", "payload": {"cwd": "/home/u/proj"}}\n')
+    assert [x.session_id for x in project_codex_sessions(s, CWD, registered=[CWD]).sessions] == [SID]

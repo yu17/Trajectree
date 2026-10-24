@@ -308,6 +308,16 @@ def project_transcripts(
     )
 
 
+def cwd_in_folder(cwd: str, folder: str, registered: Sequence[str]) -> bool:
+    """True when `cwd` lies in `folder` and `folder` is the deepest of the `registered` folders containing it."""
+    path = PurePosixPath(cwd)
+    root = PurePosixPath(folder)
+    if not (path == root or path.is_relative_to(root)):
+        return False
+    deeper = (PurePosixPath(r) for r in registered if len(r) > len(folder))
+    return not any(path == r or path.is_relative_to(r) for r in deeper)
+
+
 def select_in_folder(
     candidates: list[tuple[float, str, Path]],
     folder: str,
@@ -320,8 +330,6 @@ def select_in_folder(
 ) -> ProjectTranscripts:
     """Parse the newest `max_files` of `candidates` (`(mtime, backend, path)`) and keep the sessions
     whose cwd belongs to `folder` (the deepest-registered-folder rule), ended before their cutoff."""
-    root_path = PurePosixPath(folder)
-    deeper = [PurePosixPath(r) for r in registered if len(r) > len(folder)]
     candidates = sorted(candidates, key=lambda c: c[0], reverse=True)
     capped = len(candidates) > max_files
     found: list[SessionSummary] = []
@@ -335,10 +343,7 @@ def select_in_folder(
             continue
         if summary.cwd is None:
             continue
-        cwd = PurePosixPath(summary.cwd)
-        if not (cwd == root_path or cwd.is_relative_to(root_path)):
-            continue
-        if any(cwd == r or cwd.is_relative_to(r) for r in deeper):
+        if not cwd_in_folder(summary.cwd, folder, registered):
             continue
         ended = summary.t_end or datetime.fromtimestamp(mtime, timezone.utc)
         if cutoff is not None and ended >= cutoff:

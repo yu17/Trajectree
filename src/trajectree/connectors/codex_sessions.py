@@ -26,6 +26,7 @@ from trajectree.connectors.claude_sessions import (
     _int,
     _str,
     _timestamp,
+    cwd_in_folder,
     digest_transcript,
     refresh_file,
     render_digest,
@@ -174,6 +175,22 @@ def session_signal(conn: apsw.Connection, session_id: str) -> Signal | None:
     )
 
 
+_FIRST_LINE_BYTES = 64 * 1024
+
+
+def _first_cwd(path: Path) -> str | None:
+    """The `cwd` of the file's first record when that is a `session_meta`; one bounded read."""
+    try:
+        with path.open("rb") as f:
+            line = f.readline(_FIRST_LINE_BYTES)
+        rec = json.loads(line)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(rec, dict) or rec.get("type") != "session_meta":
+        return None
+    return _str(_dict(rec.get("payload")).get("cwd"))
+
+
 def project_codex_sessions(
     settings: Settings,
     folder: str,
@@ -186,15 +203,21 @@ def project_codex_sessions(
     """Codex counterpart of `project_transcripts`: summaries of the rollouts whose cwd belongs to
     `folder` (a host path) by the deepest-registered-folder rule, newest first. Same `before`,
     `before_by_source` (needs a `codex` entry, else nothing is read) and `max_files` meaning.
-    Rollouts are not grouped by folder on disk, so the cap counts every rollout. No DB, no lock."""
+    Rollouts are not grouped by folder on disk, so candidates are first narrowed by the `cwd` in each
+    file's first record (`session_meta`, one bounded read); a file without a parsable one is skipped,
+    and a later `turn_context` cwd change is not seen by this pre-filter. The cap then counts only
+    the rollouts in this folder. No DB, no lock."""
     if before_by_source is not None and "codex" not in before_by_source:
         return ProjectTranscripts(sessions=[])
     candidates: list[tuple[float, str, Path]] = []
     for path in codex_files(settings):
         try:
-            candidates.append((path.stat().st_mtime, "codex", path))
+            mtime = path.stat().st_mtime
         except OSError:
             continue
+        cwd = _first_cwd(path)
+        if cwd is not None and cwd_in_folder(cwd, folder, registered):
+            candidates.append((mtime, "codex", path))
     return select_in_folder(
         candidates,
         folder,

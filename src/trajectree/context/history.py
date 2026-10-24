@@ -279,11 +279,12 @@ def session_history(
     """
     cutoffs = {source: local_midnight(day, settings.tz) for source, day in starts.items()}
     found: dict[str, tuple[datetime, SessionSummary]] = {}
-    capped = False
+    capped = codex_capped = False
     for folder in folders:
         scan = project_transcripts(settings, folder, registered=registered, before_by_source=cutoffs)
         codex = project_codex_sessions(settings, folder, registered=registered, before_by_source=cutoffs)
-        capped = capped or scan.capped or codex.capped
+        capped = capped or scan.capped
+        codex_capped = codex_capped or codex.capped
         for summary in [*scan.sessions, *codex.sessions]:
             if summary.t_end is not None:
                 found[summary.transcript_path] = (summary.t_end, summary)
@@ -307,4 +308,6 @@ def session_history(
         used += len(section) + 2
     if capped:
         sections.append(f"(only the newest {MAX_TRANSCRIPT_FILES} transcripts per folder were read)")
+    if codex_capped:
+        sections.append(f"(only the newest {MAX_TRANSCRIPT_FILES} Codex sessions per folder were read)")
     return "\n\n".join(sections)
