@@ -78,7 +78,7 @@ def _claude(settings: Settings, now: datetime, http: httpx.Client, which, timeou
         return RunnerCatalog(runner="claude", available=False, models=[], refreshed_at=now, error="claude binary not found")
     token = load_oauth_token(settings)
     if token is None:
-        return builtin("not logged in; run: trajectree login", available=False)
+        return RunnerCatalog(runner="claude", available=False, models=[], refreshed_at=now, error="not logged in; run: trajectree login")
     headers = {"Authorization": f"Bearer {token}", "anthropic-beta": "oauth-2025-04-20", "anthropic-version": "2023-06-01"}
     entries, error = _get_models(http, ANTHROPIC_MODELS_URL, headers, timeout_s)
     if error is None and entries:

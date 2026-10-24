@@ -135,7 +135,14 @@ def test_claude_without_token_makes_no_call(settings):
         raise AssertionError("no call without a token")
 
     r = runner(discover_with(settings, handler), "claude")
-    assert not r.available and {m.source for m in r.models} == {"builtin"} and "trajectree login" in r.error
+    assert not r.available and r.models == [] and r.error == "not logged in; run: trajectree login"
+
+
+def test_unavailable_runner_shows_no_models_after_earlier_refresh():
+    prev = Catalog(runners=[rc("claude", [CatalogModel(runner="claude", model="live-1", source="api")])])
+    fresh = Catalog(runners=[rc("claude", [], error="not logged in; run: trajectree login", available=False)])
+    claude = merge_failed(prev, fresh).runners[0]
+    assert claude.models == [] and not claude.available
 
 
 def test_no_secret_in_catalog(settings):
