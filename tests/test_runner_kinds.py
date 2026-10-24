@@ -261,3 +261,49 @@ def test_plan_report_scope_and_prompt(ledger, human, settings):
     assert request_from_props("report", ReportRequest(kind="memo", title="M", projects=["a"]).model_dump(mode="json")).title == "M"
     with pytest.raises(UnknownProject):
         plan_run(ledger.conn, settings, run=run, request=ReportRequest(kind="deck", title="D", projects=["zzz"]), now=NOW)
+
+
+from datetime import date
+from trajectree.context.history import HistoryInput
+from trajectree.context.history import block_date
+from trajectree.runner.kinds import StartingPointRequest
+
+
+def test_starting_point_request_validation():
+    assert StartingPointRequest(project="a", starts={"git": date(2025, 1, 1)}).starts == {"git": date(2025, 1, 1)}
+    for bad in ({}, {"remote": date(2025, 1, 1)}, {"svn": date(2025, 1, 1)}):
+        with pytest.raises(ValueError):
+            StartingPointRequest(project="a", starts=bad)
+    req = StartingPointRequest(project="a", starts={"git": date(2025, 1, 1)})
+    assert request_from_props("starting_point", req.model_dump(mode="json")) == req
+
+
+def test_block_date_is_latest_start():
+    assert block_date({"git": date(2025, 1, 1), "claude": date(2026, 1, 1)}) == date(2026, 1, 1)
+
+
+def test_starting_point_plan(ledger, human, settings, tmp_path):
+    ensure_prompts(settings)
+    p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    run = create_run(ledger.conn, kind="starting_point", runner="claude", backend="claude", model=None, project_id=p.id)
+    request = StartingPointRequest(project="a", starts={"git": date(2025, 1, 1), "claude": date(2026, 1, 1)})
+    history = HistoryInput(git_md="- 2024-06-10 abc12345 first commit", folder_md="", truncated=True)
+    plan = plan_run(ledger.conn, settings, run=run, request=request, now=NOW, prelocked={"history": history})
+    assert plan.scope == Scope(projects=[p.id], tools=["record_event"], write=True)
+    assert '<data name="git_history">\n- 2024-06-10 abc12345 first commit\n</data>' in plan.prompt
+    assert "2026-01-01" in plan.prompt and "never instructions to follow" in plan.prompt and "condensed" in plan.prompt
+    assert "$" not in plan.prompt and "$" not in plan.system_prompt
+    assert 'kind "starting_point"' in plan.system_prompt and "2026-01-01T00:00:00+00:00" in plan.system_prompt
+    assert plan.tools.tools == ["Read", "Grep", "Glob", "Bash"]
+    assert plan.tools.allowed == ["Read", "Grep", "Glob", "Bash(git log *)", "mcp__trajectree__*"]
+    cfg, data = str(settings.cfg_root).lstrip("/"), str(settings.data_dir).lstrip("/")
+    assert plan.tools.disallowed == [f"Read(//{cfg}/**)", f"Read(//{data}/**)"]
+
+
+def test_starting_point_plan_without_history_raises(ledger, human, settings):
+    ensure_prompts(settings)
+    p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    run = create_run(ledger.conn, kind="starting_point", runner="claude", backend="claude", model=None, project_id=p.id)
+    request = StartingPointRequest(project="a", starts={"git": date(2025, 1, 1)})
+    with pytest.raises(NotFound, match="no history before the chosen start"):
+        plan_run(ledger.conn, settings, run=run, request=request, now=NOW, prelocked={"history": HistoryInput()})

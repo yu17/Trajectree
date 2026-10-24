@@ -212,7 +212,7 @@ export interface IngestReport {
   exports_errors: string[];
 }
 
-export type RunKind = "summarize" | "summarize_session" | "ask" | "quick_add" | "routine" | "report";
+export type RunKind = "summarize" | "summarize_session" | "ask" | "quick_add" | "routine" | "report" | "starting_point";
 export type RunStatus = "queued" | "running" | "ok" | "failed" | "capped" | "cancelled";
 
 export interface Proposal {

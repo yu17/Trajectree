@@ -727,3 +727,51 @@ async def test_worker_crash_stores_masked_error(ledger, human, settings):
     stop.set()
     await asyncio.wait_for(task, 5)
     assert get_run(ledger.conn, run.id).error == "RuntimeError: planner died holding *** and more"
+
+
+import threading
+from datetime import date
+from trajectree.context.history import HistoryInput
+from trajectree.models import ResourceIn
+from trajectree.repo.resources import upsert_resource
+from trajectree.runner.kinds import StartingPointRequest
+
+
+def _lock_free(ledger):
+    """True when another thread can take the ledger lock right now."""
+    got = []
+    def probe():
+        ok = ledger._lock.acquire(blocking=False)
+        got.append(ok)
+        if ok:
+            ledger._lock.release()
+    t = threading.Thread(target=probe)
+    t.start(); t.join()
+    return got[0]
+
+
+def test_history_collected_outside_lock(ledger, human, settings, logged_in, monkeypatch, tmp_path):
+    p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    upsert_resource(ledger, human, ResourceIn(project_id=p.id, kind="folder", locator=str(folder)))
+    seen = {}
+    def stub(settings_, *, folders, starts, tz, budget_chars):
+        seen.update(lock_free=_lock_free(ledger), folders=folders, starts=starts)
+        return HistoryInput(git_md="- 2024-06-10 abc12345 first commit")
+    monkeypatch.setattr(service_mod, "collect_history", stub)
+    s = svc(ledger, settings)
+    run = s.enqueue(StartingPointRequest(project="a", starts={"git": date(2025, 1, 1)}))
+    assert run.kind == "starting_point" and run.slot == "interactive" and run.project_id == p.id
+    done = s.execute(run.id)
+    assert seen["lock_free"] is True and seen["folders"] == [folder] and seen["starts"] == {"git": date(2025, 1, 1)}
+    assert done.status == "ok"
+
+
+def test_no_history_fails_cleanly(ledger, human, settings, logged_in, monkeypatch):
+    create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    monkeypatch.setattr(service_mod, "collect_history", lambda *a, **k: HistoryInput())
+    s = svc(ledger, settings)
+    run = s.execute(s.enqueue(StartingPointRequest(project="a", starts={"git": date(2025, 1, 1)})).id)
+    assert run.status == "failed" and run.error == "no history before the chosen start"
+    assert ledger.conn.execute("select count(*) from token").fetchone()[0] == 0

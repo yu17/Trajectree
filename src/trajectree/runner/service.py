@@ -17,11 +17,13 @@ import tempfile
 from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 from pydantic import ValidationError
 
 from trajectree.auth.tokens import mint_token, revoke_token
 from trajectree.config import Settings
+from trajectree.context.history import collect_history
 from trajectree.db.ledger import Ledger
 from trajectree.models import SLOT_OF, Actor, EventIn, Proposal, Run, RunSlot, TodoIn
 from trajectree.repo import NotFound, UnknownProject, UnknownSession, events, todos
@@ -49,9 +51,12 @@ from trajectree.runner.kinds import (
     RunPlan,
     RunRequest,
     SummarizeRequest,
+    StartingPointRequest,
     SummarizeSessionRequest,
     ensure_prompts,
     plan_run,
+    project_folders,
+    HISTORY_BUDGET_CHARS,
     request_from_props,
     runner_parts,
 )
@@ -115,7 +120,9 @@ class RunService:
                 model = model or routine.model
                 routine_id, attempt = routine.id, request.attempt
             runner, backend = runner_parts(request.runner or default_runner)
-            if isinstance(request, SummarizeRequest):
+            if isinstance(request, StartingPointRequest):
+                project_id = resolve_project_ref(conn, request.project).id
+            elif isinstance(request, SummarizeRequest):
                 project_id = resolve_project_ref(conn, request.project).id
                 active = find_active_summarize(conn, project_id)
                 if active is not None:
@@ -167,8 +174,9 @@ class RunService:
             if current is not None and current.status == "queued"
             else None
         )
+        prelocked = self._collect_history(current) if version is not None else None
         with self.ledger.locked() as conn:
-            prepared = self._prepare(conn, run_id, version)  # revokes its own token if it fails
+            prepared = self._prepare(conn, run_id, version, prelocked)  # revokes its own token if it fails
             if isinstance(prepared, Run):
                 return prepared
             run, caps, plan, spec, env, token_id, oauth_token, actor = prepared
@@ -240,6 +248,24 @@ class RunService:
         # Delivery runs with the lock released; the token is already revoked.
         return finish_routine_run(self.ledger, self.settings, done, plan, actor=actor, now=self.now())
 
+    def _collect_history(self, run: Run | None) -> dict[str, Any] | None:
+        """For a queued starting_point run, its git and folder history; `git log` and the folder
+        walk run with no lock held, only the folder lookup takes it."""
+        if run is None or run.kind != "starting_point" or run.status != "queued":
+            return None
+        request = request_from_props(run.kind, run.props["request"])
+        assert isinstance(request, StartingPointRequest)
+        with self.ledger.locked() as conn:
+            folders = project_folders(conn, self.settings, run.project_id) if run.project_id else []
+        history = collect_history(
+            self.settings,
+            folders=folders,
+            starts=request.starts,
+            tz=self.settings.tz,
+            budget_chars=HISTORY_BUDGET_CHARS,
+        )
+        return {"history": history}
+
     def _abort(self, run_id: str, token_id: str, error: str) -> Run:
         with self.ledger.locked() as conn:
             try:
@@ -247,7 +273,7 @@ class RunService:
             finally:
                 revoke_token(conn, token_id)
 
-    def _prepare(self, conn, run_id: str, version: str | None):
+    def _prepare(self, conn, run_id: str, version: str | None, prelocked: dict[str, Any] | None = None):
         run = get_run(conn, run_id)
         if run is None:
             raise NotFound(f"run {run_id} not found")
@@ -263,7 +289,7 @@ class RunService:
         ensure_prompts(self.settings)
         request = request_from_props(run.kind, run.props["request"])
         try:
-            plan = plan_run(conn, self.settings, run=run, request=request, now=now)
+            plan = plan_run(conn, self.settings, run=run, request=request, now=now, prelocked=prelocked)
         except (UnknownProject, NotFound) as exc:
             return self._fail(conn, run_id, str(exc))
         actor = Actor(
