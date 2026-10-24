@@ -1,6 +1,8 @@
 from datetime import date, datetime, timezone
 
-from trajectree.importing import SESSION_SOURCE_OF_BACKEND, ImportRecord, SourceChoice, source_picked, source_start
+from trajectree.importing import (
+    SESSION_SOURCE_OF_BACKEND, ImportRecord, SourceChoice, default_since, local_midnight, source_picked, source_start,
+)
 from trajectree.models import Project
 
 UTC = timezone.utc
@@ -34,6 +36,16 @@ def test_all_means_none():
 def test_date_is_local_midnight():
     p = project({"git": SourceChoice(picked=True, since=date(2025, 1, 15))})
     assert start(p, "git", tz="America/Chicago") == datetime(2025, 1, 15, 6, tzinfo=UTC)
+
+
+def test_default_start_is_local_midnight_of_the_default_day():
+    now = datetime(2026, 10, 22, 20, tzinfo=UTC)  # 05:00 on the 23rd in Tokyo
+    day = default_since(now, 30, "Asia/Tokyo")
+    assert day == date(2026, 9, 23)
+    expected = local_midnight(day, "Asia/Tokyo")
+    assert expected == datetime(2026, 9, 22, 15, tzinfo=UTC)
+    got = source_start(project(), "git", now=now, default_days=30, tz="Asia/Tokyo")
+    assert got == expected
 
 
 def test_remote_follows_git():

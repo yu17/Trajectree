@@ -58,7 +58,7 @@ def test_init_project_twice_is_idempotent(tmp_path, client, app, capsys):
     fake = FakeClaude()
     main(["init-project", str(repo)], client=client, env=env_for(app), runner=fake)
     (repo / ".claude" / "rules" / "trajectree.md").write_text("edited")
-    assert main(["init-project", str(repo), "--sources", "none"], client=client, env=env_for(app), runner=fake) == 0
+    assert main(["init-project", str(repo)], client=client, env=env_for(app), runner=fake) == 0
     assert capsys.readouterr().out.splitlines()[-1] == "mcp: already configured"
     assert len(user_projects(client)) == 1 and len(client.get("/api/resources").json()) == 2
     assert (repo / ".git" / "info" / "exclude").read_text().count(".claude/rules/trajectree.md") == 1
@@ -110,7 +110,7 @@ def test_init_project_handles_git_file_pointer(tmp_path, client, app, capsys):
     folder = tmp_path / "wt"
     folder.mkdir()
     (folder / ".git").write_text(f"gitdir: {gitdir}\n")
-    assert main(["init-project", str(folder), "--sources", "none"], client=client, env=env_for(app), runner=FakeClaude()) == 0
+    assert main(["init-project", str(folder)], client=client, env=env_for(app), runner=FakeClaude()) == 0
     out = capsys.readouterr().out.splitlines()
     assert len(out) == 4 and out[1] == "resources: folder, git_local"
     assert (gitdir / "info" / "exclude").read_text().count(".claude/rules/trajectree.md") == 1
@@ -125,20 +125,22 @@ def test_init_project_worktree_exclude_goes_to_common_dir(tmp_path, client, app,
     folder = tmp_path / "wt"
     folder.mkdir()
     (folder / ".git").write_text(f"gitdir: {gitdir}\n")
-    assert main(["init-project", str(folder), "--sources", "none"], client=client, env=env_for(app), runner=FakeClaude()) == 0
+    assert main(["init-project", str(folder)], client=client, env=env_for(app), runner=FakeClaude()) == 0
     assert (common / "info" / "exclude").read_text().count(".claude/rules/trajectree.md") == 1
     assert not (gitdir / "info" / "exclude").exists()
     # an absolute commondir works too
     other = tmp_path / "other-common"
     other.mkdir()
     (gitdir / "commondir").write_text(f"{other}\n")
-    assert main(["init-project", str(folder), "--sources", "none"], client=client, env=env_for(app), runner=FakeClaude()) == 0
+    assert main(["init-project", str(folder)], client=client, env=env_for(app), runner=FakeClaude()) == 0
     assert (other / "info" / "exclude").read_text().count(".claude/rules/trajectree.md") == 1
 
 
 # --- the import dialogue -------------------------------------------------------------------
 
 import io
+
+import pytest
 
 from trajectree.cli.init_project import init_project
 from trajectree.cli.main import _Fail
@@ -158,7 +160,7 @@ def make_probe(**overrides):
         "folder": _source("folder", 40, "2026-10-01T09:00:00Z"),
     }
     sources.update(overrides.pop("sources", {}))
-    return {"path": "/x", "default_since": DEFAULT_SINCE, "sources": list(sources.values()),
+    return {"path": "/x", "default_since": DEFAULT_SINCE, "tz": overrides.pop("tz", "UTC"), "sources": list(sources.values()),
             "remotes": overrides.pop("remotes", [])}
 
 
@@ -348,10 +350,93 @@ def test_remote_choice_sent(tmp_path, capsys):
     assert api.imports()[0]["remotes"] == ["https://github.com/a/b"]
 
 
-def test_probe_outside_mapped_folders_exits_2(tmp_path, capsys):
+def test_probe_outside_mapped_folders_stops_before_host_writes(tmp_path, capsys):
     api = FakeApi("path /x is outside every mapped folder")
-    code, _, err, _ = dialogue(tmp_path, capsys, api)
-    assert code == 2 and "outside every mapped folder" in err
+    code, out, err, _ = dialogue(tmp_path, capsys, api)
+    assert code == 2 and out == ""
+    assert err.strip() == ("project registered, but the daemon cannot see this folder: "
+                           "path /x is outside every mapped folder")
+    assert not (tmp_path / "proj" / ".claude").exists()
+
+
+def test_other_probe_errors_also_stop_before_host_writes(tmp_path, capsys):
+    class Broken(FakeApi):
+        def post(self, path, body):
+            if path == "/api/import/probe":
+                raise RuntimeError("daemon down")
+            return super().post(path, body)
+
+    with pytest.raises(RuntimeError):
+        dialogue(tmp_path, capsys, Broken(make_probe()))
+    assert not (tmp_path / "proj" / ".claude").exists()
+
+
+REMOTE = {"url": "https://github.com/a/b", "title": "a/b", "declined": False}
+OLD_REMOTE = {"url": "https://github.com/a/old", "title": "a/old", "declined": True}
+
+
+def test_non_tty_undecided_remotes_are_missing_choices(tmp_path, capsys):
+    api = FakeApi(make_probe(remotes=[REMOTE, OLD_REMOTE]))
+    code, _, err, _ = dialogue(tmp_path, capsys, api, interactive=False, sources="claude")
+    assert code == 2 and api.imports() == []
+    assert err.strip() == "missing choices: --remote <url> or --no-remotes"
+    # a remote declined before is not undecided
+    api = FakeApi(make_probe(remotes=[OLD_REMOTE]))
+    code, _, _, _ = dialogue(tmp_path, capsys, api, interactive=False, sources="claude")
+    assert code == 0 and api.imports()[0]["remotes"] == []
+
+
+def test_remote_flags(tmp_path, capsys):
+    api = FakeApi(make_probe(remotes=[REMOTE]))
+    code, _, _, ask = dialogue(tmp_path, capsys, api, interactive=False, sources="claude", no_remotes=True)
+    assert code == 0 and api.imports()[0]["remotes"] == []
+    api = FakeApi(make_probe(remotes=[REMOTE]))
+    code, _, _, _ = dialogue(tmp_path, capsys, api, interactive=False, sources="claude", remote=[REMOTE["url"]])
+    assert code == 0 and api.imports()[0]["remotes"] == [REMOTE["url"]]
+    # flags also skip the remote question in an interactive run
+    api = FakeApi(make_probe(remotes=[REMOTE]))
+    _, _, _, ask = dialogue(tmp_path, capsys, api, "2", "y", no_remotes=True)
+    assert not any("remote" in p for p in ask.prompts) and api.imports()[0]["remotes"] == []
+    # contradictory flags
+    code, _, err, _ = dialogue(tmp_path, capsys, FakeApi(make_probe()), interactive=False, sources="claude",
+                               remote=["u"], no_remotes=True)
+    assert code == 2 and "exclude each other" in err
+
+
+def starts_for(tz, oldest, capsys, tmp_path):
+    api = FakeApi(make_probe(tz=tz, sources={"git": _source("git", 3, oldest)}))
+    code, _, _, _ = dialogue(tmp_path, capsys, api, interactive=False, sources="git",
+                             since=["git=2024-05-01"], start_model="m1")
+    assert code == 0
+    return api.imports()[0]["starts"]
+
+
+def test_starts_compare_against_local_midnight_of_the_daemon_zone(tmp_path, capsys):
+    # 2024-05-01T02:00Z is still April 30th in New York: history exists before the chosen midnight
+    assert starts_for("America/New_York", "2024-05-01T02:00:00Z", capsys, tmp_path) == {"git": "2024-05-01"}
+    # ... and already past midnight on the 1st in Tokyo: nothing is skipped
+    assert starts_for("Asia/Tokyo", "2024-05-01T02:00:00Z", capsys, tmp_path) == {}
+    # oldest exactly at that midnight is not older
+    assert starts_for("America/New_York", "2024-05-01T04:00:00Z", capsys, tmp_path) == {}
+
+
+def test_all_at_the_prompt_picks_exactly_the_pickable_sources(tmp_path, capsys):
+    api = FakeApi(make_probe(sources={"git": _source("git", 312, "2023-03-14T09:00:00Z", imported=True)}))
+    code, _, _, ask = dialogue(tmp_path, capsys, api, "7", "1", "3", "all", "y")
+    assert code == 0
+    assert sum(p.startswith("Sources to import") for p in ask.prompts) == 4
+    (body,) = api.imports()
+    assert set(body["sources"]) == {"claude", "folder"}
+
+
+def test_eof_at_the_runner_prompt_imports_nothing(tmp_path, capsys):
+    api = FakeApi(make_probe())
+    code, _, err, ask = dialogue(tmp_path, capsys, api, "1", "default", "m1")
+    assert ask.prompts[-1].startswith("Runner") and code == 2
+    assert "nothing imported" in err and api.imports() == []
+    api = FakeApi(make_probe())
+    code, _, _, _ = dialogue(tmp_path, capsys, api, "1", "default", "m1", "", "y")
+    assert code == 0 and api.imports()[0]["start_block"] == {"runner": None, "model": "m1"}
 
 
 def test_input_ending_imports_nothing(tmp_path, capsys):

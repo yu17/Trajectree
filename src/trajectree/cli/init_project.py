@@ -5,8 +5,10 @@ import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, TextIO
+from zoneinfo import ZoneInfo
 
 from trajectree.guidance import render_rules
+from trajectree.importing import local_midnight
 from trajectree.models import SLUG_PATTERN
 
 EXCLUDE_LINE = ".claude/rules/trajectree.md"
@@ -81,11 +83,16 @@ def init_project(
     start_model: str | None = None,
     start_runner: str | None = None,
     no_start_block: bool = False,
+    remote: list[str] | None = None,
+    no_remotes: bool = False,
 ) -> int:
     path = path.resolve()
     flags = _parse_flags(sources, since)
     if isinstance(flags, str):
         print(flags, file=sys.stderr)
+        return 2
+    if remote and no_remotes:
+        print("--remote and --no-remotes exclude each other", file=sys.stderr)
         return 2
     if not path.is_dir():
         print(f"not a directory: {path}", file=sys.stderr)
@@ -118,16 +125,17 @@ def init_project(
             {"project_id": pid, "kind": rkind, "locator": str(path), "title": path.name},
         )
 
-    # Probed before the rules file exists, so the file this command writes is not counted as history.
+    # Probed first, before any host write. A folder the daemon cannot see stops here: no rules
+    # file, exclude or MCP setup. Any other probe failure propagates, also before those writes.
     report: dict[str, Any] | None = None
-    probe_error = ""
     if flags[0] != ["none"]:
         from trajectree.cli.main import _Fail
 
         try:
             report = api.post("/api/import/probe", {"path": str(path)})
         except _Fail as exc:
-            probe_error = str(exc)
+            print(f"project registered, but the daemon cannot see this folder: {exc}", file=sys.stderr)
+            return 2
 
     rules = path / ".claude" / "rules" / "trajectree.md"
     note = ""
@@ -154,14 +162,12 @@ def init_project(
     print(f"resources: {', '.join(kinds)}", file=out)
     print(f"rules: {rules}{note}", file=out)
     print(_ensure_mcp(runner), file=out)
-    if probe_error:
-        print(probe_error, file=sys.stderr)
-        return 2
     if report is None:  # --sources none
         return 0
     return _import_dialogue(
         api, pid, report, flags, out=out, ask=ask, interactive=interactive,
         start_model=start_model, start_runner=start_runner, no_start_block=no_start_block,
+        remote=remote or [], no_remotes=no_remotes,
     )
 
 
@@ -206,8 +212,13 @@ def _parse_flags(sources: str | None, since: list[str] | None) -> tuple[list[str
     return names, given
 
 
-def _day(stamp: str | None) -> date | None:
-    return date.fromisoformat(stamp[:10]) if stamp else None
+def _stamp(stamp: str | None) -> datetime | None:
+    return datetime.fromisoformat(stamp) if stamp else None
+
+
+def _local_day(stamp: str | None, tz: str) -> date | None:
+    parsed = _stamp(stamp)
+    return parsed.astimezone(ZoneInfo(tz)).date() if parsed else None
 
 
 def _prompt(ask: Callable[[str], str], out: TextIO, text: str, check: Callable[[str], Any]) -> Any:
@@ -237,7 +248,7 @@ def _check_model(answer: str) -> str:
     return answer
 
 
-def _list_sources(probes: list[dict[str, Any]], out: TextIO) -> None:
+def _list_sources(probes: list[dict[str, Any]], out: TextIO, tz: str) -> None:
     print("history found:", file=out)
     for n, p in enumerate(probes, 1):
         if p["imported"]:
@@ -245,7 +256,7 @@ def _list_sources(probes: list[dict[str, Any]], out: TextIO) -> None:
         elif p["count"] == 0:
             tail = "(nothing found)" + (f" {p['detail']}" if p["detail"] else "")
         else:
-            oldest = _day(p["oldest"])
+            oldest = _local_day(p["oldest"], tz)
             tail = f"{p['count']} found" + (f", oldest {oldest}" if oldest else "")
             tail += f" ({p['detail']})" if p["detail"] else ""
         print(f"  {n}. {p['source']}  {tail}", file=out)
@@ -283,18 +294,21 @@ def _import_dialogue(
     start_model: str | None,
     start_runner: str | None,
     no_start_block: bool,
+    remote: list[str],
+    no_remotes: bool,
 ) -> int:
     flag_sources, flag_since = flags
+    tz = report["tz"]
     probes = report["sources"]
     by_name = {p["source"]: p for p in probes}
     pickable = [p["source"] for p in probes if p["count"] > 0 and not p["imported"]]
     if not pickable:
         if any(p["imported"] for p in probes):
-            _list_sources(probes, out)
+            _list_sources(probes, out, tz)
             print("nothing new to import", file=out)
         return 0
     default_since = date.fromisoformat(report["default_since"])
-    _list_sources(probes, out)
+    _list_sources(probes, out, tz)
 
     named = [*(n for n in flag_sources or [] if n != "all"), *flag_since]
     for name in named:
@@ -308,8 +322,9 @@ def _import_dialogue(
             return 2
 
     def older(name: str, start: date | None) -> bool:
-        oldest = _day(by_name[name]["oldest"])
-        return start is not None and oldest is not None and oldest < start
+        """True when `name` has history before local midnight of `start` (a day in the daemon's zone)."""
+        oldest = _stamp(by_name[name]["oldest"])
+        return start is not None and oldest is not None and oldest < local_midnight(start, tz)
 
     try:
         if flag_sources is not None:
@@ -334,7 +349,7 @@ def _import_dialogue(
             elif interactive:
                 since_text[name] = _prompt(
                     ask, out,
-                    f"{name} reaches back to {_day(by_name[name]['oldest'])}; the default cutoff is "
+                    f"{name} reaches back to {_local_day(by_name[name]['oldest'], tz)}; the default cutoff is "
                     f"{default_since}. Import from (YYYY-MM-DD, all or default): ",
                     _check_since,
                 )
@@ -348,17 +363,20 @@ def _import_dialogue(
                 starts[name] = effective.isoformat()
         if starts and not interactive and not start_model and not no_start_block:
             missing.append("--start-model or --no-start-block")
+        if not interactive and not remote and not no_remotes and any(not r["declined"] for r in report["remotes"]):
+            missing.append("--remote <url> or --no-remotes")
         if missing:
             print("missing choices: " + ", ".join(missing), file=sys.stderr)
             return 2
 
-        remotes: list[str] = []
-        if interactive:
-            for remote in report["remotes"]:
-                if remote["declined"]:
-                    print(f"remote {remote['url']} (declined before)", file=out)
-                elif _prompt(ask, out, f"Also follow remote {remote['url']}? [y/n]: ", _yes_no):
-                    remotes.append(remote["url"])
+        # The daemon records every remote not sent as declined, so it is never sent by default.
+        remotes: list[str] = list(dict.fromkeys(remote))
+        for found in report["remotes"]:
+            if found["declined"]:
+                print(f"remote {found['url']} (declined before)", file=out)
+            elif interactive and not remote and not no_remotes:
+                if _prompt(ask, out, f"Also follow remote {found['url']}? [y/n]: ", _yes_no):
+                    remotes.append(found["url"])
 
         start_block: dict[str, Any] | None = None
         if starts and not no_start_block:
@@ -373,7 +391,7 @@ def _import_dialogue(
             if model:
                 runner_name = start_runner
                 if interactive and not start_runner:
-                    runner_name = ask("Runner (empty: let the daemon decide): ").strip() or None
+                    runner_name = _prompt(ask, out, "Runner (empty: let the daemon decide): ", lambda a: a or None)
                 start_block = {"runner": runner_name, "model": model}
         if start_block is None:
             starts = {}  # no block, no summary run

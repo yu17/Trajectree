@@ -112,6 +112,23 @@ def test_folder_count_respects_skips(settings, tmp_path):
     assert folder.oldest == datetime(2025, 5, 5, 8, tzinfo=UTC) and folder.detail == ""
 
 
+def test_folder_probe_ignores_the_managed_rules_file_and_a_git_pointer(settings, tmp_path):
+    root = tmp_path / "work"
+    (root / ".claude" / "rules").mkdir(parents=True)
+    (root / ".claude" / "rules" / "trajectree.md").write_text("x")
+    (root / ".git").write_text("gitdir: /elsewhere\n")
+    assert by_source(probe_folder(nothing, settings, str(root), now=NOW))["folder"].count == 0
+    (root / ".claude" / "settings.json").write_text("{}")
+    (root / "sub").mkdir()
+    (root / "sub" / ".git").write_text("x")  # only the top-level pointer is skipped
+    assert by_source(probe_folder(nothing, settings, str(root), now=NOW))["folder"].count == 2
+
+
+def test_report_carries_the_daemon_zone(settings, tmp_path):
+    report = probe_folder(nothing, settings, str(tmp_path), now=NOW)
+    assert report.tz == settings.tz
+
+
 def test_folder_walk_stops_at_the_cap(settings, tmp_path, monkeypatch):
     root = tmp_path / "work"
     root.mkdir()

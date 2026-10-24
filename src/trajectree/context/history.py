@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import subprocess
 from collections.abc import Mapping
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from trajectree.config import Settings
 from trajectree.connectors.claude_sessions import SessionSummary, MAX_TRANSCRIPT_FILES, digest_transcript, project_transcripts
 from trajectree.connectors.folders import DEFAULT_EXCLUDES, load_gitignore
-from trajectree.importing import SESSION_SOURCE_OF_BACKEND
+from trajectree.importing import SESSION_SOURCE_OF_BACKEND, local_midnight
 
 MAX_WALK_ENTRIES = 50_000  # directory entries visited by one whole folder snapshot
 MAX_COMMITS = 5000  # newest commits read per repository
@@ -34,11 +34,6 @@ class HistoryInput(BaseModel):
 def block_date(starts: Mapping[str, date]) -> date:
     """The starting-point block sits at the latest of the chosen starts."""
     return max(starts.values())
-
-
-def local_midnight(day: date, tz: str) -> datetime:
-    """Local midnight of `day` in `tz` (the same rule as `importing.source_start`)."""
-    return datetime.combine(day, time.min, tzinfo=ZoneInfo(tz))
 
 
 # -- git and folders (no lock) -------------------------------------------------------------

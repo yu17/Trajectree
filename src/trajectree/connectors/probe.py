@@ -8,9 +8,8 @@ registered. Nothing here writes.
 import os
 import subprocess
 from collections.abc import Callable
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from urllib.parse import urlparse
-from zoneinfo import ZoneInfo
 
 from pydantic import AwareDatetime, BaseModel
 
@@ -20,14 +19,16 @@ from trajectree.connectors.folders import scan_folder_capped
 from trajectree.connectors.local_git import discover_remotes
 from trajectree.connectors.paths import to_local
 from trajectree.db.ledger import Ledger
-from trajectree.importing import IMPORT_SOURCES, ImportRecord, import_record
+from trajectree.importing import IMPORT_SOURCES, ImportRecord, default_since, import_record
 from trajectree.models import Project, Resource
 from trajectree.repo.resources import list_resources, project_for_path
 from trajectree.repo.state import get_state
 
 FOLDER_PROBE_MAX_FILES = 200_000
 GIT_TIMEOUT_S = 30
-_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+# Not history: the rules file init-project writes, and a worktree's `.git` pointer file.
+PROBE_SKIP_FILES = (".claude/rules/trajectree.md", ".git")
+_EPOCH =datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
 class SourceProbe(BaseModel):
@@ -47,6 +48,7 @@ class RemoteProbe(BaseModel):
 class ProbeReport(BaseModel):
     path: str
     default_since: date
+    tz: str  # the daemon's zone: a chosen date means local midnight there
     sources: list[SourceProbe]
     remotes: list[RemoteProbe]
 
@@ -131,7 +133,8 @@ def _probe_folder(settings: Settings, host_path: str) -> SourceProbe:
         return SourceProbe(source="folder", count=0, oldest=None, detail="not a directory")
     try:
         days, capped = scan_folder_capped(
-            local, since=_EPOCH, big_dir_mb=settings.folders_big_dir_mb, max_entries=FOLDER_PROBE_MAX_FILES
+            local, since=_EPOCH, big_dir_mb=settings.folders_big_dir_mb, max_entries=FOLDER_PROBE_MAX_FILES,
+            skip_files=PROBE_SKIP_FILES,
         )
     except OSError as exc:
         return SourceProbe(source="folder", count=0, oldest=None, detail=str(exc))
@@ -164,5 +167,10 @@ def probe_folder(
         RemoteProbe(url=url, title=urlparse(url).path.strip("/"), declined=url in state.declined)
         for _, url in discover_remotes(settings, [anchor])
     ]
-    first = (now - timedelta(days=settings.scan_since_days)).astimezone(ZoneInfo(settings.tz))
-    return ProbeReport(path=host_path, default_since=first.date(), sources=sources, remotes=remotes)
+    return ProbeReport(
+        path=host_path,
+        default_since=default_since(now, settings.scan_since_days, settings.tz),
+        tz=settings.tz,
+        sources=sources,
+        remotes=remotes,
+    )

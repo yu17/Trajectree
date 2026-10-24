@@ -112,7 +112,9 @@ Re-running offers only sources not yet imported (shown as `(imported)`).
 
 Flags answer the questions up front: `--sources git,claude|all|none`,
 `--since <source>=<YYYY-MM-DD|all|default>` (repeatable), `--start-model <name>`
-with optional `--start-runner <runner>`, `--no-start-block`. With `--yes`, or
+with optional `--start-runner <runner>`, `--no-start-block`, `--remote <url>`
+(repeatable) or `--no-remotes` (a remote you do not pick is remembered as
+declined, so a non-interactive run must say). With `--yes`, or
 when stdin is not a terminal, nothing is asked: any missing choice is listed on
 one stderr line starting `missing choices:` and the command exits 2 without
 importing. `--sources none` registers the folder and imports nothing.

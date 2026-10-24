@@ -97,6 +97,8 @@ def _parser() -> argparse.ArgumentParser:
     init.add_argument("--start-model", help="model that summarises the history older than the cutoff")
     init.add_argument("--start-runner", help="runner for --start-model")
     init.add_argument("--no-start-block", action="store_true", help="do not summarise skipped history")
+    init.add_argument("--remote", action="append", default=[], metavar="URL", help="follow this git remote (repeatable)")
+    init.add_argument("--no-remotes", action="store_true", help="follow no git remote")
     init.add_argument("--yes", action="store_true", help="never prompt; a missing choice is an error")
 
     sub.add_parser("mcp", help="run the stdio MCP shim that forwards to the daemon")
@@ -552,6 +554,7 @@ def _run(
             interactive=(sys.stdin.isatty() if interactive is None else interactive) and not args.yes,
             sources=args.sources, since=args.since, start_model=args.start_model,
             start_runner=args.start_runner, no_start_block=args.no_start_block,
+            remote=args.remote, no_remotes=args.no_remotes,
         )
         if code:
             raise _Fail("", code)

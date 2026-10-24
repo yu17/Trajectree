@@ -49,6 +49,16 @@ def source_picked(project: Project, source: str) -> bool:
     return choice is not None and choice.picked
 
 
+def local_midnight(day: date, tz: str) -> datetime:
+    """Midnight starting `day` in `tz`, as an aware UTC datetime."""
+    return datetime.combine(day, time.min, tzinfo=ZoneInfo(tz)).astimezone(timezone.utc)
+
+
+def default_since(now: datetime, days: int, tz: str) -> date:
+    """The default cutoff day: the `tz` date of `now` minus `days`."""
+    return (now - timedelta(days=days)).astimezone(ZoneInfo(tz)).date()
+
+
 def source_start(
     project: Project, source: str, *, now: datetime, default_days: int, tz: str
 ) -> datetime | None:
@@ -59,6 +69,5 @@ def source_start(
     if since == "all":
         return None
     if isinstance(since, date):
-        return datetime.combine(since, time.min, tzinfo=ZoneInfo(tz)).astimezone(timezone.utc)
-    first = (now - timedelta(days=default_days)).astimezone(timezone.utc)
-    return first.replace(hour=0, minute=0, second=0, microsecond=0)
+        return local_midnight(since, tz)
+    return local_midnight(default_since(now, default_days, tz), tz)

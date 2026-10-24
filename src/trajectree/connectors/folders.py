@@ -92,8 +92,12 @@ def scan_folder_capped(
     excludes: tuple[str, ...] | list[str] = DEFAULT_EXCLUDES,
     big_dir_mb: int = 500,
     max_entries: int = 200_000,
+    skip_files: tuple[str, ...] = (),
 ) -> tuple[dict[str, DayChange], bool]:
-    """`scan_folder`, plus whether the walk stopped at `max_entries` with entries left unseen."""
+    """`scan_folder`, plus whether the walk stopped at `max_entries` with entries left unseen.
+
+    `skip_files` are root-relative file paths that are not counted.
+    """
     spec = load_gitignore(root)
     cutoff = since.timestamp()
     big_bytes = big_dir_mb * 1024 * 1024
@@ -123,9 +127,9 @@ def scan_folder_capped(
                         continue
                     subdirs.append((Path(entry.path), rel + "/"))
                 elif entry.is_file(follow_symlinks=False):
-                    if spec and spec.match_file(rel):
+                    if rel in skip_files or (spec and spec.match_file(rel)):
                         continue
-                    st = entry.stat(follow_symlinks=False)
+                    st =entry.stat(follow_symlinks=False)
                     files.append((rel, st.st_mtime, st.st_size))
             except OSError:
                 continue
