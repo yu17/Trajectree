@@ -2,7 +2,48 @@
 
 Self-hosted project tracker (Python backend, React frontend).
 
-## Run with Docker
+## Install an instance
+
+An instance is a directory that holds only `compose.yaml`, `.env`, `data/` and
+`cfg/`; the image is built from the git repository.
+
+```bash
+# 1. Create the instance directory and copy in the two files from deploy/
+#    (env.example becomes .env).
+mkdir ~/trajectree-instance && cd ~/trajectree-instance
+curl -fsSLO https://raw.githubusercontent.com/yu17/Trajectree/main/deploy/compose.yaml
+curl -fsSL https://raw.githubusercontent.com/yu17/Trajectree/main/deploy/env.example -o .env
+
+# 2. Create data and cfg yourself (Docker would make them root-owned), keep cfg
+#    private, then fill in .env (at least TRAJECTREE_PROJECTS_ROOT, UID and GID).
+mkdir -p data cfg && chmod 700 cfg
+
+# 3. Build and start, then give the host CLI the token.
+docker compose up -d --build
+mkdir -p ~/.config/trajectree && cp data/token ~/.config/trajectree/token
+
+# 4. Install the host CLI.
+uv tool install git+https://github.com/yu17/Trajectree@<ref>
+
+# 5. Log in the runners.
+claude setup-token
+trajectree login
+docker compose exec -e CODEX_HOME=/cfg/codex trajectree codex login --device-auth
+trajectree backends sync
+
+# 6. Refresh the model catalog (from Task 8), then connect a project folder
+#    (the interactive form is from Task 7).
+trajectree models --refresh
+trajectree init-project <folder>
+```
+
+Instance state must never live inside `TRAJECTREE_PROJECTS_ROOT`.
+
+## Development compose
+
+The `compose.yaml` at the repository root is the development stack. It is named
+`trajectree-dev`, publishes port 8743 on 127.0.0.1 and builds from the working
+tree, so it cannot replace a running instance.
 
 ```bash
 # Create the data and cfg dirs yourself first: if Docker creates them, they are
@@ -24,7 +65,8 @@ mkdir -p ~/.config/trajectree && cp data/token ~/.config/trajectree/token
 ```
 
 The container runs as a non-root user with a read-only root filesystem, and
-publishes port 8742 on 127.0.0.1 only. It mounts `~/.claude/projects` (only the
+publishes its port on 127.0.0.1 only (8742 for an instance, 8743 for the
+development stack). It mounts `~/.claude/projects` (only the
 transcripts, not the rest of the Claude home), `~/.config/claude-backends` and
 `$TRAJECTREE_PROJECTS_ROOT` read-only, `./data` read-write, and `./cfg`
 read-write at `/cfg` for the runner's Claude Code config and credentials.

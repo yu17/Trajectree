@@ -1,9 +1,11 @@
+name: trajectree-dev
+
 services:
   trajectree:
     build:
       context: .
       target: ${TRAJECTREE_IMAGE_TARGET:-app}
-    ports: ["127.0.0.1:8742:8742"]
+    ports: ["127.0.0.1:8743:8742"]
     volumes:
       - ./data:/data
       - ./cfg:/cfg

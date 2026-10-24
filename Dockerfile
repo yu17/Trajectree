@@ -14,7 +14,7 @@ COPY src/ ./src/
 COPY --from=web /build/src/trajectree/static ./src/trajectree/static
 RUN uv sync --frozen --no-dev
 COPY docker/entrypoint.sh ./docker/entrypoint.sh
-RUN apt-get update && apt-get install -y --no-install-recommends git curl ca-certificates openssh-client && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends git curl ca-certificates openssh-client ripgrep && rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /opt/claude && HOME=/opt/claude bash -c "curl -fsSL https://claude.ai/install.sh | bash" \
     && chmod -R a+rX /opt/claude && /opt/claude/.local/bin/claude --version
 # Optional Codex runner: --build-arg INSTALL_CODEX=1. The release publishes no .sha256 file, so

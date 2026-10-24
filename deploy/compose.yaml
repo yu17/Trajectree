@@ -1,0 +1,39 @@
+# A Trajectree instance: copy this file and env.example (as .env) into an empty directory.
+# The image is built from the git repository, so the instance directory holds no source.
+name: trajectree
+
+services:
+  trajectree:
+    build:
+      context: ${TRAJECTREE_GIT_URL:-https://github.com/yu17/Trajectree.git}#${TRAJECTREE_REF:-main}
+      target: reports
+      args:
+        INSTALL_CODEX: "1"
+    ports: ["127.0.0.1:8742:8742"]
+    volumes:
+      - ./data:/data
+      - ./cfg:/cfg
+      - ${HOME}/.claude/projects:/host/claude/projects:ro
+      - ${HOME}/.config/claude-backends:/host/claude-backends:ro
+      - ${TRAJECTREE_PROJECTS_ROOT:?set TRAJECTREE_PROJECTS_ROOT to the folder that holds your project folders}:/projects:ro
+    environment:
+      TRAJECTREE_CLAUDE_HOME: /host/claude
+      TRAJECTREE_BACKENDS_ROOT: /host/claude-backends
+      TRAJECTREE_PATH_MAP: ${TRAJECTREE_PROJECTS_ROOT}=/projects
+      TRAJECTREE_CFG_DIR: /cfg
+      HOME: /cfg/home
+      DISABLE_AUTOUPDATER: "1"
+      TRAJECTREE_TZ: ${TZ:-UTC}
+      TRAJECTREE_INGEST_EVERY: ${TRAJECTREE_INGEST_EVERY:-300}
+      # The loader parses this as an integer, so an empty pass-through would crash it.
+      TRAJECTREE_SCAN_SINCE_DAYS: ${TRAJECTREE_SCAN_SINCE_DAYS:-365}
+      TRAJECTREE_CHATMAID_URL: ${TRAJECTREE_CHATMAID_URL:-}
+      TRAJECTREE_GITLAB_HOST: ${TRAJECTREE_GITLAB_HOST:-}
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    user: "${UID:-1000}:${GID:-1000}"
+    restart: unless-stopped
+    mem_limit: 4g
+    pids_limit: 256
