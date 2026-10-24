@@ -98,7 +98,7 @@ def _private_state_dirs(settings: Settings) -> None:
         os.chmod(settings.data_dir, 0o700)
         os.chmod(settings.cfg_root, 0o700)
     except OSError:
-        log.warning("could not make the state directories private", exc_info=True)
+        log.warning("could not make %s and %s private", settings.data_dir, settings.cfg_root, exc_info=True)
 
 
 def create_app(settings: Settings, *, ledger: Ledger | None = None) -> FastAPI:

@@ -37,6 +37,7 @@ RUN if [ "$INSTALL_CODEX" = "1" ]; then \
 RUN useradd --uid 1000 --no-create-home --shell /usr/sbin/nologin trajectree \
     && mkdir /data && chown 1000:1000 /data \
     && mkdir /cfg && chown 1000:1000 /cfg
+# CODEX_HOME makes `docker compose exec ... codex ...` use the instance's Codex home, the one runs read.
 # TRAJECTREE_CODEX_BIN is set even without Codex: it is only used when a run picks codex.
 ENV TRAJECTREE_DATA_DIR=/data \
     TRAJECTREE_CFG_DIR=/cfg \
@@ -44,6 +45,7 @@ ENV TRAJECTREE_DATA_DIR=/data \
     DISABLE_AUTOUPDATER=1 \
     TRAJECTREE_HOST=0.0.0.0 \
     TRAJECTREE_CODEX_BIN=/opt/codex/bin/codex \
+    CODEX_HOME=/cfg/codex \
     PATH=/opt/claude/.local/bin:/opt/codex/bin:/app/.venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1
 VOLUME /data
