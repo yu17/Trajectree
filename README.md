@@ -31,8 +31,7 @@ trajectree login
 docker compose exec -e CODEX_HOME=/cfg/codex trajectree codex login --device-auth
 trajectree backends sync
 
-# 6. Refresh the model catalog (from Task 8), then connect a project folder
-#    (the interactive form is from Task 7).
+# 6. Refresh the model catalog (from Task 8), then connect a project folder.
 trajectree models --refresh
 trajectree init-project <folder>
 ```
@@ -92,6 +91,31 @@ This registers the folder as a Trajectree project (`--slug`, `--title` and
   file is not committed (`--no-exclude` skips this);
 - the user-scope MCP server `trajectree` in Claude Code, if `claude` is on the
   PATH and it is not already configured.
+
+After registering, `init-project` asks what history to import. It probes the
+folder through the daemon and lists the sources (git, claude, codex, folder)
+with a count and the oldest date; a source with nothing to import is shown as
+`(nothing found)` and cannot be picked. The dialogue:
+
+1. pick sources (`1,3` or `all`);
+2. for each picked source that reaches back before the default cutoff, choose
+   where it starts: `YYYY-MM-DD`, `all` or `default` (no default is ever
+   assumed; an empty answer is asked again);
+3. follow each git remote found, y/n (remotes declined before are not asked);
+4. if history is skipped, name the model that summarises it (a starting-point
+   run), or `none`;
+5. read the summary and confirm.
+
+Nothing is imported until you confirm. A new project starts with an empty
+import record, so the background ingest imports nothing in the meantime.
+Re-running offers only sources not yet imported (shown as `(imported)`).
+
+Flags answer the questions up front: `--sources git,claude|all|none`,
+`--since <source>=<YYYY-MM-DD|all|default>` (repeatable), `--start-model <name>`
+with optional `--start-runner <runner>`, `--no-start-block`. With `--yes`, or
+when stdin is not a terminal, nothing is asked: any missing choice is listed on
+one stderr line starting `missing choices:` and the command exits 2 without
+importing. `--sources none` registers the folder and imports nothing.
 
 The CLI needs the token at `~/.config/trajectree/token` (copied from
 `data/token`, see above) or in `TRAJECTREE_TOKEN`.
