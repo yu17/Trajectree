@@ -42,6 +42,7 @@ These hold for every change below, as they did for phases 1 to 4:
 - The container stays read-only, non-root, `cap_drop: ALL`, `no-new-privileges`; host folders are mounted read-only.
 - The host is written only by `init-project` and `hooks install`, as disclosed in the README's "What gets written where" table; any new host write is added there.
 - Every agent write lands pending in the Inbox, attributed to its run.
+- New with this design: every runner process runs under Landlock (section 4), fail-closed.
 - Never force-push; main is pushed only on the owner's request.
 
 ## 4. A. Instance install
@@ -54,7 +55,24 @@ These hold for every change below, as they did for phases 1 to 4:
 - **The dev compose stays** in the repo root for development and image testing, renamed `name: trajectree-dev` and published on `127.0.0.1:8743`, so running it can never replace or collide with the instance.
 - **Host CLI** is installed from git too: `uv tool install git+https://github.com/yu17/Trajectree@<ref>`; it keeps reading `~/.config/trajectree/token` and `TRAJECTREE_URL`.
 - **README** gets an "Install an instance" section with the whole sequence: directory and files, build, token copy, host CLI, runner logins (`claude setup-token` + `trajectree login`; `docker compose exec -e CODEX_HOME=/cfg/codex trajectree codex login --device-auth` for Codex, which gives the container its own login instead of sharing the host's `auth.json`; `trajectree backends sync`), `trajectree models --refresh` (C), then registering projects (B). The existing "Run with Docker" section becomes the dev section and says plainly not to keep instance state inside the projects root.
-- **Run read-deny rules** (v1: `/cfg/**` and `/data/**`) stay; the fix for the token exposure is that instance state is no longer under the projects root. (my call: no attempt to detect a checkout under `/projects`.)
+- **Run read-deny rules** (v1: `/cfg/**` and `/data/**`) stay, and gain the backend profiles mount (`/host/claude-backends/**`). Instance state is no longer under the projects root. (my call: no attempt to detect a checkout under `/projects`.)
+
+### Run confinement with Landlock (decided with the owner after the Codex sandbox check, section 9)
+Every runner process (`claude`, `codex`, `ccx:<backend>`) is started behind a Landlock ruleset applied by the daemon, so the kernel, not the agent CLI, decides what a run can touch. This applies to the whole process tree, whichever tool the model uses.
+- **Mechanism:** the daemon starts each run as `python -m trajectree.runner.confine <rules> -- <runner argv>`. That small module restricts itself with Landlock, then executes the runner. (my call: a wrapper process rather than `preexec_fn`, which is unsafe in the daemon's multithreaded process.) It uses only the Python standard library (raw `landlock_*` syscalls), as the throwaway test wrapper did.
+- **Allowed, read and execute:** the system directories (`/usr`, `/lib`, `/lib64`, `/bin`, `/sbin`, `/etc`, `/opt`, `/app`), `/proc` and `/sys`, and the folders of the run's projects (the `folder` resources of the projects in the run's scope, through the path map). Runs with no project folder get none.
+- **Allowed, read and write:** `/dev`; a private temp directory for the run (its `TMPDIR`), never `/tmp` as a whole; the run's own directory `data/runs/<run_id>/`, which holds its MCP config and output files; and only that runner's own config directory: `/cfg/claude` for `claude`, `/cfg/backends/<name>` for `ccx:<name>`, `/cfg/codex` for `codex`. The run's `HOME` lies inside the allowed directories.
+- **Everything else is denied:** the rest of `/data` (database, owner token, other runs), the rest of `/cfg` (other runners' credentials, connector tokens, the shared home), `/host/*` (transcripts, backend profiles), and other projects' folders.
+- **Where the kernel supports it** (Landlock ABI 6 and later), abstract Unix sockets and signals are scoped, so a run cannot signal or connect to processes outside its domain.
+- **Fail closed:** if Landlock is unavailable or a rule cannot be added, the run fails with an infrastructure error saying so; it never runs unconfined. The Landlock ABI version used is recorded on the run.
+- **Codex** runs with `--sandbox danger-full-access`: Codex's own bubblewrap sandbox cannot work in the hardened container, and Codex's documentation recommends this mode when the container provides isolation. The Landlock layer is that isolation.
+- **Claude** keeps its v1 permission rules (`Bash(git log *)`, read-deny rules) as a second layer.
+- **What remains possible, accepted:**
+  - A run can read its own runner's login. An agent program must read its credential to work.
+  - Network access stays open, because the model API needs it, so a run could still send readable project files somewhere (accepted in v1).
+- **The image gains `ripgrep`** (Codex's search command); no `bwrap`.
+- **Not confined:** the daemon's own subprocesses, which no model controls (`git`, `ssh`, `marp`).
+- **Left to the builder:** the exact rule set per run kind; how the confinement is tested (a real-kernel test that skips when Landlock is unavailable, plus a container smoke test driving `codex exec` with a local mock of the Responses API, as in section 9); the per-run `HOME` layout.
 
 ### Left to the builder
 - Whether `pids_limit` needs raising for Chromium exports under the 4 GB limit (verify with a PDF export).
@@ -165,4 +183,22 @@ A fresh builder read this document on 2026-10-23 and raised four questions. Thre
 - Diagnostic only, with `seccomp=unconfined` as well: `Failed to make / slave: Permission denied` (mount propagation is blocked too). Codex's own remote-test setup runs bubblewrap in a `--privileged` container.
 - Codex rejects its legacy Landlock mode for filesystem-restricted policies, and turning off its shell tool leaves other built-in tools; neither is a boundary.
 
-Result: Codex cannot confine its reads inside the hardened container. Work is paused on this point until the owner picks another approach.
+Result: Codex cannot confine its reads inside the hardened container.
+
+**Follow-up research and tests (2026-10-23).**
+- **History:**
+  - Codex's Linux sandbox started as Landlock plus seccomp.
+  - Bubblewrap became an option in January 2026 (PR #9938) and the default in March 2026 (PR #13996, from about 0.115).
+  - Legacy Landlock was deprecated in April 2026 (PR #17971).
+  - Stated reasons: one consistent isolation path with namespaces and network, fail-closed behavior, nested deny carve-outs (Landlock can only allow), and isolating Codex's app-server Unix sockets (PR #45984).
+  - In 0.163, legacy Landlock is refused for any filesystem-restricted policy.
+- **Missing or unusable bwrap:** every model shell command fails with the panic as tool output, and `codex exec` still exits 0 (reproduced with a mock model; matches open issue openai/codex#46246). v1's Codex runs therefore could not run any shell command, silently.
+- **Official guidance** (OpenAI's Codex security docs): when the container blocks bubblewrap, isolate at the container level and run Codex with `--sandbox danger-full-access`. Their warning is that a malicious project can then read anything in the container. Their secure devcontainer instead turns off seccomp and AppArmor and adds capabilities.
+- **Outer Landlock test:** in the hardened container, Landlock ABI 10 is available under Docker's default seccomp profile. Codex 0.163 ran under a Landlock wrapper with `--sandbox danger-full-access`, driven by a local mock Responses server that requested shell commands:
+  - the project file was readable;
+  - `/data/token`, the Claude OAuth token, `/proc/1/root/data/token`, another process's `/proc/<pid>/environ`, listing `/cfg` and writing to `/cfg` were all refused;
+  - the run completed.
+
+  `codex doctor` under the wrapper reported only an expected missing login and missing `ripgrep`.
+
+Decision (owner): confine every run with Landlock and run Codex with `danger-full-access` (section 4, "Run confinement with Landlock"). The separate runner container stays available as a stronger option later.
