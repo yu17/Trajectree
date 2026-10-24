@@ -55,6 +55,23 @@ def test_cli_caps_usage_login_and_status(app, anon, capsys):
     assert cli.main(["backends", "sync"], client=anon, env=env_for(app)) == 0
     assert capsys.readouterr().out.strip() == "synced: none"
 
+def test_cli_models_prints_and_refreshes(app, client, anon, capsys, settings):
+    settings.codex_bin = settings.claude_bin  # any binary that exists
+    settings.codex_home.mkdir(parents=True)
+    (settings.codex_home / "models_cache.json").write_text(json.dumps({"models": [{"slug": "gpt-6.1-sol", "display_name": "GPT-6.1-Sol", "visibility": "list"}]}))
+    calls = []
+    real_post = anon.post
+    anon.post = lambda *a, **k: (calls.append(a[0]), real_post(*a, **k))[1]
+    assert cli.main(["models"], client=anon, env=env_for(app)) == 0
+    assert not any("refresh" in c for c in calls)
+    capsys.readouterr()
+    assert cli.main(["models", "--refresh"], client=anon, env=env_for(app)) == 0
+    assert calls[0].endswith("/api/models/refresh")
+    out = capsys.readouterr().out
+    assert "codex  refreshed " in out and "\n  gpt-6.1-sol  GPT-6.1-Sol\n" in out
+    assert "claude  refreshed " in out and "  claude-opus-5-5" in out
+
+
 def test_print_run_hides_applied_and_dismissed_hints(capsys):
     import sys
     detail = {"run": {"id": "r1", "status": "ok", "result_md": "", "est_usd": 0, "turns": 1, "duration_ms": 1, "error": None,

@@ -31,7 +31,7 @@ trajectree login
 docker compose exec -e CODEX_HOME=/cfg/codex trajectree codex login --device-auth
 trajectree backends sync
 
-# 6. Refresh the model catalog (from Task 8), then connect a project folder.
+# 6. Refresh the model catalog, then connect a project folder.
 trajectree models --refresh
 trajectree init-project <folder>
 ```
@@ -254,7 +254,26 @@ claude ...`), run `trajectree backends sync`: it copies each backend's
 `.claude.json` and the `env`, `model` and `apiKeyHelper` keys of its
 `settings.json` (nothing else, so no hooks, permissions or status line) from
 `~/.config/claude-backends` into `/cfg/backends/<name>/`, and runs then use
-`--runner ccx:<backend>`.
+`--runner ccx:<backend>`. `backends sync` also refreshes the model catalog.
+
+### Model catalog
+
+There are no default models: every run names one from the catalog, which lists
+what each runner offers (`claude`, `codex`, one `ccx:<backend>` per synced
+profile). `trajectree models` prints it; `trajectree models --refresh` asks the
+runners again. The Settings tab has the same Refresh button. The daemon also
+fills an empty catalog once at start and after `backends sync`; nothing
+refreshes on the request path.
+
+- `claude`: the live list from Anthropic using the stored token, else a list
+  shipped with Trajectree (marked `builtin`, with the reason shown).
+- `codex`: the models in Codex's own cache (`/cfg/codex/models_cache.json`),
+  without the hidden ones; log in with `codex login --device-auth` to create it.
+- `ccx:<backend>`: the models named in the profile's settings, plus whatever
+  the backend's models endpoint returns. An unreachable backend keeps its
+  profile models and shows the error.
+
+A refresh that fails keeps a runner's previous models and records the error.
 
 Codex is optional, see [Codex](#codex).
 

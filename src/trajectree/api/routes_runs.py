@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from trajectree.api.deps import actor_from_request, get_ledger
 from trajectree.db.ledger import Ledger
+from trajectree.api.routes_models import refresh_catalog
 from trajectree.models import Caps, Run, RunKind, RunStatus, UsageDay, UsageSlice
 from trajectree.repo import NotFound
 from trajectree.repo.caps import get_caps, set_caps
@@ -169,4 +170,6 @@ def runner_credentials(body: CredentialsBody, request: Request) -> dict[str, boo
 
 @router.post("/backends/sync")
 def backends_sync(request: Request) -> dict[str, list[str]]:
-    return {"synced": sync_backends(request.app.state.settings)}
+    synced = sync_backends(request.app.state.settings)
+    refresh_catalog(request.app)  # profiles may have changed
+    return {"synced": synced}

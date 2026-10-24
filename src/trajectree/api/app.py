@@ -19,6 +19,7 @@ from trajectree.api.routes_context import router as context_router
 from trajectree.api.routes_entities import router as entities_router
 from trajectree.api.routes_import import router as import_router
 from trajectree.api.routes_ledger import router as ledger_router
+from trajectree.api.routes_models import refresh_catalog, router as models_router
 from trajectree.api.routes_search import router as search_router
 from trajectree.api.routes_reports import router as reports_router
 from trajectree.api.routes_resources import router as resources_router
@@ -35,6 +36,7 @@ from trajectree.ingest.job import IngestBusy
 from trajectree.ingest.scheduler import ingest_loop
 from trajectree.mcpserver.server import build_mcp
 from trajectree.repo import DuplicateEdge, DuplicateRoutine, DuplicateSlug, InvalidRange, NotFound, UnknownProject, UnknownSession
+from trajectree.runner.catalog import load_catalog
 from trajectree.runner.seeds import ensure_inbox_project, ensure_seed_routines
 from trajectree.runner.service import RunService
 from trajectree.runner.spec import AlreadyApplied, RunsPaused
@@ -45,7 +47,7 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 # Plain routers (no prefix, no auth). create_app includes each into a fresh
 # /api router that enforces require_token. Later tasks append theirs here.
-PROTECTED_ROUTERS: list[APIRouter] = [entities_router, timeline_router, ledger_router, search_router, resources_router, context_router, signals_router, runs_router, tokens_router, routines_router, connectors_router, reports_router, settings_router, import_router]
+PROTECTED_ROUTERS: list[APIRouter] = [entities_router, timeline_router, ledger_router, search_router, resources_router, context_router, signals_router, runs_router, tokens_router, routines_router, connectors_router, reports_router, settings_router, import_router, models_router]
 
 
 def _seed(ledger: Ledger, settings: Settings) -> None:
@@ -53,6 +55,19 @@ def _seed(ledger: Ledger, settings: Settings) -> None:
     ensure_inbox_project(ledger)
     with ledger.locked() as conn:
         ensure_seed_routines(conn, settings, now=utcnow())
+
+
+async def _startup_refresh(app: FastAPI) -> None:
+    """Fill an empty model catalog once at start; never blocks startup and never raises."""
+    try:
+        def empty() -> bool:
+            with app.state.ledger.locked() as conn:
+                return not load_catalog(conn).runners
+
+        if await asyncio.to_thread(empty):
+            await asyncio.to_thread(refresh_catalog, app)
+    except Exception:
+        pass
 
 
 def _error_handler(status: int):
@@ -95,6 +110,7 @@ def create_app(settings: Settings, *, ledger: Ledger | None = None) -> FastAPI:
                         app.state.scheduler.loop(stop, interval_s=settings.scheduler_interval_s)
                     )
                 )
+            tasks.append(asyncio.create_task(_startup_refresh(app)))
             try:
                 yield
             finally:

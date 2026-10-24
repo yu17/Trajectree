@@ -188,6 +188,9 @@ def _parser() -> argparse.ArgumentParser:
     back_sub = back.add_subparsers(dest="sub", required=True)
     back_sub.add_parser("sync", help="sync backend credentials")
 
+    mdl = sub.add_parser("models", help="list the model catalog")
+    mdl.add_argument("--refresh", action="store_true", help="refresh the catalog first")
+
     rn = sub.add_parser("runner", help="runner commands")
     rn_sub = rn.add_subparsers(dest="sub", required=True)
     rn_sub.add_parser("status", help="runner availability")
@@ -484,6 +487,22 @@ def _cmd_backends_sync(api: _Api) -> None:
     print("synced: " + (", ".join(synced) if synced else "none"))
 
 
+def _cmd_models(args: argparse.Namespace, api: _Api) -> None:
+    catalog = api.post("/api/models/refresh", {}) if args.refresh else api.get("/api/models")
+    if not catalog["runners"]:
+        print("no catalog yet; run: trajectree models --refresh")
+    for r in catalog["runners"]:
+        head = r["runner"]
+        if r["refreshed_at"]:
+            when = datetime.fromisoformat(r["refreshed_at"].replace("Z", "+00:00")).astimezone()
+            head += f"  refreshed {when:%Y-%m-%d %H:%M}"
+        if r["error"]:
+            head += f", {r['error']}"
+        print(head)
+        for m in r["models"]:
+            print(f"  {m['model']}  {m['display'] or ''}".rstrip())
+
+
 def _cmd_runner_status(api: _Api) -> None:
     st = api.get("/api/runner/status")
     for name in ("claude", "codex"):
@@ -512,7 +531,7 @@ def _run(
         "runs": _cmd_runs, "usage": _cmd_usage, "caps": _cmd_caps,
         "routines": _cmd_routines, "routine": _cmd_routine, "run": _cmd_run_routine,
         "review": _cmd_run_routine, "prep": _cmd_run_routine, "scheduler": _cmd_scheduler,
-        "report": _cmd_report,
+        "report": _cmd_report, "models": _cmd_models,
     }
     if cmd in simple:
         simple[cmd](args, api)
