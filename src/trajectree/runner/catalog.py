@@ -7,11 +7,13 @@ and a host, never a token, key or full URL.
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import shutil
 from datetime import datetime
 from typing import Any, Callable, Literal
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 import apsw
 import httpx
@@ -138,7 +140,14 @@ def _ccx(settings: Settings, name: str, now: datetime, http: httpx.Client, which
             headers["x-api-key"] = env["ANTHROPIC_API_KEY"]
         elif env.get("ANTHROPIC_AUTH_TOKEN"):
             headers["Authorization"] = f"Bearer {env['ANTHROPIC_AUTH_TOKEN']}"
-        url = base + ("/models" if base.endswith("/v1") else "/v1/models")
+        # httpx logs the request URL, so userinfo must never be in it: it moves to a header.
+        parts = urlsplit(base)
+        if parts.username is not None:
+            base = urlunsplit((parts.scheme, parts.netloc.rpartition("@")[2], parts.path, "", ""))
+            if "x-api-key" not in headers and "Authorization" not in headers:
+                pair = f"{unquote(parts.username)}:{unquote(parts.password or '')}".encode()
+                headers["Authorization"] = "Basic " + base64.b64encode(pair).decode()
+        url = base + ("/models"if base.endswith("/v1") else "/v1/models")
         entries, err = _get_models(http, url, headers, timeout_s)
         if err:
             try:

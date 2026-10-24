@@ -95,17 +95,60 @@ def test_unreachable_backend_keeps_profile_models(settings):
     write_profile(settings, "slow", {"ANTHROPIC_API_KEY": "sk-secret", "ANTHROPIC_BASE_URL": "http://127.0.0.1:40090", "ANTHROPIC_MODEL": "m1"})
     write_profile(settings, "fine", {"ANTHROPIC_API_KEY": "k2", "ANTHROPIC_BASE_URL": "http://fine.example", "ANTHROPIC_MODEL": "m2"})
 
+    timeouts = []
+
     def handler(request):
+        timeouts.append(request.extensions["timeout"])
         if request.url.port == 40090:
             raise httpx.ConnectTimeout("timed out")
         return httpx.Response(200, json={"data": [{"id": "m3"}]})
 
     start = time.monotonic()
     c = discover_with(settings, handler, timeout_s=0.5)
+    assert timeouts and all(t == {"connect": 0.5, "read": 0.5, "write": 0.5, "pool": 0.5} for t in timeouts)
     assert time.monotonic() - start < 2
     slow, fine = runner(c, "ccx:slow"), runner(c, "ccx:fine")
     assert [m.model for m in slow.models] == ["m1"] and slow.error == "models endpoint unavailable: ConnectTimeout (127.0.0.1)"
     assert [m.model for m in fine.models] == ["m2", "m3"] and fine.error is None
+
+
+def test_hanging_backend_times_out(settings):
+    import socket
+
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)  # accepts into the backlog and never answers
+    try:
+        port = srv.getsockname()[1]
+        write_profile(settings, "hang", {"ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": f"http://127.0.0.1:{port}", "ANTHROPIC_MODEL": "m1"})
+        write_cache(settings, [{"slug": "gpt-a", "visibility": "list"}])
+        start = time.monotonic()
+        with httpx.Client() as http:
+            c = discover(settings, now=utcnow(), http=http, which=FOUND, timeout_s=0.5)
+        assert time.monotonic() - start < 2
+    finally:
+        srv.close()
+    hang = runner(c, "ccx:hang")
+    assert [m.model for m in hang.models] == ["m1"] and "ReadTimeout" in hang.error
+    assert [m.model for m in runner(c, "codex").models] == ["gpt-a"]
+
+
+def test_url_userinfo_never_in_request(settings):
+    write_profile(settings, "ui", {"ANTHROPIC_BASE_URL": "https://user:pw@api.ds.example/x", "ANTHROPIC_MODEL": "m", "ANTHROPIC_AUTH_TOKEN": "tok"})
+    write_profile(settings, "ui2", {"ANTHROPIC_BASE_URL": "https://user:pw@api.ds.example/x", "ANTHROPIC_MODEL": "m"})
+    (settings.backends_cfg_dir / "ui2" / "settings.json").write_text(json.dumps({
+        "env": {"ANTHROPIC_BASE_URL": "https://user:pw@api.ds.example/x", "ANTHROPIC_MODEL": "m"}, "apiKeyHelper": "x"}))
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, json={"data": []})
+
+    discover_with(settings, handler)
+    ccx = [r for r in seen if r.url.host == "api.ds.example"]
+    assert len(ccx) == 2 and all(str(r.url) == "https://api.ds.example/x/v1/models" for r in ccx)
+    assert all("pw@" not in str(r.url) for r in seen)
+    assert {r.headers.get("authorization") for r in ccx} == {"Bearer tok", "Basic dXNlcjpwdw=="}
 
 
 def test_claude_live_list(settings):

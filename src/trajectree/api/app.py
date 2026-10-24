@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import shutil
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -43,6 +44,8 @@ from trajectree.runner.spec import AlreadyApplied, RunsPaused
 from trajectree.scheduler import Scheduler
 from trajectree.timeutil import utcnow
 
+log = logging.getLogger("trajectree.api")
+
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 # Plain routers (no prefix, no auth). create_app includes each into a fresh
@@ -67,7 +70,7 @@ async def _startup_refresh(app: FastAPI) -> None:
         if await asyncio.to_thread(empty):
             await asyncio.to_thread(refresh_catalog, app)
     except Exception:
-        pass
+        log.exception("startup model catalog refresh failed")
 
 
 def _error_handler(status: int):
