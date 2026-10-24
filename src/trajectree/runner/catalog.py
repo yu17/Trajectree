@@ -1,4 +1,5 @@
-"""The model catalog: which models each runner offers, refreshed explicitly.
+"""The model catalog: which models each runner offers, refreshed explicitly; `resolve_model`
+picks the runner for the model a run request names.
 
 `discover` does the network and file reads and touches no database; the caller stores the
 result under a short lock (`refresh`). Errors name only an HTTP status or exception class
@@ -21,6 +22,7 @@ from pydantic import AwareDatetime, BaseModel
 
 from trajectree.config import Settings
 from trajectree.db.ledger import Ledger
+from trajectree.models import NO_MODEL_CHOSEN
 from trajectree.repo.state import get_state, set_state
 from trajectree.runner.credentials import load_oauth_token, profile_has_credentials
 from trajectree.timeutil import utcnow
@@ -219,3 +221,55 @@ def refresh(
         merged = merge_failed(load_catalog(conn), fresh)
         store_catalog(conn, merged)
     return merged
+
+
+# -- model choice --------------------------------------------------------------------------
+
+
+class ModelChoiceError(ValueError):
+    """The model a request names cannot be run; the message says what to do (HTTP 422)."""
+
+
+class NoModelChosen(ModelChoiceError):
+    pass
+
+
+class UnknownModel(ModelChoiceError):
+    pass
+
+
+class AmbiguousModel(ModelChoiceError):
+    pass
+
+
+class RunnerUnavailable(ModelChoiceError):
+    pass
+
+
+class Resolved(BaseModel):
+    runner: str
+    model: str
+    warning: str | None = None
+
+
+def resolve_model(catalog: Catalog, model: str | None, runner: str | None) -> Resolved:
+    """The runner that runs `model`, from the runners the catalog lists as available.
+
+    With `runner` given, a model missing from that runner's list is still accepted, with a
+    warning: a shipped or cached list can lag a real new model. Model names pass verbatim.
+    """
+    if not model:
+        raise NoModelChosen(NO_MODEL_CHOSEN)
+    available = {r.runner: r for r in catalog.runners if r.available}
+    if runner is not None:
+        if runner not in available:
+            raise RunnerUnavailable(f"runner {runner} is not available; run: trajectree models")
+        if any(m.model == model for m in available[runner].models):
+            return Resolved(runner=runner, model=model)
+        return Resolved(runner=runner, model=model, warning=f"model {model} is not in the catalog for {runner}")
+    offering = [name for name, r in available.items() if any(m.model == model for m in r.models)]
+    if not offering:
+        raise UnknownModel(f"unknown model {model}; run: trajectree models --refresh")
+    if len(offering) > 1:
+        raise AmbiguousModel(f"model {model} is offered by {', '.join(offering)}; pass --runner")
+    return Resolved(runner=offering[0], model=model)

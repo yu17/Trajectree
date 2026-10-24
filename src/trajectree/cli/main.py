@@ -13,6 +13,7 @@ from urllib.parse import quote, urlencode
 
 import httpx
 
+from trajectree.models import NO_MODEL_CHOSEN
 from trajectree.runner.credentials import CONNECTOR_NAMES
 from trajectree.timeutil import to_db, utcnow
 
@@ -104,8 +105,9 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_parser("mcp", help="run the stdio MCP shim that forwards to the daemon")
 
     def run_opts(sp: argparse.ArgumentParser) -> None:
-        sp.add_argument("--runner")
-        sp.add_argument("--model")
+        # Every command that starts a run has `args.model`; `_run` refuses it when empty.
+        sp.add_argument("--runner", help="needed only when the model name alone is ambiguous")
+        sp.add_argument("--model", help="required: the model to run on (see: trajectree models)")
         sp.add_argument("--no-wait", action="store_true")
 
     summ = sub.add_parser("summarize", help="summarize a project, or one session, with the runner")
@@ -163,10 +165,14 @@ def _parser() -> argparse.ArgumentParser:
     rt_sub = rt.add_subparsers(dest="sub", required=True)
     for name in ("enable", "disable"):
         rt_sub.add_parser(name, help=f"{name} a routine").add_argument("name")
+    rt_set = rt_sub.add_parser("set", help="set the model a routine runs on")
+    rt_set.add_argument("name")
+    rt_set.add_argument("--model", required=True)
+    rt_set.add_argument("--runner", help="needed only when the model name alone is ambiguous")
 
     def routine_opts(sp: argparse.ArgumentParser) -> None:
         sp.add_argument("--projects", help="comma-separated slugs")
-        sp.add_argument("--no-wait", action="store_true")
+        run_opts(sp)
 
     run_routine = sub.add_parser("run", help="run a routine now")
     run_routine.add_argument("routine")
@@ -297,8 +303,15 @@ def _print_run(detail: dict[str, Any], out: TextIO) -> None:
         print(f"  [{n}] {p['kind']} · {p['project']} · {p['title']} ({p['reason']}){state}", file=out)
         if not state:
             print(f"accept with: trajectree accept {run['id']} {n}", file=out)
+    _print_warning(run)
     if run.get("error"):
         print(f"error: {run['error']}", file=sys.stderr)
+
+
+def _print_warning(run: dict[str, Any]) -> None:
+    warning = (run.get("props") or {}).get("model_warning")
+    if warning:
+        print(f"warning: {warning}", file=sys.stderr)
 
 
 def _launch(api: _Api, args: argparse.Namespace, path: str, body: dict[str, Any]) -> None:
@@ -308,6 +321,7 @@ def _launch(api: _Api, args: argparse.Namespace, path: str, body: dict[str, Any]
     run = api.post(path, body)
     print(f"run {run['id']} queued")
     if args.no_wait:
+        _print_warning(run)
         return
     detail = _wait_run(api, run["id"])
     _print_run(detail, sys.stdout)
@@ -429,8 +443,14 @@ def _cmd_routines(args: argparse.Namespace, api: _Api) -> None:
 
 
 def _cmd_routine(args: argparse.Namespace, api: _Api) -> None:
+    path = f"/api/routines/{quote(args.name, safe='')}"
+    if args.sub == "set":
+        # Both are set: without --runner the catalog picks the runner at each run.
+        r = api.patch(path, {"model": args.model, "runner": args.runner})
+        print(f"{r['name']}: model {r['model']}" + (f" via {r['runner']}" if r["runner"] else ""))
+        return
     enable = args.sub == "enable"
-    r = api.patch(f"/api/routines/{quote(args.name, safe='')}", {"enabled": enable})
+    r = api.patch(path, {"enabled": enable})
     if enable:
         print(f"{r['name']} enabled · next fire {r['next_fire'] or '-'}")
     else:
@@ -526,6 +546,8 @@ def _run(
     interactive: bool | None = None,
 ) -> None:
     cmd = args.cmd
+    if hasattr(args, "model") and not args.model:  # every run command has --model; checked before any request
+        raise _Fail(f"{NO_MODEL_CHOSEN}; pass --model (see: trajectree models)", 2)
     simple: dict[str, Callable[[argparse.Namespace, _Api], None]] = {
         "summarize": _cmd_summarize, "ask": _cmd_ask, "add": _cmd_add, "accept": _cmd_accept,
         "runs": _cmd_runs, "usage": _cmd_usage, "caps": _cmd_caps,

@@ -25,7 +25,6 @@ class Settings(BaseModel):
     cfg_dir: Path | None = None
     claude_bin: str = "claude"
     codex_bin: str = "codex"
-    default_runner: str = "claude"
     run_env_passthrough: list[str] = []
     confine_extra_ro: list[Path] = []  # dev/tests only: more read-only dirs for confined runs
     tz: str = "UTC"
@@ -133,7 +132,6 @@ _INT_ENV = {
 _STR_ENV = {
     "TRAJECTREE_CLAUDE_BIN": "claude_bin",
     "TRAJECTREE_CODEX_BIN": "codex_bin",
-    "TRAJECTREE_DEFAULT_RUNNER": "default_runner",
     "TRAJECTREE_TZ": "tz",
     "TRAJECTREE_SSH_BIN": "ssh_bin",
 }

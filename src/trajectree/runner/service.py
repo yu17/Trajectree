@@ -25,7 +25,7 @@ from trajectree.auth.tokens import mint_token, revoke_token
 from trajectree.config import Settings
 from trajectree.context.history import collect_history, session_history
 from trajectree.db.ledger import Ledger
-from trajectree.models import SLOT_OF, Actor, EventIn, Proposal, Run, RunSlot, TodoIn
+from trajectree.models import SLOT_OF, Actor, EventIn, Proposal, Routine, Run, RunSlot, TodoIn
 from trajectree.repo import NotFound, UnknownProject, UnknownSession, events, todos
 from trajectree.repo.caps import get_caps
 from trajectree.repo.projects import get_project_by_slug, resolve_project_ref
@@ -41,6 +41,7 @@ from trajectree.repo.runs import (
     update_run,
 )
 from trajectree.runner.argv import claude_argv, codex_argv, mask_text, mcp_config_json, run_env
+from trajectree.runner.catalog import Resolved, load_catalog, resolve_model
 from trajectree.runner.confine import CONFINE_FAILED_EXIT, LandlockUnavailable, confine_argv, landlock_abi
 from trajectree.runner.credentials import cli_version, ensure_cfg_dirs, load_oauth_token
 from trajectree.runner.kinds import (
@@ -108,13 +109,21 @@ class RunService:
 
     # -- enqueue ---------------------------------------------------------------------------
 
-    def validate(self, conn, request: RunRequest, *, default_runner: str | None = None) -> tuple[str, str]:
+    def validate(self, conn, request: RunRequest, *, routine: Routine | None = None) -> tuple[Resolved, str]:
         """The checks `enqueue` makes before it creates a run, so a caller can run them before
-        writing anything: runs not paused, runner well formed. Returns `(runner, backend)`.
-        Raises `RunsPaused` or `ValueError`. The caller holds the ledger lock."""
+        writing anything: runs not paused, runner well formed, the model resolved against the
+        stored catalog. A routine run without a model of its own takes the routine's runner and
+        model. Returns the resolved choice and the backend. Raises `RunsPaused` or `ValueError`
+        (a `ModelChoiceError` for the model). The caller holds the ledger lock."""
         if get_caps(conn).paused:
             raise RunsPaused("runs are paused")
-        return runner_parts(request.runner or default_runner or self.settings.default_runner)
+        runner, model = request.runner, request.model
+        if routine is not None and not model:
+            runner, model = runner or routine.runner, routine.model
+        if runner is not None:
+            runner_parts(runner)  # refuses a malformed runner before it is looked up
+        resolved = resolve_model(load_catalog(conn), model, runner)
+        return resolved, runner_parts(resolved.runner)[1]
 
     def check(self, request: RunRequest) -> None:
         with self.ledger.locked() as conn:
@@ -123,14 +132,11 @@ class RunService:
     def enqueue(self, request: RunRequest) -> Run:
         with self.ledger.locked() as conn:
             kind = KIND_OF[type(request)]
-            default_runner, model = self.settings.default_runner, request.model
-            routine_id, attempt, project_id = None, 1, None
+            routine, routine_id, attempt, project_id = None, None, 1, None
             if isinstance(request, RoutineRequest):
                 routine = resolve_routine_ref(conn, request.routine)
-                default_runner = routine.runner or default_runner
-                model = model or routine.model
                 routine_id, attempt = routine.id, request.attempt
-            runner, backend = self.validate(conn, request, default_runner=default_runner)
+            resolved, backend = self.validate(conn, request, routine=routine)
             if isinstance(request, StartingPointRequest):
                 project_id = resolve_project_ref(conn, request.project).id
             elif isinstance(request, SummarizeRequest):
@@ -148,14 +154,17 @@ class RunService:
                     resolve_project_ref(conn, ref)
             elif request.project:
                 resolve_project_ref(conn, request.project)
+            props: dict[str, Any] = {"request": request.model_dump(mode="json")}
+            if resolved.warning:
+                props["model_warning"] = resolved.warning
             return create_run(
                 conn,
                 kind=kind,
-                runner=runner,
+                runner=resolved.runner,
                 backend=backend,
-                model=model,
+                model=resolved.model,
                 project_id=project_id,
-                props={"request": request.model_dump(mode="json")},
+                props=props,
                 routine_id=routine_id,
                 slot=SLOT_OF[kind],
                 attempt=attempt,

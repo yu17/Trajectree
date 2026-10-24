@@ -1,5 +1,6 @@
 import io, json
 import pytest
+from tests.test_catalog import MODEL
 from tests.test_cli import env_for
 from trajectree.cli import main as cli
 from trajectree.runner.credentials import store_oauth_token
@@ -15,7 +16,7 @@ def fast(monkeypatch, settings):
 
 def test_cli_add_waits_prints_proposals_and_accept(app, client, anon, capsys):
     client.post("/api/projects", json={"slug": "clmi", "title": "CLMI", "kind": "research"})
-    assert cli.main(["add", "email Bob about slides"], client=anon, env=env_for(app)) == 0
+    assert cli.main(["add", "email Bob about slides", "--model", MODEL], client=anon, env=env_for(app)) == 0
     out = capsys.readouterr().out
     assert "run " in out and " ok " in out and "[1] todo · clmi · Email Bob (owed)" in out and "accept with: trajectree accept" in out
     run_id = out.split("run ")[1].split()[0]
@@ -27,22 +28,22 @@ def test_cli_add_waits_prints_proposals_and_accept(app, client, anon, capsys):
 
 def test_cli_summarize_no_wait_and_runs_listing(app, client, anon, capsys):
     client.post("/api/projects", json={"slug": "clmi", "title": "CLMI", "kind": "research"})
-    assert cli.main(["summarize", "clmi", "--no-wait"], client=anon, env=env_for(app)) == 0
+    assert cli.main(["summarize", "clmi", "--no-wait", "--model", MODEL], client=anon, env=env_for(app)) == 0
     assert capsys.readouterr().out.endswith(" queued\n")
     assert cli.main(["runs", "--limit", "5"], client=anon, env=env_for(app)) == 0
     line = capsys.readouterr().out.splitlines()[0]
     assert "summarize" in line and line.endswith("clmi")
 
 def test_cli_summarize_session_posts_and_validates_args(app, client, anon, capsys):
-    assert cli.main(["summarize", "--session", "nope", "--no-wait"], client=anon, env=env_for(app)) == 1   # 422 unknown session
+    assert cli.main(["summarize", "--session", "nope", "--no-wait", "--model", MODEL], client=anon, env=env_for(app)) == 1   # 422 unknown session
     assert "unknown session 'nope'" in capsys.readouterr().err
-    assert cli.main(["summarize", "clmi", "--session", "x"], client=anon, env=env_for(app)) == 2
+    assert cli.main(["summarize", "clmi", "--session", "x", "--model", MODEL], client=anon, env=env_for(app)) == 2
     assert cli.main(["summarize"], client=anon, env=env_for(app)) == 2
 
 def test_cli_caps_usage_login_and_status(app, anon, capsys):
     assert cli.main(["caps", "--usd-per-day", "2", "--pause"], client=anon, env=env_for(app)) == 0
     assert capsys.readouterr().out.strip() == "caps: run $1.0 · day $2.0 · timeout 600s · paused yes"
-    assert cli.main(["ask", "q"], client=anon, env=env_for(app)) == 1   # paused → 409
+    assert cli.main(["ask", "q", "--model", MODEL], client=anon, env=env_for(app)) == 1   # paused → 409
     assert cli.main(["caps", "--resume"], client=anon, env=env_for(app)) == 0
     capsys.readouterr()
     assert cli.main(["usage"], client=anon, env=env_for(app)) == 0
@@ -89,20 +90,23 @@ def test_cli_routines_review_and_prep(app, client, anon, capsys):
     rows = [line.split("  ") for line in capsys.readouterr().out.splitlines()]
     assert rows == [["cross-project-review", "off", "0 7 * * 1", "UTC", "-", "-"],
                     ["meeting-prep", "off", "0 7 * * 1-5", "UTC", "-", "-"]]
-    assert cli.main(["review", "--no-wait"], client=anon, env=env) == 0
+    assert cli.main(["review", "--no-wait", "--model", MODEL], client=anon, env=env) == 0
     assert capsys.readouterr().out.endswith(" queued\n")
     assert len(client.get("/api/routines/cross-project-review/runs").json()) == 1
     client.post("/api/projects", json={"slug": "clmi", "title": "CLMI", "kind": "research"})
-    assert cli.main(["prep", "--projects", "clmi"], client=anon, env=env) == 0   # waits for the run
+    assert cli.main(["prep", "--projects", "clmi", "--model", MODEL], client=anon, env=env) == 0   # waits for the run
     out = capsys.readouterr().out
     assert " ok " in out and "Parsed" in out
     [prep] = client.get("/api/routines/meeting-prep/runs").json()
     assert prep["props"]["request"]["projects"] == ["clmi"] and prep["status"] == "ok"
-    assert cli.main(["run", "nope", "--no-wait"], client=anon, env=env) == 1
+    assert cli.main(["run", "nope", "--no-wait", "--model", MODEL], client=anon, env=env) == 1
 
 
 def test_cli_routine_enable_disable_and_scheduler(app, client, anon, capsys):
     env = env_for(app)
+    assert cli.main(["routine", "enable", "meeting-prep"], client=anon, env=env) == 1   # seeded without a model
+    assert capsys.readouterr().err.strip() == "no model was chosen"
+    client.patch("/api/routines/meeting-prep", json={"model": MODEL})
     assert cli.main(["routine", "enable", "meeting-prep"], client=anon, env=env) == 0
     out = capsys.readouterr().out
     assert out.startswith("meeting-prep enabled · next fire ")
@@ -118,11 +122,52 @@ def test_cli_routine_enable_disable_and_scheduler(app, client, anon, capsys):
     assert cli.main(["routine", "enable", "nope"], client=anon, env=env) == 1
 
 
+def test_cli_routine_set(app, client, anon, capsys):
+    env = env_for(app)
+    assert cli.main(["routine", "set", "meeting-prep", "--model", "k2", "--runner", "ccx:kimi"], client=anon, env=env) == 0
+    assert capsys.readouterr().out.strip() == "meeting-prep: model k2 via ccx:kimi"
+    r = client.get("/api/routines/meeting-prep").json()
+    assert (r["runner"], r["model"], r["enabled"]) == ("ccx:kimi", "k2", False)
+    assert cli.main(["routine", "set", "meeting-prep", "--model", "gpt-6.1-sol"], client=anon, env=env) == 0
+    assert capsys.readouterr().out.strip() == "meeting-prep: model gpt-6.1-sol"
+    r = client.get("/api/routines/meeting-prep").json()
+    assert (r["runner"], r["model"]) == (None, "gpt-6.1-sol")   # no --runner: the catalog decides at run time
+    assert cli.main(["routine", "enable", "meeting-prep"], client=anon, env=env) == 0
+    assert cli.main(["routine", "set", "meeting-prep"], client=anon, env=env) == 2   # --model is required
+    assert cli.main(["routine", "set", "nope", "--model", "k2"], client=anon, env=env) == 1
+
+
+NO_MODEL = "no model was chosen; pass --model (see: trajectree models)"
+
+
+def test_cli_requires_model(capsys):
+    class NoHttp:
+        def __getattr__(self, name):
+            raise AssertionError(f"HTTP {name} sent")
+
+    for argv in (["summarize", "clmi"], ["summarize", "--session", "s1"], ["ask", "q"], ["ask", "q", "--runner", "claude"],
+                 ["add", "t"], ["report", "draft", "--kind", "memo", "--title", "T", "--projects", "clmi"],
+                 ["run", "x"], ["review"], ["prep", "--no-wait"]):
+        assert cli.main(argv, client=NoHttp(), env={"TRAJECTREE_TOKEN": "t"}) == 2, argv
+        assert capsys.readouterr().err.strip() == NO_MODEL, argv
+
+
+def test_cli_prints_model_warning(capsys):
+    import sys
+    detail = {"run": {"id": "r1", "status": "ok", "result_md": "", "est_usd": 0, "turns": 1, "duration_ms": 1, "error": None,
+                      "proposals": [], "props": {"model_warning": "model gpt-7 is not in the catalog for codex"}}, "txn_ids": []}
+    cli._print_run(detail, sys.stdout)
+    assert capsys.readouterr().err.strip() == "warning: model gpt-7 is not in the catalog for codex"
+    del detail["run"]["props"]
+    cli._print_run(detail, sys.stdout)
+    assert "warning" not in capsys.readouterr().err
+
+
 def test_cli_report_draft_list_and_export(app, client, anon, capsys, tmp_path, monkeypatch):
     from pathlib import Path
     env = env_for(app)
     client.post("/api/projects", json={"slug": "clmi", "title": "CLMI", "kind": "research"})
-    assert cli.main(["report", "draft", "--kind", "deck", "--title", "Q1", "--projects", "clmi", "--days", "30", "--no-wait"],
+    assert cli.main(["report", "draft", "--kind", "deck", "--title", "Q1", "--projects", "clmi", "--days", "30", "--no-wait", "--model", MODEL],
                     client=anon, env=env) == 0
     assert capsys.readouterr().out.endswith(" queued\n")
     [run] = client.get("/api/runs", params={"kind": "report"}).json()
@@ -144,4 +189,4 @@ def test_cli_report_draft_list_and_export(app, client, anon, capsys, tmp_path, m
     assert cli.main(["report", "export", r["id"], "--format", "pdf"], client=anon, env=env) == 0
     assert capsys.readouterr().out.strip() == f"wrote {r['id']}.pdf"
     assert (tmp_path / f"{r['id']}.pdf").read_text().startswith("FAKE MARP .pdf")
-    assert cli.main(["report", "draft", "--kind", "deck", "--title", "Q1", "--projects", "zzz", "--no-wait"], client=anon, env=env) == 1
+    assert cli.main(["report", "draft", "--kind", "deck", "--title", "Q1", "--projects", "zzz", "--no-wait", "--model", MODEL], client=anon, env=env) == 1

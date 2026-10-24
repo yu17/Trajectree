@@ -3,6 +3,7 @@ import httpx
 import pytest
 import uvicorn
 from tests.test_api_entities import mk_project
+from tests.test_catalog import MODEL, seed_catalog
 from trajectree.api.app import create_app
 from trajectree.runner.credentials import store_oauth_token
 
@@ -22,7 +23,7 @@ def test_quick_add_run_and_accept_proposal(client, settings, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_STRUCTURED", STRUCTURED)
     store_oauth_token(settings, "fake")
     p = mk_project(client)   # slug clmi
-    r = client.post("/api/quick-add", json={"text": "we decided X"})
+    r = client.post("/api/quick-add", json={"text": "we decided X", "model": MODEL})
     assert r.status_code == 202 and r.json()["status"] == "queued"
     d = wait_run(client, r.json()["id"])
     assert d["run"]["status"] == "ok" and d["run"]["result_md"] == "Parsed" and d["txn_ids"] == []
@@ -39,7 +40,7 @@ def test_dismiss_proposal_api(client, settings, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_STRUCTURED", STRUCTURED)
     store_oauth_token(settings, "fake")
     mk_project(client)
-    d = wait_run(client, client.post("/api/quick-add", json={"text": "we decided X"}).json()["id"])
+    d = wait_run(client, client.post("/api/quick-add", json={"text": "we decided X", "model": MODEL}).json()["id"])
     run_id = d["run"]["id"]
     assert [x["id"] for x in client.get("/api/runs", params={"open_proposals": "true"}).json()] == [run_id]
     r = client.post(f"/api/runs/{run_id}/proposals/0/dismiss")
@@ -73,8 +74,8 @@ def test_caps_pause_and_usage(client):
     u = client.get("/api/usage", params={"days": 7}).json()
     assert len(u["days"]) == 7 and u["caps"]["usd_per_day"] == 2 and u["spent_today"] == 0
     assert client.put("/api/caps", json={"usd_per_run": -1}).status_code == 422
-    assert client.post("/api/ask", json={"question": "q", "runner": "evil"}).status_code == 422
-    assert client.post("/api/ask", json={"question": "q", "projects": ["zzz"]}).status_code == 422
+    assert client.post("/api/ask", json={"question": "q", "runner": "evil", "model": MODEL}).status_code == 422
+    assert client.post("/api/ask", json={"question": "q", "projects": ["zzz"], "model": MODEL}).status_code == 422
 
 def test_runner_status_credentials_and_backends_sync(client, settings, tmp_path):
     assert client.get("/api/runner/status").json()["claude"]["authenticated"] is False
@@ -95,6 +96,7 @@ def test_summarize_run_end_to_end_over_http(ledger, human, settings, monkeypatch
     store_oauth_token(s, "fake")
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "mcp")
     monkeypatch.setenv("FAKE_CLAUDE_PROJECT", "clmi")
+    seed_catalog(ledger)
     app = create_app(s, ledger=ledger)
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
     thread = threading.Thread(target=server.run, daemon=True)
@@ -109,7 +111,7 @@ def test_summarize_run_end_to_end_over_http(ledger, human, settings, monkeypatch
             except httpx.HTTPError:
                 time.sleep(0.1)
         p = httpx.post(base + "/api/projects", json={"slug": "clmi", "title": "CLMI", "kind": "research"}, headers=h).json()
-        run = httpx.post(base + f"/api/projects/{p['id']}/summarize", json={}, headers=h).json()
+        run = httpx.post(base + f"/api/projects/{p['id']}/summarize", json={"model": MODEL}, headers=h).json()
         for _ in range(150):
             d = httpx.get(base + f"/api/runs/{run['id']}", headers=h).json()
             if d["run"]["status"] not in ("queued", "running"):
@@ -136,7 +138,35 @@ def test_summarize_session_endpoint(client, ledger, tmp_path):
     with ledger.locked() as conn:
         upsert_signals(conn, [SignalIn(project_id=p["id"], kind="session", t_start=datetime(2026, 1, 5, tzinfo=timezone.utc),
                                        dedupe_key="claude_session:sess1", payload={"session_id": "sess1", "transcript_path": str(path)})])
-    r = client.post("/api/sessions/sess1/summarize", json={})
+    r = client.post("/api/sessions/sess1/summarize", json={"model": MODEL})
     assert r.status_code == 202 and r.json()["kind"] == "summarize_session" and r.json()["project_id"] == p["id"]
-    bad = client.post("/api/sessions/nope/summarize")
+    bad = client.post("/api/sessions/nope/summarize", json={"model": MODEL})
     assert bad.status_code == 422 and "unknown session 'nope'" in bad.json()["detail"]
+
+
+def test_enqueue_without_model_is_422(client, ledger):
+    p = mk_project(client)
+    client.post("/api/routines", json={"name": "x", "trigger": "@daily", "prompt_ref": "a.md"})  # no model stored
+    calls = [
+        (f"/api/projects/{p['id']}/summarize", {}),
+        ("/api/sessions/sess1/summarize", {}),
+        ("/api/ask", {"question": "q"}),
+        ("/api/quick-add", {"text": "t"}),
+        ("/api/reports/draft", {"kind": "memo", "title": "T", "projects": ["clmi"]}),
+        ("/api/routines/x/run", {}),
+    ]
+    for path, body in calls:
+        for extra in ({}, {"runner": "claude"}, {"model": ""}):  # a runner alone is no choice
+            r = client.post(path, json={**body, **extra})
+            assert (r.status_code, r.json()["detail"]) == (422, "no model was chosen"), (path, extra)
+    assert ledger.conn.execute("select count(*) from run").fetchone()[0] == 0
+
+
+def test_model_choice_errors_and_warning(client):
+    r = client.post("/api/ask", json={"question": "q", "model": "nope"})
+    assert (r.status_code, r.json()["detail"]) == (422, "unknown model nope; run: trajectree models --refresh")
+    r = client.post("/api/ask", json={"question": "q", "runner": "ccx:gone", "model": "nope"})
+    assert (r.status_code, r.json()["detail"]) == (422, "runner ccx:gone is not available; run: trajectree models")
+    r = client.post("/api/ask", json={"question": "q", "runner": "codex", "model": "gpt-7"})
+    assert r.status_code == 202 and r.json()["runner"] == "codex"
+    assert r.json()["props"]["model_warning"] == "model gpt-7 is not in the catalog for codex"

@@ -242,10 +242,43 @@ def _yes_no(answer: str) -> bool:
     raise ValueError("answer y or n")
 
 
-def _check_model(answer: str) -> str:
+def _check_model(answer: str, choices: list[tuple[str, str]]) -> tuple[str, str] | None:
+    """`(runner, model)` for a list number, a `runner/model` line or a model name; None for none."""
     if not answer:
-        raise ValueError("give a model name, or none to skip")
-    return answer
+        raise ValueError("give a number or a model name, or none to skip")
+    if answer == "none":
+        return None
+    if answer.isdigit():
+        n = int(answer)
+        if not 1 <= n <= len(choices):
+            raise ValueError(f"no model with number {n}")
+        return choices[n - 1]
+    for runner, model in choices:
+        if f"{runner}/{model}" == answer:
+            return runner, model
+    named = [c for c in choices if c[1] == answer]
+    if len(named) > 1:
+        raise ValueError(f"model {answer} is offered by {', '.join(r for r, _ in named)}; answer with its number")
+    if not named:
+        raise ValueError(f"unknown model {answer}; answer with a number from the list")
+    return named[0]
+
+
+def _ask_model(api: Any, ask: Callable[[str], str], out: TextIO, sources: list[str]) -> tuple[str, str] | None:
+    """The owner's pick from the catalog's available runners and their models, or None."""
+    catalog = api.get("/api/models")
+    choices = [(r["runner"], m["model"]) for r in catalog["runners"] if r["available"] for m in r["models"]]
+    if choices:
+        print("models:", file=out)
+        for n, (runner, model) in enumerate(choices, 1):
+            print(f"  {n}. {runner}/{model}", file=out)
+    else:
+        print("no models in the catalog; run: trajectree models --refresh", file=out)
+    return _prompt(
+        ask, out,
+        f"Model to summarise the skipped history of {', '.join(sources)} (number or name, or none to skip): ",
+        lambda a: _check_model(a, choices),
+    )
 
 
 def _list_sources(probes: list[dict[str, Any]], out: TextIO, tz: str) -> None:
@@ -380,19 +413,12 @@ def _import_dialogue(
 
         start_block: dict[str, Any] | None = None
         if starts and not no_start_block:
-            model = start_model
-            if not model and interactive:
-                model = _prompt(
-                    ask, out,
-                    f"Model to summarise the skipped history of {', '.join(starts)} (name, or none to skip): ",
-                    _check_model,
-                )
-                model = None if model == "none" else model
-            if model:
-                runner_name = start_runner
-                if interactive and not start_runner:
-                    runner_name = _prompt(ask, out, "Runner (empty: let the daemon decide): ", lambda a: a or None)
-                start_block = {"runner": runner_name, "model": model}
+            # The flags pass through as given; the daemon resolves and checks them.
+            choice = (start_runner, start_model) if start_model else None
+            if choice is None and interactive:
+                choice = _ask_model(api, ask, out, list(starts))
+            if choice is not None:
+                start_block = {"runner": choice[0], "model": choice[1]}
         if start_block is None:
             starts = {}  # no block, no summary run
 

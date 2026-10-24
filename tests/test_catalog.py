@@ -2,15 +2,23 @@ import json
 import time
 
 import httpx
+import pytest
 
 from trajectree.runner.catalog import (
     BUILTIN_CLAUDE_MODELS,
+    AmbiguousModel,
     Catalog,
     RunnerCatalog,
     CatalogModel,
+    ModelChoiceError,
+    NoModelChosen,
+    Resolved,
+    RunnerUnavailable,
+    UnknownModel,
     discover,
     load_catalog,
     merge_failed,
+    resolve_model,
     store_catalog,
 )
 from trajectree.runner.credentials import store_oauth_token
@@ -221,3 +229,73 @@ def test_merge_failed_keeps_previous_models_and_records_error():
     claude, codex = merged.runners
     assert [m.model for m in claude.models] == ["live-1"] and claude.error == "live list unavailable: 401" and claude.refreshed_at == old_at
     assert [m.model for m in codex.models] == ["gpt-b"]
+
+
+# -- model choice ---------------------------------------------------------------------------
+
+MODEL = "claude-opus-5-5"  # the model tests pass when they need any valid one
+
+
+def offering(runners: dict[str, list[str]]) -> Catalog:
+    """A catalog in which each (available) runner offers the given models."""
+    return Catalog(runners=[
+        rc(name, [CatalogModel(runner=name, model=m, source="profile") for m in models]) for name, models in runners.items()
+    ])
+
+
+TEST_CATALOG = offering({
+    "claude": ["claude-opus-5-5", "claude-sonnet-5-5"],
+    "codex": ["gpt-6.1-sol"],
+    "ccx:kimi": ["k2"],
+    "ccx:ds": ["deepseek-flash[1m]"],
+})
+
+
+def seed_catalog(ledger, catalog=TEST_CATALOG):
+    """Store the catalog the run tests choose their models from."""
+    with ledger.locked() as conn:
+        store_catalog(conn, catalog)
+
+
+def test_resolve_no_model():
+    for model in (None, ""):
+        with pytest.raises(NoModelChosen, match="^no model was chosen$"):
+            resolve_model(TEST_CATALOG, model, None)
+    with pytest.raises(NoModelChosen):
+        resolve_model(TEST_CATALOG, None, "claude")
+    assert issubclass(NoModelChosen, ModelChoiceError) and issubclass(ModelChoiceError, ValueError)
+
+
+def test_resolve_unique_name_finds_its_runner():
+    assert resolve_model(TEST_CATALOG, "gpt-6.1-sol", None) == Resolved(runner="codex", model="gpt-6.1-sol")
+    assert resolve_model(TEST_CATALOG, "k2", "ccx:kimi") == Resolved(runner="ccx:kimi", model="k2")
+
+
+def test_resolve_ambiguous_name_names_the_runners():
+    catalog = offering({"ccx:a": ["x"], "ccx:b": ["x"]})
+    with pytest.raises(AmbiguousModel, match=r"^model x is offered by ccx:a, ccx:b; pass --runner$"):
+        resolve_model(catalog, "x", None)
+    assert resolve_model(catalog, "x", "ccx:b") == Resolved(runner="ccx:b", model="x")
+
+
+def test_resolve_unknown_model():
+    with pytest.raises(UnknownModel, match=r"^unknown model x; run: trajectree models --refresh$"):
+        resolve_model(TEST_CATALOG, "x", None)
+
+
+def test_resolve_unknown_model_with_runner_is_accepted_with_a_warning():
+    catalog = offering({"codex": ["gpt-6.1-sol"]})
+    assert resolve_model(catalog, "x", "codex") == Resolved(
+        runner="codex", model="x", warning="model x is not in the catalog for codex"
+    )
+
+
+def test_resolve_counts_only_available_runners():
+    catalog = Catalog(runners=[
+        rc("claude", [CatalogModel(runner="claude", model="m", source="api")], available=False),
+        rc("codex", [CatalogModel(runner="codex", model="m", source="cache")]),
+    ])
+    assert resolve_model(catalog, "m", None).runner == "codex"
+    for runner in ("claude", "ccx:nope"):
+        with pytest.raises(RunnerUnavailable, match=f"^runner {runner} is not available; run: trajectree models$"):
+            resolve_model(catalog, "m", runner)

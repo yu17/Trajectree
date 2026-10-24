@@ -157,6 +157,20 @@ def test_invalid_runner_leaves_nothing_and_retry_succeeds(client, app, tmp_path)
     assert ok.status_code == 200 and ok.json()["starting_point_run"]["id"]
 
 
+def test_start_block_without_model_is_422_and_leaves_nothing(client, app, tmp_path):
+    p, repo = setup(client, tmp_path)
+    url = f"/api/projects/{p['id']}/import"
+    for block in ({}, {"runner": "claude"}, {"model": None}):
+        body = {"sources": pick("git"), "starts": {"git": "2025-01-01"}, "start_block": block}
+        r = client.post(url, json=body)
+        assert (r.status_code, r.json()["detail"]) == (422, "no model was chosen"), block
+    body["start_block"] = {"model": "nope"}
+    assert client.post(url, json=body).json()["detail"] == "unknown model nope; run: trajectree models --refresh"
+    assert "import" not in props_of(client, p)
+    assert [x["kind"] for x in client.get("/api/resources", params={"projects": p["id"]}).json()] == ["folder"]
+    assert app.state.ledger.conn.execute("select count(*) from run").fetchone()[0] == 0
+
+
 def test_paused_runs_leave_nothing(client, app, tmp_path):
     p, repo = setup(client, tmp_path)
     assert client.put("/api/caps", json={"paused": True}).status_code == 200

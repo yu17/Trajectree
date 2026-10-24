@@ -1,4 +1,5 @@
 from tests.test_api_entities import mk_project
+from tests.test_catalog import MODEL
 
 
 def test_report_crud_and_export(client):
@@ -23,7 +24,7 @@ def test_report_crud_and_export(client):
     pdf = client.get(f"/api/reports/{r['id']}/export?format=pdf")
     assert pdf.status_code == 503 and "marp-cli not available" in pdf.json()["detail"]
     assert client.get(f"/api/reports/{r['id']}/export?format=docx").status_code == 422
-    assert client.post("/api/reports/draft", json={"kind": "deck", "title": "D", "projects": ["clmi"]}).status_code == 202
+    assert client.post("/api/reports/draft", json={"kind": "deck", "title": "D", "projects": ["clmi"], "model": MODEL}).status_code == 202
 
 
 def test_export_through_marp_when_found(client, app):
@@ -50,7 +51,7 @@ def test_report_errors_and_pending(client, app):
     for field in ("title", "kind", "scope", "source_md", "props"):
         assert client.patch(f"/api/reports/{r['id']}", json={field: None}).status_code == 422, field
     assert client.get("/api/reports/nope/export?format=md").status_code == 404
-    assert client.post("/api/reports/draft", json={"kind": "deck", "title": "D", "projects": ["zzz"]}).status_code == 422
+    assert client.post("/api/reports/draft", json={"kind": "deck", "title": "D", "projects": ["zzz"], "model": MODEL}).status_code == 422
     assert client.post("/api/reports/draft", json={"kind": "deck", "title": "D", "projects": []}).status_code == 422
     agent = Actor(kind="agent", ref="run_x", model="m", backend="claude")
     drafted = create_report(app.state.ledger, agent, ReportIn(title="Draft", kind="deck"), intent="draft deck")

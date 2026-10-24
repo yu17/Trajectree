@@ -7,9 +7,10 @@ from pydantic import BaseModel
 
 from trajectree.api.deps import get_ledger
 from trajectree.db.ledger import Ledger
-from trajectree.models import Routine, RoutineIn, RoutinePatch, Run
+from trajectree.models import NO_MODEL_CHOSEN, Routine, RoutineIn, RoutinePatch, Run
 from trajectree.repo.routines import create_routine, list_routines, resolve_routine_ref, update_routine
 from trajectree.repo.runs import list_runs
+from trajectree.runner.catalog import NoModelChosen
 from trajectree.runner.kinds import RoutineRequest
 from trajectree.runner.service import RunService
 from trajectree.scheduler import Scheduler, SchedulerReport, SchedulerStatus
@@ -20,6 +21,14 @@ router = APIRouter()
 
 class RunRoutineBody(BaseModel):
     projects: list[str] | None = None
+    runner: str | None = None  # without a model, the routine's own runner and model are used
+    model: str | None = None
+
+
+def _needs_model(enabled: bool, model: str | None) -> None:
+    """An enabled routine runs unattended, so it must name its model."""
+    if enabled and not model:
+        raise NoModelChosen(NO_MODEL_CHOSEN)
 
 
 @router.get("/routines", response_model=list[Routine])
@@ -30,6 +39,7 @@ def routines_list(ledger: Ledger = Depends(get_ledger)):
 
 @router.post("/routines", response_model=Routine, status_code=201)
 def routines_create(body: RoutineIn, ledger: Ledger = Depends(get_ledger)):
+    _needs_model(body.enabled, body.model)
     with ledger.locked() as conn:
         return create_routine(conn, body, now=utcnow())
 
@@ -44,6 +54,10 @@ def routines_get(ref: str, ledger: Ledger = Depends(get_ledger)):
 def routines_patch(ref: str, body: RoutinePatch, ledger: Ledger = Depends(get_ledger)):
     with ledger.locked() as conn:
         routine = resolve_routine_ref(conn, ref)
+        changed = body.model_fields_set
+        _needs_model(
+            body.enabled if "enabled" in changed else routine.enabled, body.model if "model" in changed else routine.model
+        )
         return update_routine(conn, routine.id, body, now=utcnow())
 
 
@@ -52,7 +66,7 @@ def routines_run(ref: str, request: Request, body: RunRoutineBody | None = None)
     runs: RunService = request.app.state.runs
     body = body or RunRoutineBody()
     try:
-        return runs.enqueue(RoutineRequest(routine=ref, projects=body.projects))
+        return runs.enqueue(RoutineRequest(routine=ref, projects=body.projects, runner=body.runner, model=body.model))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

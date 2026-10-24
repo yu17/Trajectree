@@ -73,6 +73,10 @@ def app(settings, ledger):
     app.state.which = lambda name: None  # never find a real marp-cli on the host
     # The catalog refresh must never reach a real network: every model-list call is refused.
     app.state.model_transport = httpx.MockTransport(lambda request: httpx.Response(404))
+    # Every run names a model from the catalog; stored before startup, so no startup refresh replaces it.
+    from tests.test_catalog import seed_catalog
+
+    seed_catalog(ledger)
     return app
 
 

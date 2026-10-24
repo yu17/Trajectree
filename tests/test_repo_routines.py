@@ -8,6 +8,7 @@ from trajectree.repo import DuplicateRoutine, NotFound
 from trajectree.repo.routines import (
     compute_next_fire,
     create_routine,
+    disable_modelless_routines,
     due_routines,
     get_routine,
     get_routine_by_name,
@@ -112,3 +113,16 @@ def test_routine_patch_rejects_explicit_null_for_required_fields():
             RoutinePatch.model_validate({name: None})
     assert RoutinePatch(runner=None, model=None).model_fields_set == {"runner", "model"}
     assert RoutinePatch().model_dump(exclude_unset=True) == {}
+
+
+def test_disable_modelless_routines(conn):
+    def make(name, **over):
+        return create_routine(conn, RoutineIn(name=name, trigger="@daily", prompt_ref="a.md", **over), now=NOW)
+    bare, empty, off, ok = make("bare", enabled=True), make("empty", enabled=True, model=""), make("off"), make("ok", enabled=True, model="m")
+    later = NOW + timedelta(hours=1)
+    assert disable_modelless_routines(conn, now=later) == ["bare", "empty"]
+    for r in (bare, empty):
+        after = get_routine(conn, r.id)
+        assert (after.enabled, after.next_fire, after.last_error, after.updated_at) == (False, None, "disabled: no model was chosen", later)
+    assert get_routine(conn, off.id).last_error is None and get_routine(conn, ok.id).enabled is True
+    assert disable_modelless_routines(conn, now=later) == []

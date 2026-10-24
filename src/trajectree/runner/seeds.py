@@ -28,6 +28,8 @@ def ensure_inbox_project(ledger: Ledger) -> Project:
             intent="create inbox project",
         )
 
+# Seeded without a runner or model, so disabled: the owner picks a model before enabling one
+# (`trajectree routine set <name> --model ...`).
 SEED_ROUTINES: list[RoutineIn] = [
     RoutineIn(
         name="cross-project-review",

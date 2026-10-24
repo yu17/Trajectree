@@ -10,7 +10,7 @@ from croniter import croniter
 
 from trajectree.db.schema import table_columns
 from trajectree.ids import new_id
-from trajectree.models import Routine, RoutineIn, RoutinePatch
+from trajectree.models import NO_MODEL_CHOSEN, Routine, RoutineIn, RoutinePatch
 from trajectree.repo import DuplicateRoutine, NotFound
 from trajectree.repo._rows import select_row, select_rows, update_fields
 from trajectree.timeutil import from_db, to_db
@@ -174,6 +174,22 @@ def next_fires(conn: apsw.Connection) -> list[tuple[str, datetime]]:
         " ORDER BY next_fire, name"
     )
     return [(name, from_db(at)) for name, at in rows]
+
+
+def disable_modelless_routines(conn: apsw.Connection, *, now: datetime) -> list[str]:
+    """Disable every enabled routine that names no model, recording why; return their names."""
+    names = [
+        r[0] for r in conn.execute(
+            "SELECT name FROM routine WHERE enabled = 1 AND (model IS NULL OR model = '') ORDER BY name"
+        )
+    ]
+    if names:
+        conn.execute(
+            "UPDATE routine SET enabled = 0, next_fire = NULL, last_error = ?, updated_at = ?"
+            " WHERE enabled = 1 AND (model IS NULL OR model = '')",
+            (f"disabled: {NO_MODEL_CHOSEN}", to_db(now)),
+        )
+    return names
 
 
 def record_error(conn: apsw.Connection, routine_id: str, error: str) -> None:

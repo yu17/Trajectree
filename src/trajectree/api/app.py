@@ -37,7 +37,8 @@ from trajectree.ingest.job import IngestBusy
 from trajectree.ingest.scheduler import ingest_loop
 from trajectree.mcpserver.server import build_mcp
 from trajectree.repo import DuplicateEdge, DuplicateRoutine, DuplicateSlug, InvalidRange, NotFound, UnknownProject, UnknownSession
-from trajectree.runner.catalog import load_catalog
+from trajectree.repo.routines import disable_modelless_routines
+from trajectree.runner.catalog import ModelChoiceError, load_catalog
 from trajectree.runner.seeds import ensure_inbox_project, ensure_seed_routines
 from trajectree.runner.service import RunService
 from trajectree.runner.spec import AlreadyApplied, RunsPaused
@@ -58,6 +59,14 @@ def _seed(ledger: Ledger, settings: Settings) -> None:
     ensure_inbox_project(ledger)
     with ledger.locked() as conn:
         ensure_seed_routines(conn, settings, now=utcnow())
+
+
+def _disable_modelless(ledger: Ledger) -> None:
+    """Routines enabled before every run needed a model are disabled, saying why."""
+    with ledger.locked() as conn:
+        names = disable_modelless_routines(conn, now=utcnow())
+    if names:
+        log.warning("disabled routines without a model: %s", ", ".join(names))
 
 
 async def _startup_refresh(app: FastAPI) -> None:
@@ -95,6 +104,7 @@ def create_app(settings: Settings, *, ledger: Ledger | None = None) -> FastAPI:
             # Runs left `running` by a previous process can never finish: fail them first.
             await asyncio.to_thread(app.state.runs.recover)
             await asyncio.to_thread(_seed, ledger, settings)
+            await asyncio.to_thread(_disable_modelless, ledger)  # before the scheduler can fire one
             # Exactly one worker per slot: each slot runs serially.
             tasks = [
                 asyncio.create_task(app.state.runs.worker(stop, slot="interactive")),
@@ -143,6 +153,7 @@ def create_app(settings: Settings, *, ledger: Ledger | None = None) -> FastAPI:
     app.add_exception_handler(IngestBusy, _error_handler(409))
     app.add_exception_handler(UnknownProject, _error_handler(422))
     app.add_exception_handler(UnknownSession, _error_handler(422))
+    app.add_exception_handler(ModelChoiceError, _error_handler(422))
     app.add_exception_handler(RunsPaused, lambda r, e: JSONResponse({"detail": "runs are paused"}, status_code=409))
     app.add_exception_handler(
         AlreadyApplied, lambda r, e: JSONResponse({"detail": str(e)}, status_code=409)

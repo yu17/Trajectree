@@ -14,6 +14,13 @@ def test_seed_routines_once(conn, settings):
     assert get_routine_by_name(conn, "meeting-prep").enabled is True
 
 
+def test_seeds_have_no_model(conn, settings):
+    ensure_seed_routines(conn, settings, now=NOW)
+    for name in ("cross-project-review", "meeting-prep"):
+        r = get_routine_by_name(conn, name)
+        assert (r.runner, r.model, r.enabled) == (None, None, False)
+
+
 def test_ensure_inbox_project_once(ledger):
     from trajectree.repo.projects import list_projects
     from trajectree.runner.seeds import ensure_inbox_project

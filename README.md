@@ -102,8 +102,9 @@ with a count and the oldest date; a source with nothing to import is shown as
    where it starts: `YYYY-MM-DD`, `all` or `default` (no default is ever
    assumed; an empty answer is asked again);
 3. follow each git remote found, y/n (remotes declined before are not asked);
-4. if history is skipped, name the model that summarises it (a starting-point
-   run), or `none`;
+4. if history is skipped, pick the model that summarises it (a starting-point
+   run) from the numbered catalog list (`runner/model` lines; answer with the
+   number or the name), or `none`;
 5. read the summary and confirm.
 
 Nothing is imported until you confirm. A new project starts with an empty
@@ -177,8 +178,15 @@ token-budgeted context pack built from the tracker.
 - `ask` and `add` apply nothing by themselves. The owner accepts a proposal in
   the web UI (Quick capture, Ask panel, Inbox) or with
   `trajectree accept <run_id> <n>` (n is 1-based).
-- All three take `--runner` (`claude`, `codex` or `ccx:<backend>`), `--model`
-  and `--no-wait`.
+- All three require `--model` (a model from `trajectree models`; there is no
+  default), and take `--runner` (`claude`, `codex` or `ccx:<backend>`) and
+  `--no-wait`. Without `--model` the command stops with `no model was chosen;
+  pass --model (see: trajectree models)` before contacting the daemon.
+  `--runner` is needed only when two runners offer the same model name. A
+  model the catalog does not list is refused (`unknown model <name>; run:
+  trajectree models --refresh`) unless `--runner` names an available runner:
+  the run then goes ahead and its result carries the warning `model <name> is
+  not in the catalog for <runner>`.
 - `trajectree runs [--limit 20]` lists recent runs, `trajectree usage [--days 30]`
   shows spend.
 - `trajectree caps` shows the limits; `--usd-per-run`, `--usd-per-day` and
@@ -299,7 +307,8 @@ command creates is made private (0600). `show` prints the hooks currently instal
 ## Routines
 
 A routine is a scheduled run: a cron trigger in a time zone, a prompt, a scope,
-caps and a delivery. Two are seeded on first start, both disabled:
+caps and a delivery, plus the runner and model it runs on. Two are seeded on
+first start, both disabled and without a model:
 
 | Routine | Trigger | What it does |
 | --- | --- | --- |
@@ -308,13 +317,23 @@ caps and a delivery. Two are seeded on first start, both disabled:
 
 ```bash
 trajectree routines                          # name, on/off, trigger, tz, next fire, last run
+trajectree routine set cross-project-review --model <model> [--runner <runner>]
 trajectree routine enable cross-project-review
 trajectree routine disable cross-project-review
-trajectree review [--projects a,b] [--no-wait]   # run cross-project-review now
-trajectree prep [--projects a,b] [--no-wait]     # run meeting-prep now
-trajectree run <routine> [--projects a,b] [--no-wait]
+trajectree review --model <model> [--projects a,b] [--no-wait]   # run cross-project-review now
+trajectree prep --model <model> [--projects a,b] [--no-wait]     # run meeting-prep now
+trajectree run <routine> --model <model> [--projects a,b] [--no-wait]
 trajectree scheduler [tick]                  # show the scheduler, or tick it now
 ```
+
+- A routine runs unattended on the model it stores, so set one with
+  `routine set` before enabling it: enabling a routine without a model fails
+  with `no model was chosen`, and the scheduler never fires one (it records
+  that as the routine's last error). At startup, a routine still enabled
+  without a model (from an older version) is disabled, with the last error
+  `disabled: no model was chosen`.
+- `review`, `prep` and `run` require `--model` like every run command; it
+  applies to that run only.
 
 - The seeds take their time zone from `TRAJECTREE_TZ` when they are created;
   compose passes `TZ` from your shell or `.env` (default `UTC`). Changing it
@@ -430,7 +449,7 @@ future planned instances of the old rule; past ones stay as history.
 Reports are Marp Markdown documents, kind `deck` (slides) or `memo`.
 
 - Draft one from the Reports tab (`Draft with agent`) or with
-  `trajectree report draft --kind deck|memo --title "<title>" --projects a,b [--days 90]`;
+  `trajectree report draft --kind deck|memo --title "<title>" --projects a,b --model <model> [--days 90]`;
   `New report` starts an empty one. `trajectree report list` lists them.
 - Edit the source in the Reports tab, with a live preview. Each `Save report`
   is a transaction, so it shows in the Ledger and can be reverted.
@@ -493,7 +512,8 @@ This installs the pinned Codex release (`CODEX_VERSION`, 0.163.0, checked
 against `CODEX_SHA256`; override both together with `--build-arg`) at
 `/opt/codex/bin/codex`. `TRAJECTREE_CODEX_BIN` points there in every image,
 which is harmless without Codex: it is only used when a run picks codex. Copy
-your Codex `auth.json` to `cfg/codex/auth.json`, then use `--runner codex`.
+your Codex `auth.json` to `cfg/codex/auth.json`, then pick one of its models
+with `--model` (add `--runner codex` when another runner offers the same name).
 
 ## What gets written where
 
@@ -529,7 +549,6 @@ of it. The project folders mount read-only.
 | `TRAJECTREE_CFG_DIR` | `<data dir>/cfg` (`/cfg`, bind-mounted from `./cfg`, in Docker) | Container-private runner config: OAuth token, synced backend profiles, runner home |
 | `TRAJECTREE_CLAUDE_BIN` | `claude` | Claude Code binary the runner spawns |
 | `TRAJECTREE_CODEX_BIN` | `codex` (`/opt/codex/bin/codex` in Docker) | Codex binary the runner spawns |
-| `TRAJECTREE_DEFAULT_RUNNER` | `claude` | Runner used when none is chosen (`claude`, `codex`, or `ccx:<backend>`) |
 | `TRAJECTREE_RUN_ENV_PASSTHROUGH` | none | Comma-separated environment variable names passed through to runner processes |
 | `TRAJECTREE_CONFINE_EXTRA_RO` | none | Development and tests only: colon-separated extra directories a confined run may read and execute (such as `tests/bin` and the repo's `.venv`) |
 | `TRAJECTREE_TZ` | `UTC` (compose: `$TZ`, else `UTC`) | Time zone given to the seeded routines and used to expand recurrence rules; an unknown zone falls back to `UTC` with a warning |

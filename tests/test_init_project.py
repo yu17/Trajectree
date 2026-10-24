@@ -164,13 +164,27 @@ def make_probe(**overrides):
             "remotes": overrides.pop("remotes", [])}
 
 
+def _runner(name, models, available=True):
+    return {"runner": name, "available": available, "refreshed_at": None, "error": None,
+            "models": [{"runner": name, "model": m, "display": None, "source": "profile"} for m in models]}
+
+
+CATALOG = {"runners": [
+    _runner("claude", ["claude-opus-5-5", "claude-sonnet-5-5"]),
+    _runner("codex", ["gpt-hidden"], available=False),
+    _runner("ccx:a", ["x"]),
+    _runner("ccx:b", ["x"]),
+]}
+
+
 class FakeApi:
-    def __init__(self, probe):
+    def __init__(self, probe, catalog=CATALOG):
         self.probe = probe
+        self.catalog = catalog
         self.calls = []
 
     def get(self, path):
-        return []
+        return self.catalog if path == "/api/models" else []
 
     def post(self, path, body):
         self.calls.append((path, body))
@@ -233,10 +247,10 @@ def test_since_asked_only_when_older_than_cutoff(tmp_path, capsys):
 
 def test_start_model_asked_when_history_skipped(tmp_path, capsys):
     api = FakeApi(make_probe())
-    code, out, _, ask = dialogue(tmp_path, capsys, api, "1", "default", "claude-sonnet-5-5", "", "y")
+    code, out, _, ask = dialogue(tmp_path, capsys, api, "1", "default", "claude-sonnet-5-5", "y")
     assert code == 0
     (body,) = api.imports()
-    assert body["start_block"] == {"runner": None, "model": "claude-sonnet-5-5"}
+    assert body["start_block"] == {"runner": "claude", "model": "claude-sonnet-5-5"}
     assert body["starts"] == {"git": DEFAULT_SINCE}
     assert body["sources"] == {"git": {"picked": True, "since": None}}
     assert "starting-point run run_9 queued" in out
@@ -429,14 +443,38 @@ def test_all_at_the_prompt_picks_exactly_the_pickable_sources(tmp_path, capsys):
     assert set(body["sources"]) == {"claude", "folder"}
 
 
-def test_eof_at_the_runner_prompt_imports_nothing(tmp_path, capsys):
+def test_eof_at_the_model_prompt_imports_nothing(tmp_path, capsys):
     api = FakeApi(make_probe())
-    code, _, err, ask = dialogue(tmp_path, capsys, api, "1", "default", "m1")
-    assert ask.prompts[-1].startswith("Runner") and code == 2
+    code, _, err, ask = dialogue(tmp_path, capsys, api, "1", "default")
+    assert ask.prompts[-1].startswith("Model") and code == 2
     assert "nothing imported" in err and api.imports() == []
+
+
+def test_init_project_start_model_from_catalog(tmp_path, capsys):
     api = FakeApi(make_probe())
-    code, _, _, _ = dialogue(tmp_path, capsys, api, "1", "default", "m1", "", "y")
-    assert code == 0 and api.imports()[0]["start_block"] == {"runner": None, "model": "m1"}
+    code, out, _, ask = dialogue(tmp_path, capsys, api, "1", "default", "", "9", "x", "gpt-hidden", "2", "y")
+    assert code == 0
+    assert "  1. claude/claude-opus-5-5\n  2. claude/claude-sonnet-5-5\n  3. ccx:a/x\n  4. ccx:b/x\n" in out
+    assert "codex/" not in out  # an unavailable runner offers nothing
+    for reason in ("give a number or a model name, or none to skip", "no model with number 9",
+                   "model x is offered by ccx:a, ccx:b; answer with its number",
+                   "unknown model gpt-hidden; answer with a number from the list"):
+        assert reason in out
+    assert sum(p.startswith("Model") for p in ask.prompts) == 5
+    assert api.imports()[0]["start_block"] == {"runner": "claude", "model": "claude-sonnet-5-5"}
+    for answer, block in (("ccx:b/x", {"runner": "ccx:b", "model": "x"}), ("3", {"runner": "ccx:a", "model": "x"}),
+                          ("claude-opus-5-5", {"runner": "claude", "model": "claude-opus-5-5"})):
+        api = FakeApi(make_probe())
+        dialogue(tmp_path, capsys, api, "1", "default", answer, "y")
+        assert api.imports()[0]["start_block"] == block, answer
+
+
+def test_empty_catalog_says_how_to_fill_it(tmp_path, capsys):
+    api = FakeApi(make_probe(), catalog={"runners": []})
+    code, out, _, _ = dialogue(tmp_path, capsys, api, "1", "default", "1", "none", "y")
+    assert code == 0 and "no models in the catalog; run: trajectree models --refresh" in out
+    assert "no model with number 1" in out
+    assert api.imports()[0]["start_block"] is None
 
 
 def test_input_ending_imports_nothing(tmp_path, capsys):

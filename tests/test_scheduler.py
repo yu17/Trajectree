@@ -14,9 +14,15 @@ from trajectree.runner.launch import RunOutcome
 from trajectree.runner.service import RunService
 from trajectree.scheduler import MAX_ATTEMPTS, RETRY_BACKOFF_S, Scheduler
 from trajectree.timeutil import to_db
+from tests.test_catalog import MODEL, seed_catalog
 
 UTC = timezone.utc
 T0 = datetime(2026, 1, 10, 12, tzinfo=UTC)
+
+
+@pytest.fixture(autouse=True)
+def _catalog(ledger):
+    seed_catalog(ledger)
 
 
 def _never(argv, *, log_path, **kw):
@@ -29,7 +35,7 @@ def _svc(ledger, settings, clock=None):
 
 
 def _routine(ledger, name="rev", trigger="* * * * *", **over):
-    data = {"name": name, "trigger": trigger, "prompt_ref": "cross_project_review.md", "enabled": True, **over}
+    data = {"name": name, "trigger": trigger, "prompt_ref": "cross_project_review.md", "enabled": True, "model": MODEL, **over}
     return create_routine(ledger.conn, RoutineIn(**data), now=T0)
 
 
@@ -38,7 +44,7 @@ def test_constants():
 
 
 def test_tick_fires_due_routine_and_recomputes(ledger, settings, logged_in):
-    r = create_routine(ledger.conn, RoutineIn(name="rev", trigger="* * * * *", prompt_ref="cross_project_review.md", enabled=True), now=T0)
+    r = create_routine(ledger.conn, RoutineIn(name="rev", trigger="* * * * *", prompt_ref="cross_project_review.md", enabled=True, model=MODEL), now=T0)
     now = T0 + timedelta(minutes=2)
     sched = Scheduler(ledger, settings, _svc(ledger, settings), now=lambda: now)
     rep = sched.tick()
@@ -188,7 +194,7 @@ def test_content_failure_not_retried(ledger, settings, logged_in):
     capped = svc.enqueue(RoutineRequest(routine="rev"))
     update_run(ledger.conn, capped.id, status="capped", props={**capped.props, "failure": "infra",
                                                                 "retry_at": to_db(T0 - timedelta(hours=1))})
-    ask = svc.enqueue(AskRequest(question="q"))
+    ask = svc.enqueue(AskRequest(question="q", model=MODEL))
     assert "retry_at" not in _fail_infra(svc, ledger, ask.id).props   # only routine runs retry
     assert "retry_at" not in get_run(ledger.conn, failed.id).props
     rep = Scheduler(ledger, settings, svc, now=lambda: T0 + timedelta(hours=1)).tick()
@@ -223,6 +229,20 @@ def test_session_end_debounce_comes_from_props(ledger, human, settings, logged_i
     end_session(ledger.conn, session_id="s1", reason="other", now=T0)
     assert Scheduler(ledger, settings, _svc(ledger, settings), now=lambda: T0 + timedelta(minutes=1)).tick().fired == ["wrap"]
     assert len(list_runs(ledger.conn, routine_id=r.id)) == 1
+
+
+def test_scheduler_skips_modelless_routine(ledger, human, settings, logged_in):
+    a = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    cron = _routine(ledger, name="bare", model=None)
+    wrap = _routine(ledger, name="wrap", trigger="session_end", model=None, props={"debounce_s": 30})
+    start_session(ledger.conn, session_id="s1", cwd="/a", transcript_path=None, project_id=a.id, source="startup", now=T0)
+    end_session(ledger.conn, session_id="s1", reason="other", now=T0)
+    rep = Scheduler(ledger, settings, _svc(ledger, settings), now=lambda: T0 + timedelta(minutes=2)).tick()
+    assert rep.fired == [] and rep.errors == [] and sorted(rep.skipped) == ["bare", "wrap"]
+    for r in (cron, wrap):
+        assert get_routine(ledger.conn, r.id).last_error == "no model was chosen"
+    assert list_runs(ledger.conn) == []
+    assert get_routine(ledger.conn, cron.id).next_fire > T0 + timedelta(minutes=2)  # the slot passes, unfired
 
 
 @pytest.mark.anyio

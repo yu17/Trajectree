@@ -1,8 +1,9 @@
 from tests.test_api_entities import mk_project
+from tests.test_catalog import MODEL, seed_catalog
 
 
 def test_routine_crud_and_run(client):
-    r = client.post("/api/routines", json={"name": "x", "trigger": "@daily", "prompt_ref": "cross_project_review.md"})
+    r = client.post("/api/routines", json={"name": "x", "trigger": "@daily", "prompt_ref": "cross_project_review.md", "model": MODEL})
     assert r.status_code == 201 and r.json()["enabled"] is False and r.json()["next_fire"] is None
     assert client.post("/api/routines", json={"name": "x", "trigger": "@daily", "prompt_ref": "a.md"}).status_code == 409
     assert client.post("/api/routines", json={"name": "y", "trigger": "bad", "prompt_ref": "a.md"}).status_code == 422
@@ -37,7 +38,7 @@ def test_patch_rejects_null_for_required_fields(client):
 
 def test_run_routine_with_projects_and_unknown_project(client):
     mk_project(client)
-    client.post("/api/routines", json={"name": "x", "trigger": "@daily", "prompt_ref": "a.md"})
+    client.post("/api/routines", json={"name": "x", "trigger": "@daily", "prompt_ref": "a.md", "model": MODEL})
     run = client.post("/api/routines/x/run", json={"projects": ["clmi"]})
     assert run.status_code == 202 and run.json()["props"]["request"]["projects"] == ["clmi"]
     assert client.post("/api/routines/x/run", json={"projects": ["zzz"]}).status_code == 422
@@ -71,3 +72,48 @@ def test_scheduler_status_and_tick_report(client):
     assert set(rep) == {"ticked", "fired", "skipped", "retried", "errors"}
     status = client.get("/api/scheduler").json()
     assert set(status) == {"last_tick", "interval_s", "next_fires"} and status["next_fires"] == []
+
+
+def test_routine_run_uses_stored_model(client):
+    client.post("/api/routines", json={"name": "x", "trigger": "@daily", "prompt_ref": "a.md", "model": "gpt-6.1-sol"})
+    run = client.post("/api/routines/x/run", json={}).json()
+    assert (run["runner"], run["model"]) == ("codex", "gpt-6.1-sol")
+    run = client.post("/api/routines/x/run", json={"runner": "ccx:kimi", "model": "k2"}).json()
+    assert (run["runner"], run["model"]) == ("ccx:kimi", "k2")
+
+
+def test_enable_routine_without_model_is_422(client):
+    client.post("/api/routines", json={"name": "x", "trigger": "@daily", "prompt_ref": "a.md"})
+    r = client.patch("/api/routines/x", json={"enabled": True})
+    assert (r.status_code, r.json()["detail"]) == (422, "no model was chosen")
+    assert client.get("/api/routines/x").json()["enabled"] is False
+    r = client.patch("/api/routines/x", json={"enabled": True, "model": "k2", "runner": "ccx:kimi"})
+    assert r.status_code == 200 and r.json()["enabled"] is True and r.json()["next_fire"]
+    r = client.patch("/api/routines/x", json={"model": None})  # an enabled routine keeps its model
+    assert (r.status_code, r.json()["detail"]) == (422, "no model was chosen")
+    assert client.get("/api/routines/x").json()["model"] == "k2"
+
+
+def test_create_enabled_routine_without_model_is_422(client):
+    r = client.post("/api/routines", json={"name": "x", "trigger": "@daily", "prompt_ref": "a.md", "enabled": True})
+    assert (r.status_code, r.json()["detail"]) == (422, "no model was chosen")
+    assert client.get("/api/routines/x").status_code == 404
+    body = {"name": "x", "trigger": "@daily", "prompt_ref": "a.md", "enabled": True, "model": MODEL}
+    assert client.post("/api/routines", json=body).status_code == 201
+
+
+def test_startup_disables_modelless_enabled_routines(settings, ledger):
+    from datetime import datetime, timezone
+    from fastapi.testclient import TestClient
+    from trajectree.api.app import create_app
+    from trajectree.models import RoutineIn
+    from trajectree.repo.routines import create_routine, get_routine_by_name
+    now = datetime.now(timezone.utc)  # next fires lie ahead: the startup tick fires nothing
+    seed_catalog(ledger)
+    with ledger.locked() as conn:  # written directly, as an older version would have
+        create_routine(conn, RoutineIn(name="old", trigger="@daily", prompt_ref="a.md", enabled=True), now=now)
+        create_routine(conn, RoutineIn(name="kept", trigger="@daily", prompt_ref="a.md", enabled=True, model=MODEL), now=now)
+    with TestClient(create_app(settings, ledger=ledger)):
+        old, kept = get_routine_by_name(ledger.conn, "old"), get_routine_by_name(ledger.conn, "kept")
+    assert (old.enabled, old.next_fire, old.last_error) == (False, None, "disabled: no model was chosen")
+    assert kept.enabled is True and kept.last_error is None

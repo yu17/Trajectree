@@ -15,6 +15,13 @@ from trajectree.runner.launch import RunOutcome
 from trajectree.runner.service import RunService
 from trajectree.runner.spec import AlreadyApplied, RunsPaused
 import trajectree.runner.service as service_mod
+from tests.test_catalog import MODEL, seed_catalog
+
+
+@pytest.fixture(autouse=True)
+def _catalog(ledger):
+    seed_catalog(ledger)
+
 
 STRUCTURED = json.dumps({"answer": "A", "proposals": [
     {"kind": "event", "project": "a", "title": "Decided X", "reason": "decision taken", "event_kind": "decision", "when": "2026-01-05T10:00:00Z"},
@@ -28,7 +35,7 @@ def svc(ledger, settings, mode="ok", **extra):
 def test_ask_run_ok_records_usage_and_proposals(ledger, human, settings, logged_in):
     create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
     s = svc(ledger, settings)
-    run = s.enqueue(AskRequest(question="q"))
+    run = s.enqueue(AskRequest(model=MODEL, question="q"))
     assert run.status == "queued" and run.kind == "ask" and run.runner == "claude"
     done = s.execute(run.id)
     assert done.status == "ok" and done.est_usd == 0.0123 and (done.tokens_in, done.tokens_out, done.tokens_cache) == (100, 20, 12)
@@ -48,7 +55,7 @@ def test_summarize_mints_scoped_token_with_run_actor(ledger, human, settings, lo
         return real(conn, **kw)
     monkeypatch.setattr(service_mod, "mint_token", spy)
     s = svc(ledger, settings)
-    run = s.execute(s.enqueue(SummarizeRequest(project="a")).id)
+    run = s.execute(s.enqueue(SummarizeRequest(model=MODEL, project="a")).id)
     assert run.status == "ok" and run.project_id == p.id
     assert seen["scope"] == Scope(projects=[p.id], tools=["set_project_summary"], write=True)
     a = seen["actor"]
@@ -56,37 +63,37 @@ def test_summarize_mints_scoped_token_with_run_actor(ledger, human, settings, lo
 
 def test_run_failure_revokes_token(ledger, human, settings, logged_in):
     s = svc(ledger, settings, mode="garbage")
-    run = s.execute(s.enqueue(AskRequest(question="q")).id)
+    run = s.execute(s.enqueue(AskRequest(model=MODEL, question="q")).id)
     assert run.status == "failed" and "boom" in run.error and run.est_usd == 0 and run.tokens_in == 0
     assert ledger.conn.execute("select count(*) from token").fetchone()[0] == 0 and (settings.runs_dir / f"{run.id}.log").exists()
 
 def test_budget_subtype_is_capped(ledger, human, settings, logged_in):
-    run = svc(ledger, settings, mode="budget").execute(svc(ledger, settings).enqueue(AskRequest(question="q")).id)
+    run = svc(ledger, settings, mode="budget").execute(svc(ledger, settings).enqueue(AskRequest(model=MODEL, question="q")).id)
     assert run.status == "capped" and run.est_usd == 0.0123
 
 def test_daily_cap_marks_capped_without_launch(ledger, human, settings, logged_in):
     set_caps(ledger.conn, Caps(usd_per_run=0.5, usd_per_day=1.0))
     s = svc(ledger, settings)
-    first = update_run(ledger.conn, s.enqueue(AskRequest(question="q")).id, status="ok", est_usd=0.6, started=s.now())
-    run = s.execute(s.enqueue(AskRequest(question="q")).id)
+    first = update_run(ledger.conn, s.enqueue(AskRequest(model=MODEL, question="q")).id, status="ok", est_usd=0.6, started=s.now())
+    run = s.execute(s.enqueue(AskRequest(model=MODEL, question="q")).id)
     assert run.status == "capped" and "daily cap" in run.error and run.token_id is None
     assert not (settings.runs_dir / f"{run.id}.log").exists()
 
 def test_paused_enqueue_raises(ledger, settings):
     set_caps(ledger.conn, Caps(paused=True))
     with pytest.raises(RunsPaused):
-        svc(ledger, settings).enqueue(AskRequest(question="q"))
+        svc(ledger, settings).enqueue(AskRequest(model=MODEL, question="q"))
 
 def test_missing_credentials_fails_fast(ledger, settings):
-    run = svc(ledger, settings).execute(svc(ledger, settings).enqueue(AskRequest(question="q")).id)
+    run = svc(ledger, settings).execute(svc(ledger, settings).enqueue(AskRequest(model=MODEL, question="q")).id)
     assert run.status == "failed" and "trajectree login" in run.error and not (settings.runs_dir / f"{run.id}.log").exists()
     assert ledger.conn.execute("select count(*) from token").fetchone()[0] == 0
 
 def test_invalid_runner_and_unknown_project_rejected_at_enqueue(ledger, human, settings):
     with pytest.raises(ValueError, match="invalid runner"):
-        svc(ledger, settings).enqueue(AskRequest(question="q", runner="evil; rm -rf"))
+        svc(ledger, settings).enqueue(AskRequest(model=MODEL, question="q", runner="evil; rm -rf"))
     with pytest.raises(UnknownProject):
-        svc(ledger, settings).enqueue(SummarizeRequest(project="zzz"))
+        svc(ledger, settings).enqueue(SummarizeRequest(model=MODEL, project="zzz"))
 
 @pytest.mark.anyio
 async def test_worker_continues_after_timeout(ledger, human, settings, logged_in, tmp_path):
@@ -102,8 +109,8 @@ async def test_worker_continues_after_timeout(ledger, human, settings, logged_in
         return outcome
 
     s.launch = launch_then_unstick
-    r1 = s.enqueue(AskRequest(question="slow"))
-    r2 = s.enqueue(AskRequest(question="fast"))
+    r1 = s.enqueue(AskRequest(model=MODEL, question="slow"))
+    r2 = s.enqueue(AskRequest(model=MODEL, question="fast"))
     stop = asyncio.Event()
     task = asyncio.create_task(s.worker(stop, poll_s=0.05))
     for _ in range(200):
@@ -118,20 +125,20 @@ async def test_worker_continues_after_timeout(ledger, human, settings, logged_in
 def test_accept_proposal_creates_human_txn_with_provenance(ledger, human, settings, logged_in):
     p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
     s = svc(ledger, settings)
-    run = s.execute(s.enqueue(QuickAddRequest(text="x")).id)
+    run = s.execute(s.enqueue(QuickAddRequest(model=MODEL, text="x")).id)
     web = Actor(kind="human", ref="owner", tool="web")
     after = s.apply_proposal(run.id, 0, actor=web)
     ev = list_events(ledger.conn, project_ids=[p.id])[0]
     assert ev.title == "Decided X" and ev.kind == "decision" and ev.source == "agent" and after.proposals[0].applied_id == ev.id
     t = ledger.get_txn(after.proposals[0].applied_txn)
-    assert (t.actor_kind, t.proposed_by_run, t.model, t.backend, t.review, t.intent, t.tool) == ("human", run.id, None, "claude", "accepted", "decision taken", "web")
+    assert (t.actor_kind, t.proposed_by_run, t.model, t.backend, t.review, t.intent, t.tool) == ("human", run.id, MODEL, "claude", "accepted", "decision taken", "web")
     after = s.apply_proposal(run.id, 1, actor=web)
     assert after.proposals[1].applied_txn is not None and ledger.get_txn(after.proposals[1].applied_txn).intent == "follow-up owed"
 
 def test_accept_proposal_twice_is_409(ledger, human, settings, logged_in):
     create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
     s = svc(ledger, settings)
-    run = s.execute(s.enqueue(QuickAddRequest(text="x")).id)
+    run = s.execute(s.enqueue(QuickAddRequest(model=MODEL, text="x")).id)
     s.apply_proposal(run.id, 0, actor=human)
     n = len(ledger.list_txns())
     with pytest.raises(AlreadyApplied):
@@ -143,7 +150,7 @@ def test_accept_proposal_twice_is_409(ledger, human, settings, logged_in):
 def test_accept_unknown_slug_writes_nothing(ledger, human, settings, logged_in):
     create_project(ledger, human, ProjectIn(slug="b", title="B", kind="research"))   # proposals name "a"
     s = svc(ledger, settings)
-    run = s.execute(s.enqueue(QuickAddRequest(text="x")).id)
+    run = s.execute(s.enqueue(QuickAddRequest(model=MODEL, text="x")).id)
     n = len(ledger.list_txns())
     with pytest.raises(UnknownProject, match="known projects: b"):
         s.apply_proposal(run.id, 0, actor=human)
@@ -153,7 +160,7 @@ def test_accept_unknown_slug_writes_nothing(ledger, human, settings, logged_in):
 def test_execute_on_finished_run_is_a_noop(ledger, human, settings, logged_in):
     create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
     s = svc(ledger, settings)
-    done = s.execute(s.enqueue(AskRequest(question="q")).id)
+    done = s.execute(s.enqueue(AskRequest(model=MODEL, question="q")).id)
     log = settings.runs_dir / f"{done.id}.log"
     log.unlink()
     again = s.execute(done.id)
@@ -168,7 +175,7 @@ def test_version_probe_runs_without_the_ledger_lock(ledger, human, settings, log
         return "2.1.309"
     env = {"PATH": os.environ["PATH"], "FAKE_CLAUDE_MODE": "ok", "FAKE_CLAUDE_STRUCTURED": STRUCTURED}
     s = RunService(ledger, settings, version=version, base_env=env)
-    assert s.execute(s.enqueue(AskRequest(question="q")).id).status == "ok"
+    assert s.execute(s.enqueue(AskRequest(model=MODEL, question="q")).id).status == "ok"
     assert owned == [False]
 
 
@@ -176,7 +183,7 @@ def test_launch_exception_marks_failed_and_revokes_token(ledger, human, settings
     def boom(*a, **kw):
         raise RuntimeError("launch exploded")
     s = RunService(ledger, settings, launch=boom, base_env={"PATH": os.environ["PATH"]})
-    run = s.enqueue(AskRequest(question="q"))
+    run = s.enqueue(AskRequest(model=MODEL, question="q"))
     with pytest.raises(RuntimeError):
         s.execute(run.id)
     after = get_run(ledger.conn, run.id)
@@ -203,7 +210,7 @@ def test_execute_keeps_token_and_prompt_off_argv_and_removes_mcp_config(ledger, 
         return real_launch(argv, **kw)
     s = svc(ledger, settings, FAKE_CLAUDE_ARGV_FILE=str(argv_file), FAKE_CLAUDE_PROMPT_FILE=str(prompt_file))
     s.launch = launch_and_look
-    run = s.execute(s.enqueue(AskRequest(question="What is blocked?")).id)
+    run = s.execute(s.enqueue(AskRequest(model=MODEL, question="What is blocked?")).id)
     assert run.status == "ok", run.error
     argv = json.loads(argv_file.read_text())
     secret = seen["secret"]
@@ -221,7 +228,7 @@ def test_mcp_config_removed_when_launch_raises(ledger, human, settings, logged_i
         assert os.path.exists(argv[argv.index("--mcp-config") + 1])
         raise RuntimeError("launch exploded")
     s = RunService(ledger, settings, launch=boom, base_env={"PATH": os.environ["PATH"]})
-    run = s.enqueue(AskRequest(question="q"))
+    run = s.enqueue(AskRequest(model=MODEL, question="q"))
     with pytest.raises(RuntimeError):
         s.execute(run.id)
     assert not (settings.runs_dir / run.id / "mcp.json").exists()
@@ -234,7 +241,7 @@ def test_unparseable_stdout_error_is_masked(ledger, human, settings, logged_in):
         return RunOutcome(exit_code=1, timed_out=False, stdout=f"oops {secrets[0]} and {secrets[1]}", stderr_tail="",
                           log_path=str(log_path), duration_ms=1)
     s = RunService(ledger, settings, launch=leaky, base_env={"PATH": os.environ["PATH"]})
-    run = s.execute(s.enqueue(AskRequest(question="q")).id)
+    run = s.execute(s.enqueue(AskRequest(model=MODEL, question="q")).id)
     assert run.status == "failed" and run.error == "oops *** and ***"
 
 
@@ -247,7 +254,7 @@ def test_launch_argv_is_confined(ledger, human, settings, logged_in):
         return real_launch(argv, **kw)
     s = svc(ledger, settings, FAKE_CLAUDE_ARGV_FILE=str(argv_file))
     s.launch = spy
-    run = s.execute(s.enqueue(AskRequest(question="q")).id)
+    run = s.execute(s.enqueue(AskRequest(model=MODEL, question="q")).id)
     assert run.status == "ok", run.error
     argv = seen["argv"]
     assert argv[:4] == [sys.executable, "-I", "-m", "trajectree.runner.confine"]
@@ -259,7 +266,7 @@ def test_launch_argv_is_confined(ledger, human, settings, logged_in):
 def test_confined_run_cannot_write_data_dir(ledger, human, settings, logged_in):
     leak = settings.data_dir / "leak.json"   # outside the run's own directory
     run = svc(ledger, settings, FAKE_CLAUDE_ARGV_FILE=str(leak)).execute(
-        svc(ledger, settings).enqueue(AskRequest(question="q")).id)
+        svc(ledger, settings).enqueue(AskRequest(model=MODEL, question="q")).id)
     assert run.status == "failed" and not leak.exists()
     log = (settings.runs_dir / f"{run.id}.log").read_text()
     assert "Permission denied" in log
@@ -274,7 +281,7 @@ def test_env_has_private_tmp_and_home(ledger, human, settings, logged_in):
         return real_launch(argv, env=env, **kw)
     s = svc(ledger, settings)
     s.launch = spy
-    run = s.execute(s.enqueue(AskRequest(question="q")).id)
+    run = s.execute(s.enqueue(AskRequest(model=MODEL, question="q")).id)
     assert run.status == "ok", run.error
     env = seen["env"]
     assert env["HOME"] == str(settings.runs_dir / run.id / "home") and seen["home_is_dir"]
@@ -288,7 +295,7 @@ def test_landlock_unavailable_fails_closed(ledger, human, settings, logged_in):
     def never(*a, **kw):
         raise AssertionError("launch must not be called")
     s = RunService(ledger, settings, launch=never, landlock_abi=no_landlock, base_env={"PATH": os.environ["PATH"]})
-    run = s.execute(s.enqueue(AskRequest(question="q")).id)
+    run = s.execute(s.enqueue(AskRequest(model=MODEL, question="q")).id)
     assert run.status == "failed" and run.props["failure"] == "infra"
     assert run.error.startswith("landlock unavailable") and "Function not implemented" in run.error
     assert ledger.conn.execute("select count(*) from token").fetchone()[0] == 0
@@ -307,7 +314,7 @@ def test_wrapper_exit_97_is_infra(ledger, human, settings, logged_in):
     seen = {}
     fake = _wrapper_outcome(97, "trajectree-confine: landlock unavailable: x\n", seen)
     s = RunService(ledger, settings, launch=fake, base_env={"PATH": os.environ["PATH"]})
-    run = s.execute(s.enqueue(AskRequest(question="q")).id)
+    run = s.execute(s.enqueue(AskRequest(model=MODEL, question="q")).id)
     assert run.status == "failed" and run.props["failure"] == "infra"
     assert run.error == "trajectree-confine: landlock unavailable: x"
     assert not seen["tmp"].exists()   # removed when the run fails too
@@ -316,7 +323,7 @@ def test_wrapper_exit_97_is_infra(ledger, human, settings, logged_in):
 def test_wrapper_exit_127_cannot_run_is_infra(ledger, human, settings, logged_in):
     fake = _wrapper_outcome(127, "trajectree-confine: cannot run /opt/claude: No such file or directory\n", {})
     s = RunService(ledger, settings, launch=fake, base_env={"PATH": os.environ["PATH"]})
-    run = s.execute(s.enqueue(AskRequest(question="q")).id)
+    run = s.execute(s.enqueue(AskRequest(model=MODEL, question="q")).id)
     assert run.status == "failed" and run.props["failure"] == "infra"
     assert run.error == "trajectree-confine: cannot run /opt/claude: No such file or directory"
 
@@ -324,7 +331,7 @@ def test_wrapper_exit_127_cannot_run_is_infra(ledger, human, settings, logged_in
 def test_abi_recorded(ledger, human, settings, logged_in):
     s = RunService(ledger, settings, landlock_abi=lambda: 7,
                    base_env={"PATH": os.environ["PATH"], "FAKE_CLAUDE_MODE": "ok", "FAKE_CLAUDE_STRUCTURED": STRUCTURED})
-    run = s.execute(s.enqueue(AskRequest(question="q")).id)
+    run = s.execute(s.enqueue(AskRequest(model=MODEL, question="q")).id)
     assert run.status == "ok", run.error
     assert run.props["landlock_abi"] == 7 and "request" in run.props
 
@@ -333,7 +340,7 @@ def test_abi_recorded(ledger, human, settings, logged_in):
 async def test_pause_holds_queued_runs_until_resumed(ledger, human, settings, logged_in):
     create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
     s = svc(ledger, settings)
-    run = s.enqueue(AskRequest(question="q"))
+    run = s.enqueue(AskRequest(model=MODEL, question="q"))
     set_caps(ledger.conn, Caps(paused=True))
     polls = []
     real_next = s._next_queued
@@ -359,15 +366,15 @@ async def test_pause_holds_queued_runs_until_resumed(ledger, human, settings, lo
 def test_recover_fails_orphaned_running_runs(ledger, human, settings):
     from trajectree.auth.tokens import mint_token
     s = svc(ledger, settings)
-    orphan = s.enqueue(AskRequest(question="q"))
-    queued = s.enqueue(AskRequest(question="q2"))
+    orphan = s.enqueue(AskRequest(model=MODEL, question="q"))
+    queued = s.enqueue(AskRequest(model=MODEL, question="q2"))
     token_id, _ = mint_token(ledger.conn, label=f"run:{orphan.id}", scope=Scope(write=False),
                              actor=Actor(kind="agent", ref=orphan.id), ttl=None)
     update_run(ledger.conn, orphan.id, status="running", started=s.now(), token_id=token_id)
     leftover = settings.runs_dir / orphan.id / "mcp.json"
     leftover.parent.mkdir(parents=True)
     leftover.write_text("{}")
-    ghost = s.enqueue(AskRequest(question="q3"))
+    ghost = s.enqueue(AskRequest(model=MODEL, question="q3"))
     update_run(ledger.conn, ghost.id, status="running", started=s.now(), token_id="tok-gone")
     assert s.recover() == 2
     after = get_run(ledger.conn, orphan.id)
@@ -383,18 +390,18 @@ def test_summarize_enqueue_is_deduplicated_while_active(ledger, human, settings,
     create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
     create_project(ledger, human, ProjectIn(slug="b", title="B", kind="research"))
     s = svc(ledger, settings)
-    first = s.enqueue(SummarizeRequest(project="a"))
-    assert s.enqueue(SummarizeRequest(project="a")).id == first.id
-    assert s.enqueue(SummarizeRequest(project="b")).id != first.id
+    first = s.enqueue(SummarizeRequest(model=MODEL, project="a"))
+    assert s.enqueue(SummarizeRequest(model=MODEL, project="a")).id == first.id
+    assert s.enqueue(SummarizeRequest(model=MODEL, project="b")).id != first.id
     update_run(ledger.conn, first.id, status="running")
-    assert s.enqueue(SummarizeRequest(project="a")).id == first.id
+    assert s.enqueue(SummarizeRequest(model=MODEL, project="a")).id == first.id
     update_run(ledger.conn, first.id, status="ok")
-    assert s.enqueue(SummarizeRequest(project="a")).id != first.id
+    assert s.enqueue(SummarizeRequest(model=MODEL, project="a")).id != first.id
 
 
 def _run_with(ledger, settings, proposals):
     s = svc(ledger, settings, FAKE_CLAUDE_STRUCTURED=json.dumps({"answer": "A", "proposals": proposals}))
-    return s, s.execute(s.enqueue(QuickAddRequest(text="x")).id)
+    return s, s.execute(s.enqueue(QuickAddRequest(model=MODEL, text="x")).id)
 
 
 def test_worker_mark_failed_keeps_abort_error(ledger, human, settings, logged_in):
@@ -403,7 +410,7 @@ def test_worker_mark_failed_keeps_abort_error(ledger, human, settings, logged_in
         token = cfg["mcpServers"]["trajectree"]["headers"]["Authorization"].split()[1]
         raise RuntimeError(f"boom {token}")
     s = RunService(ledger, settings, launch=boom, base_env={"PATH": os.environ["PATH"]})
-    run = s.enqueue(AskRequest(question="q"))
+    run = s.enqueue(AskRequest(model=MODEL, question="q"))
     with pytest.raises(RuntimeError) as info:
         s.execute(run.id)
     s._mark_failed(run.id, str(info.value))   # what the worker does with the unmasked text
@@ -413,11 +420,11 @@ def test_worker_mark_failed_keeps_abort_error(ledger, human, settings, logged_in
 
 def test_failure_flag_is_set_for_infra_only(ledger, human, settings, logged_in):
     s = svc(ledger, settings)
-    run = s.enqueue(AskRequest(question="q"))
+    run = s.enqueue(AskRequest(model=MODEL, question="q"))
     with ledger.locked() as conn:
         s._fail(conn, run.id, "no")
     assert "failure" not in get_run(ledger.conn, run.id).props
-    other = s.enqueue(AskRequest(question="q"))
+    other = s.enqueue(AskRequest(model=MODEL, question="q"))
     update_run(ledger.conn, other.id, status="running")
     s.recover()
     assert get_run(ledger.conn, other.id).props["failure"] == "infra"
@@ -512,7 +519,7 @@ R_NOW = datetime(2026, 1, 10, 12, tzinfo=timezone.utc)
 
 
 def _routine(ledger, **over):
-    data = {"name": "rev", "trigger": "@daily", "prompt_ref": "cross_project_review.md", **over}
+    data = {"name": "rev", "trigger": "@daily", "prompt_ref": "cross_project_review.md", "model": MODEL, **over}
     return create_routine(ledger.conn, RoutineIn(**data), now=R_NOW)
 
 
@@ -523,7 +530,7 @@ def test_enqueue_routine_lands_in_scheduled_slot(ledger, human, settings):
     assert (run.slot, run.kind, run.routine_id, run.attempt) == ("scheduled", "routine", r.id, 1)
     assert oldest_queued(ledger.conn, slot="interactive") is None
     assert run.props["request"]["routine"] == "rev" and run.project_id is None
-    assert s.enqueue(AskRequest(question="q")).slot == "interactive"
+    assert s.enqueue(AskRequest(model=MODEL, question="q")).slot == "interactive"
     with pytest.raises(NotFound):
         s.enqueue(RoutineRequest(routine="nope"))
     with pytest.raises(UnknownProject):
@@ -565,7 +572,7 @@ def test_routine_run_cap_is_the_smaller_of_routine_and_global(ledger, human, set
     s.execute(s.enqueue(RoutineRequest(routine="rev")).id)
     set_caps(ledger.conn, Caps(usd_per_run=0.1, usd_per_day=5.0))
     s.execute(s.enqueue(RoutineRequest(routine="rev")).id)
-    s.execute(s.enqueue(AskRequest(question="q")).id)
+    s.execute(s.enqueue(AskRequest(model=MODEL, question="q")).id)
     assert seen == [0.25, 0.1, 0.1]
 
 
@@ -604,7 +611,7 @@ async def test_interactive_worker_ignores_scheduled_runs(ledger, human, settings
     _routine(ledger)
     s = svc(ledger, settings)
     routine_run = s.enqueue(RoutineRequest(routine="rev"))
-    ask = s.enqueue(AskRequest(question="q"))
+    ask = s.enqueue(AskRequest(model=MODEL, question="q"))
     stop = asyncio.Event()
     task = asyncio.create_task(s.worker(stop, poll_s=0.02))
     for _ in range(200):
@@ -632,7 +639,7 @@ async def test_worker_crash_is_logged_without_exception_text(ledger, human, sett
     def boom(*a, **kw):
         raise RuntimeError("boom trj_secret")
     s = RunService(ledger, settings, launch=boom, base_env={"PATH": os.environ["PATH"]})
-    run = s.enqueue(AskRequest(question="q"))
+    run = s.enqueue(AskRequest(model=MODEL, question="q"))
     stop = asyncio.Event()
     task = asyncio.create_task(s.worker(stop, poll_s=0.02))
     for _ in range(200):
@@ -647,7 +654,7 @@ async def test_worker_crash_is_logged_without_exception_text(ledger, human, sett
 
 def test_mark_failed_is_an_infra_failure(ledger, human, settings):
     s = svc(ledger, settings)
-    run = s.enqueue(AskRequest(question="q"))
+    run = s.enqueue(AskRequest(model=MODEL, question="q"))
     update_run(ledger.conn, run.id, status="running")
     s._mark_failed(run.id, "planner crashed")
     after = get_run(ledger.conn, run.id)
@@ -714,7 +721,7 @@ def test_routine_without_projects_fails_without_a_token(ledger, human, settings,
 @pytest.mark.anyio
 async def test_worker_crash_stores_masked_error(ledger, human, settings):
     s = svc(ledger, settings)
-    run = s.enqueue(AskRequest(question="q"))
+    run = s.enqueue(AskRequest(model=MODEL, question="q"))
     def crash(run_id):
         raise RuntimeError("planner died holding trj_abc-DEF_123 and more")
     s.execute = crash
@@ -761,7 +768,7 @@ def test_history_collected_outside_lock(ledger, human, settings, logged_in, monk
         return HistoryInput(git_md="- 2024-06-10 abc12345 first commit")
     monkeypatch.setattr(service_mod, "collect_history", stub)
     s = svc(ledger, settings)
-    run = s.enqueue(StartingPointRequest(project="a", starts={"git": date(2025, 1, 1)}))
+    run = s.enqueue(StartingPointRequest(model=MODEL, project="a", starts={"git": date(2025, 1, 1)}))
     assert run.kind == "starting_point" and run.slot == "interactive" and run.project_id == p.id
     done = s.execute(run.id)
     assert seen["lock_free"] is True and seen["folders"] == [folder] and seen["starts"] == {"git": date(2025, 1, 1)}
@@ -772,7 +779,7 @@ def test_no_history_fails_cleanly(ledger, human, settings, logged_in, monkeypatc
     create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
     monkeypatch.setattr(service_mod, "collect_history", lambda *a, **k: HistoryInput())
     s = svc(ledger, settings)
-    run = s.execute(s.enqueue(StartingPointRequest(project="a", starts={"git": date(2025, 1, 1)})).id)
+    run = s.execute(s.enqueue(StartingPointRequest(model=MODEL, project="a", starts={"git": date(2025, 1, 1)})).id)
     assert run.status == "failed" and run.error == "no history before the chosen start"
     assert ledger.conn.execute("select count(*) from token").fetchone()[0] == 0
 
@@ -788,7 +795,7 @@ def test_session_history_collected_outside_lock(ledger, human, settings, logged_
     monkeypatch.setattr(service_mod, "session_history", stub)
     monkeypatch.setattr(service_mod, "collect_history", lambda *a, **k: HistoryInput())
     s = svc(ledger, settings)
-    done = s.execute(s.enqueue(StartingPointRequest(project="a", starts={"claude": date(2025, 1, 1)})).id)
+    done = s.execute(s.enqueue(StartingPointRequest(model=MODEL, project="a", starts={"claude": date(2025, 1, 1)})).id)
     assert seen["lock_free"] is True and seen["folders"] == ["/work/a", "/work/b"] == seen["registered"]
     assert done.status == "ok"  # the sessions alone are enough history to run
 
@@ -798,5 +805,58 @@ def test_starting_point_runs_when_version_probe_is_none(ledger, human, settings,
     monkeypatch.setattr(service_mod, "collect_history", lambda *a, **k: HistoryInput(git_md="- 2024-06-10 abc12345 x"))
     env = {"PATH": os.environ["PATH"], "FAKE_CLAUDE_MODE": "ok", "FAKE_CLAUDE_STRUCTURED": STRUCTURED}
     s = RunService(ledger, settings, base_env=env, version=lambda binary: None)
-    done = s.execute(s.enqueue(StartingPointRequest(project="a", starts={"git": date(2025, 1, 1)})).id)
+    done = s.execute(s.enqueue(StartingPointRequest(model=MODEL, project="a", starts={"git": date(2025, 1, 1)})).id)
     assert done.status == "ok"
+
+
+# -- model choice ------------------------------------------------------------------------------
+
+from trajectree.runner.catalog import NoModelChosen, UnknownModel
+
+
+def test_enqueue_without_model_is_refused(ledger, human, settings):
+    create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    _routine(ledger, model=None)
+    s = svc(ledger, settings)
+    for request in (AskRequest(question="q"), AskRequest(question="q", runner="claude"), SummarizeRequest(project="a"),
+                    QuickAddRequest(text="t"), RoutineRequest(routine="rev"),
+                    StartingPointRequest(project="a", starts={"git": date(2025, 1, 1)})):
+        with pytest.raises(NoModelChosen, match="^no model was chosen$"):
+            s.enqueue(request)
+    with pytest.raises(UnknownModel):
+        s.check(AskRequest(question="q", model="nope"))
+    assert ledger.conn.execute("select count(*) from run").fetchone()[0] == 0
+
+
+def test_enqueue_resolves_the_runner_and_records_a_warning(ledger, settings):
+    s = svc(ledger, settings)
+    run = s.enqueue(AskRequest(question="q", model="gpt-6.1-sol"))
+    assert (run.runner, run.backend, run.model) == ("codex", "codex", "gpt-6.1-sol") and "model_warning" not in run.props
+    run = s.enqueue(AskRequest(question="q", runner="codex", model="gpt-7"))
+    assert (run.runner, run.model) == ("codex", "gpt-7")
+    assert run.props["model_warning"] == "model gpt-7 is not in the catalog for codex"
+
+
+def test_routine_run_uses_stored_model(ledger, settings):
+    _routine(ledger, model="gpt-6.1-sol")
+    s = svc(ledger, settings)
+    run = s.enqueue(RoutineRequest(routine="rev"))
+    assert (run.runner, run.model) == ("codex", "gpt-6.1-sol")
+    run = s.enqueue(RoutineRequest(routine="rev", model="k2"))  # a model given with the request wins
+    assert (run.runner, run.model) == ("ccx:kimi", "k2")
+
+
+def test_model_with_suffix_passes_verbatim(ledger, settings):
+    profile = settings.backends_cfg_dir / "ds"
+    profile.mkdir(parents=True)
+    (profile / "settings.json").write_text(json.dumps({"env": {"ANTHROPIC_API_KEY": "k"}}))
+    seen = {}
+    def capture(argv, *, log_path, **kw):
+        seen["argv"] = argv
+        return RunOutcome(exit_code=0, timed_out=False, stdout="{}", stderr_tail="", log_path=str(log_path), duration_ms=1)
+    s = RunService(ledger, settings, launch=capture, base_env={"PATH": os.environ["PATH"]})
+    run = s.enqueue(AskRequest(question="q", model="deepseek-flash[1m]"))
+    assert (run.runner, run.model) == ("ccx:ds", "deepseek-flash[1m]")
+    s.execute(run.id)
+    argv = seen["argv"]
+    assert argv[argv.index("--model") + 1] == "deepseek-flash[1m]"

@@ -1,5 +1,5 @@
 """The routine scheduler: cron fires within a grace window, retries of infrastructure failures and
-`session_end` triggers.
+`session_end` triggers. A routine that names no model is never fired.
 
 One `tick` runs at a time (the daemon's loop and `POST /api/scheduler/tick` share it). Every DB
 access holds the ledger lock; `RunService.enqueue` takes the lock itself, so it is called with the
@@ -20,7 +20,7 @@ from pydantic import AwareDatetime, BaseModel
 
 from trajectree.config import Settings
 from trajectree.db.ledger import Ledger
-from trajectree.models import Routine
+from trajectree.models import NO_MODEL_CHOSEN, Routine
 from trajectree.repo.projects import list_projects, resolve_project_ref
 from trajectree.repo.routines import (
     compute_next_fire,
@@ -145,10 +145,12 @@ class Scheduler:
                     missed = routine.next_fire < now - grace
                     # Move next_fire first: a failing enqueue never fires the same slot twice.
                     fields: dict = {"next_fire": compute_next_fire(routine.trigger, routine.tz, after=now)}
-                    if missed:
+                    if not routine.model:
+                        fields["last_error"] = NO_MODEL_CHOSEN  # never fired on a model nobody picked
+                    elif missed:
                         fields["last_error"] = f"missed fire at {to_db(routine.next_fire)} skipped"
                     set_run_state(conn, routine_id, **fields)
-                if missed:
+                if missed or not routine.model:
                     report.skipped.append(name)
                     continue
                 self.runs.enqueue(RoutineRequest(routine=routine_id, reason="cron"))
@@ -208,6 +210,10 @@ class Scheduler:
                 with self.ledger.locked() as conn:
                     routine = get_routine(conn, routine_id)
                     if routine is None or (routine.paused_until is not None and routine.paused_until > now):
+                        continue
+                    if not routine.model:
+                        record_error(conn, routine_id, NO_MODEL_CHOSEN)
+                        report.skipped.append(name)
                         continue
                     handled: list[str] = list(get_state(conn, key) or [])
                     pending = _ended_in_scope(conn, routine, now=now, handled=set(handled))
