@@ -7,15 +7,16 @@ look as expected is skipped, never raised on. Files are only ever opened for rea
 
 import json
 from collections import Counter, deque
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO
 
 import apsw
 from pydantic import AwareDatetime, BaseModel, ValidationError
 
 from trajectree.config import Settings
+from trajectree.connectors.paths import encode_project_dir
 from trajectree.importing import SESSION_SOURCE_OF_BACKEND, source_picked, source_start
 from trajectree.models import Project, SignalIn
 from trajectree.repo.projects import list_projects
@@ -244,6 +245,54 @@ def _transcripts(root: Path) -> list[Path]:
         except OSError:
             continue
     return files
+
+
+def project_transcripts(
+    settings: Settings,
+    folder: str,
+    *,
+    registered: Sequence[str],
+    before: datetime | None = None,
+) -> list[SessionSummary]:
+    """Summaries of the transcripts whose cwd belongs to `folder` (a host path), newest first.
+
+    A transcript belongs to `folder` when its recorded cwd lies in it and `folder` is the deepest
+    of the `registered` folder host paths containing that cwd (the rule `project_for_path` uses),
+    so `/x/app-android` never counts for `/x/app`. With `before`, only sessions that ended before
+    it. Pure file I/O: no DB, no lock.
+    """
+    root_path = PurePosixPath(folder)
+    deeper = [PurePosixPath(r) for r in registered if len(r) > len(folder)]
+    prefix = encode_project_dir(folder)
+    found: list[SessionSummary] = []
+    for backend, root in transcript_roots(settings):
+        try:
+            dirs = sorted(d for d in root.iterdir() if d.is_dir() and (d.name == prefix or d.name.startswith(prefix + "-")))
+        except OSError:
+            continue
+        for d in dirs:
+            try:
+                files = sorted(f for f in d.glob("*.jsonl") if f.is_file())
+            except OSError:
+                continue
+            for path in files:
+                try:
+                    summary, _ = _read_from(path, 0, SessionSummary(transcript_path=str(path.absolute()), backend=backend))
+                    ended = summary.t_end or datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+                except OSError:
+                    continue
+                if summary.cwd is None:
+                    continue
+                cwd = PurePosixPath(summary.cwd)
+                if not (cwd == root_path or cwd.is_relative_to(root_path)):
+                    continue
+                if any(cwd == r or cwd.is_relative_to(r) for r in deeper):
+                    continue
+                if before is not None and ended >= before:
+                    continue
+                found.append(summary.model_copy(update={"t_end": ended}))
+    found.sort(key=lambda sm: sm.t_end or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    return found
 
 
 def _stored_summary(state: Any) -> SessionSummary | None:

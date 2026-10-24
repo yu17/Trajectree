@@ -1,13 +1,11 @@
 """History before a project's import start: what the `starting_point` run condenses.
 
-`collect_history` runs `git log` and walks folders, so callers run it with no lock held.
-`session_history` reads stored transcript summaries from the DB (and digests from disk), so
-callers hold the lock for it, as `summarize_session` does for its digest.
+`collect_history` runs `git log` and walks folders; `session_history` reads transcripts from disk.
+Both are file and subprocess work only, so callers run them with no lock held.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 from collections.abc import Mapping
@@ -15,15 +13,12 @@ from datetime import date, datetime, time, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import apsw
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from trajectree.config import Settings
-from trajectree.connectors.claude_sessions import SessionSummary, digest_transcript
+from trajectree.connectors.claude_sessions import SessionSummary, digest_transcript, project_transcripts
 from trajectree.connectors.folders import DEFAULT_EXCLUDES, load_gitignore
 from trajectree.importing import SESSION_SOURCE_OF_BACKEND
-from trajectree.models import Project
-from trajectree.repo.resources import project_for_path
 
 MAX_WALK_ENTRIES = 50_000
 _SUBJECT_CHARS = 100
@@ -233,45 +228,36 @@ def collect_history(
     return HistoryInput(git_md=git_md, folder_md=folder_md, truncated=truncated)
 
 
-# -- agent sessions (DB plus transcript digests) -------------------------------------------
+# -- agent sessions (file I/O, no lock) -----------------------------------------------------
 
 
 def session_history(
-    conn: apsw.Connection,
     settings: Settings,
-    project: Project,
+    folders: list[str],
+    registered: list[str],
     *,
     starts: Mapping[str, date],
     budget_chars: int,
 ) -> str:
-    """Digests of this project's agent sessions that ended before their source's start, newest first.
+    """Digests of agent sessions in the project's `folders` (host paths) that ended before their
+    source's start, newest first, until `budget_chars` is used.
 
-    Reads the stored `scan:<path>` summaries the transcript scanner keeps; a source that did not
-    skip history is left out. Digest reading is file I/O, bounded by `budget_chars`.
+    Reads the transcripts directly, so it does not depend on what the ingest scanner kept; a
+    source that did not skip history is left out. `registered` is every registered folder host path.
     """
-    found: list[tuple[datetime, SessionSummary]] = []
-    owner: dict[str, str | None] = {}
-    for _key, raw in conn.execute("SELECT key, value FROM state WHERE key LIKE 'scan:%'").fetchall():
-        try:
-            summary = SessionSummary.model_validate(json.loads(raw).get("summary"))
-        except (ValidationError, ValueError, AttributeError):
-            continue
-        if summary.cwd is None or summary.t_end is None:
-            continue
-        start = starts.get(SESSION_SOURCE_OF_BACKEND[summary.backend])
-        if start is None or summary.t_end >= local_midnight(start, settings.tz):
-            continue
-        if summary.cwd not in owner:
-            matched = project_for_path(conn, summary.cwd)
-            owner[summary.cwd] = matched.id if matched else None
-        if owner[summary.cwd] == project.id:
-            found.append((summary.t_end, summary))
-    found.sort(key=lambda item: item[0], reverse=True)
+    found: dict[str, tuple[datetime, SessionSummary]] = {}
+    for folder in folders:
+        for summary in project_transcripts(settings, folder, registered=registered):
+            start = starts.get(SESSION_SOURCE_OF_BACKEND[summary.backend])
+            if start is None or summary.t_end is None or summary.t_end >= local_midnight(start, settings.tz):
+                continue
+            found[summary.transcript_path] = (summary.t_end, summary)
+    zone = ZoneInfo(settings.tz)
     sections: list[str] = []
     used = 0
-    for ended, summary in found:
+    for ended, summary in sorted(found.values(), key=lambda item: item[0], reverse=True):
         title = summary.title or (summary.session_id or Path(summary.transcript_path).stem)[:8]
-        head = f"### {ended.astimezone(ZoneInfo(settings.tz)).date().isoformat()} {title} ({summary.prompts} prompts)"
+        head = f"### {ended.astimezone(zone).date().isoformat()} {title} ({summary.prompts} prompts)"
         room = budget_chars - used - len(head) - 2
         if room < 200:
             break

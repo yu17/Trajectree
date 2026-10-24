@@ -19,7 +19,7 @@ from trajectree.config import Settings
 from trajectree.connectors.claude_sessions import digest_transcript
 from trajectree.connectors.paths import to_local
 from trajectree.context.digest import activity_digest
-from trajectree.context.history import HistoryInput, block_date, local_midnight, session_history
+from trajectree.context.history import HistoryInput, block_date, local_midnight
 from trajectree.context.pack import build_context_pack
 from trajectree.importing import IMPORT_SOURCES
 from trajectree.models import RUNNER_PATTERN, Delivery, Project, ReportKind, Run, RunKind
@@ -303,6 +303,19 @@ def project_folders(conn: apsw.Connection, settings: Settings, project_id: str) 
     return folders
 
 
+def project_folder_hosts(conn: apsw.Connection, project_id: str) -> tuple[list[str], list[str]]:
+    """Host paths of the project's accepted folder and local-repo resources, and of every
+    registered one (all projects), the set transcripts are attached by."""
+    unreviewed = pending_txns(conn, "resource")
+    mine = [
+        r.locator
+        for r in list_resources(conn, project_ids=[project_id], kinds=["folder", "git_local"])
+        if r.id not in unreviewed
+    ]
+    registered = [r.locator for r in list_resources(conn, kinds=["folder", "git_local"])]
+    return mine, registered
+
+
 def _folder_cwd(conn: apsw.Connection, settings: Settings, project_id: str) -> Path | None:
     """The project's first accepted `folder` resource that exists locally, if any."""
     unreviewed = pending_txns(conn, "resource")  # an agent-proposed folder is not trusted yet
@@ -529,9 +542,7 @@ def _plan_starting_point(
 ) -> RunPlan:
     project = resolve_project_ref(conn, run.project_id or request.project)
     history: HistoryInput = prelocked.get("history") or HistoryInput()
-    sessions = session_history(
-        conn, settings, project, starts=request.starts, budget_chars=HISTORY_BUDGET_CHARS
-    )
+    sessions: str = prelocked.get("sessions") or ""
     if not (history.git_md or history.folder_md or sessions):
         raise NotFound("no history before the chosen start")
     day = block_date(request.starts)

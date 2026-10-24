@@ -23,7 +23,7 @@ from pydantic import ValidationError
 
 from trajectree.auth.tokens import mint_token, revoke_token
 from trajectree.config import Settings
-from trajectree.context.history import collect_history
+from trajectree.context.history import collect_history, session_history
 from trajectree.db.ledger import Ledger
 from trajectree.models import SLOT_OF, Actor, EventIn, Proposal, Run, RunSlot, TodoIn
 from trajectree.repo import NotFound, UnknownProject, UnknownSession, events, todos
@@ -55,6 +55,7 @@ from trajectree.runner.kinds import (
     SummarizeSessionRequest,
     ensure_prompts,
     plan_run,
+    project_folder_hosts,
     project_folders,
     HISTORY_BUDGET_CHARS,
     request_from_props,
@@ -249,7 +250,7 @@ class RunService:
         return finish_routine_run(self.ledger, self.settings, done, plan, actor=actor, now=self.now())
 
     def _collect_history(self, run: Run | None) -> dict[str, Any] | None:
-        """For a queued starting_point run, its git and folder history; `git log` and the folder
+        """For a queued starting_point run, its git, folder and session history; `git log` and the folder
         walk run with no lock held, only the folder lookup takes it."""
         if run is None or run.kind != "starting_point" or run.status != "queued":
             return None
@@ -257,6 +258,7 @@ class RunService:
         assert isinstance(request, StartingPointRequest)
         with self.ledger.locked() as conn:
             folders = project_folders(conn, self.settings, run.project_id) if run.project_id else []
+            hosts, registered = project_folder_hosts(conn, run.project_id) if run.project_id else ([], [])
         history = collect_history(
             self.settings,
             folders=folders,
@@ -264,7 +266,10 @@ class RunService:
             tz=self.settings.tz,
             budget_chars=HISTORY_BUDGET_CHARS,
         )
-        return {"history": history}
+        sessions = session_history(
+            self.settings, hosts, registered, starts=request.starts, budget_chars=HISTORY_BUDGET_CHARS
+        )
+        return {"history": history, "sessions": sessions}
 
     def _abort(self, run_id: str, token_id: str, error: str) -> Run:
         with self.ledger.locked() as conn:

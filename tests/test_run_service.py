@@ -775,3 +775,19 @@ def test_no_history_fails_cleanly(ledger, human, settings, logged_in, monkeypatc
     run = s.execute(s.enqueue(StartingPointRequest(project="a", starts={"git": date(2025, 1, 1)})).id)
     assert run.status == "failed" and run.error == "no history before the chosen start"
     assert ledger.conn.execute("select count(*) from token").fetchone()[0] == 0
+
+
+def test_session_history_collected_outside_lock(ledger, human, settings, logged_in, monkeypatch, tmp_path):
+    p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    upsert_resource(ledger, human, ResourceIn(project_id=p.id, kind="folder", locator="/work/a"))
+    upsert_resource(ledger, human, ResourceIn(project_id=p.id, kind="folder", locator="/work/b"))
+    seen = {}
+    def stub(settings_, folders, registered, *, starts, budget_chars):
+        seen.update(lock_free=_lock_free(ledger), folders=folders, registered=registered)
+        return "### 2024-06-01 Old session (2 prompts)\nbody"
+    monkeypatch.setattr(service_mod, "session_history", stub)
+    monkeypatch.setattr(service_mod, "collect_history", lambda *a, **k: HistoryInput())
+    s = svc(ledger, settings)
+    done = s.execute(s.enqueue(StartingPointRequest(project="a", starts={"claude": date(2025, 1, 1)})).id)
+    assert seen["lock_free"] is True and seen["folders"] == ["/work/a", "/work/b"] == seen["registered"]
+    assert done.status == "ok"  # the sessions alone are enough history to run
