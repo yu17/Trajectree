@@ -338,7 +338,20 @@ refreshes on the request path.
   the backend's models endpoint returns. An unreachable backend keeps its
   profile models and shows the error.
 
-A refresh that fails keeps a runner's previous models and records the error.
+A refresh replaces a runner's list only when its fetch succeeded and returned
+models; otherwise the runner keeps the list it had and shows the new error. A
+successful refresh replaces hand-added models too. A backend without a models
+endpoint (or a Claude or Codex list that cannot be fetched) is therefore edited
+by hand:
+
+```bash
+trajectree models --runner ccx:deepseek --add deepseek-v4-pro --add deepseek-v4-flash
+trajectree models --runner ccx:deepseek --delete deepseek-v4-flash
+```
+
+`--add` and `--delete` repeat, need `--runner` and cannot be combined with
+`--refresh`. Added models are marked `manual`. The Settings tab has a x button
+on each model and an Add field per runner for the same edits.
 
 Codex is optional, see [Codex](#codex).
 

@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
-import type { ConnectorStatus, TokenCreate, TokenOut, TokenScope, TokenSecret } from "../api/types";
+import type { ConnectorStatus, RunnerCatalog, TokenCreate, TokenOut, TokenScope, TokenSecret } from "../api/types";
 import { errorText } from "../components/errorText";
 import { statusLine } from "../components/runnerStatus";
 
@@ -178,29 +178,62 @@ function ModelsSection() {
     mutationFn: api.refreshModels,
     onSuccess: c => qc.setQueryData(["models"], c),
   });
+  const edit = useMutation({
+    mutationFn: (body: { runner: string; add?: string[]; delete?: string[] }) => api.editModels(body),
+    onSuccess: c => qc.setQueryData(["models"], c),
+  });
   return (
     <section>
       <h2>Models</h2>
       <button disabled={refresh.isPending} onClick={() => refresh.mutate()}>Refresh models</button>
       {catalog.isError && <p className="form-error">{errorText(catalog.error)}</p>}
       {refresh.isError && <p className="form-error">{errorText(refresh.error)}</p>}
+      {edit.isError && <p className="form-error">{errorText(edit.error)}</p>}
       {(catalog.data?.runners ?? []).map(r => (
-        <div key={r.runner}>
-          <h3>{r.runner}</h3>
-          <p className="muted">{`${r.available ? "available" : "unavailable"} · refreshed ${local(r.refreshed_at)}`}</p>
-          {r.error && <p className="form-error">{r.error}</p>}
-          {r.models.length > 0 && (
-            <ul className="models-list" aria-label={`${r.runner} models`}>
-              {r.models.map(m => (
-                <li key={m.model}>
-                  {m.display ?? m.model} <span className="badge">{m.source}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
+        <RunnerModels key={r.runner} runner={r} pending={edit.isPending} onEdit={body => edit.mutate(body)} />
       ))}
     </section>
+  );
+}
+
+function RunnerModels({ runner: r, pending, onEdit }: {
+  runner: RunnerCatalog;
+  pending: boolean;
+  onEdit: (body: { runner: string; add?: string[]; delete?: string[] }) => void;
+}) {
+  const [name, setName] = useState("");
+  const add = () => {
+    const model = name.trim();
+    if (!model) return;
+    onEdit({ runner: r.runner, add: [model] });
+    setName("");
+  };
+  return (
+    <div>
+      <h3>{r.runner}</h3>
+      <p className="muted">{`${r.available ? "available" : "unavailable"} · refreshed ${local(r.refreshed_at)}`}</p>
+      {r.error && <p className="form-error">{r.error}</p>}
+      {r.models.length > 0 && (
+        <ul className="models-list" aria-label={`${r.runner} models`}>
+          {r.models.map(m => (
+            <li key={m.model}>
+              {m.display ?? m.model} <span className="badge">{m.source}</span>{" "}
+              <button
+                aria-label={`Remove ${m.model}`}
+                disabled={pending}
+                onClick={() => onEdit({ runner: r.runner, delete: [m.model] })}
+              >
+                ×
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <form onSubmit={e => { e.preventDefault(); add(); }}>
+        <input aria-label={`Add a model to ${r.runner}`} placeholder="model name" value={name} onChange={e => setName(e.target.value)} />{" "}
+        <button type="submit" disabled={pending || !name.trim()}>Add</button>
+      </form>
+    </div>
   );
 }
 

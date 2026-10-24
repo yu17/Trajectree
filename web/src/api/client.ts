@@ -138,6 +138,7 @@ export const api = {
   run: (id: string) => request<RunDetail>("GET", `/api/runs/${encodeURIComponent(id)}`),
   models: () => request<Catalog>("GET", "/api/models"),
   refreshModels: () => request<Catalog>("POST", "/api/models/refresh"),
+  editModels: (body: { runner: string; add?: string[]; delete?: string[] }) => request<Catalog>("POST", "/api/models/edit", body),
   summarize: (projectId: string, choice: ModelChoice) =>
     request<Run>("POST", `/api/projects/${encodeURIComponent(projectId)}/summarize`, choice),
   summarizeSession: (sessionId: string, choice: ModelChoice) =>

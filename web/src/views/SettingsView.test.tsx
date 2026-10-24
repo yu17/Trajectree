@@ -6,7 +6,7 @@ import { SettingsView } from "./SettingsView";
 import { testCatalog } from "../components/testCatalog";
 import type { ConnectorStatus, TokenCreate, TokenOut } from "../api/types";
 
-const mocks = vi.hoisted(() => ({ tokens: vi.fn(), createToken: vi.fn(), revokeToken: vi.fn(), connectors: vi.fn(), mounts: vi.fn(), runnerStatus: vi.fn(), scheduler: vi.fn(), models: vi.fn(), refreshModels: vi.fn() }));
+const mocks = vi.hoisted(() => ({ tokens: vi.fn(), createToken: vi.fn(), revokeToken: vi.fn(), connectors: vi.fn(), mounts: vi.fn(), runnerStatus: vi.fn(), scheduler: vi.fn(), models: vi.fn(), refreshModels: vi.fn(), editModels: vi.fn() }));
 vi.mock("../api/client", async importOriginal => {
   const real = await importOriginal<typeof import("../api/client")>();
   return { ...real, api: { ...real.api, ...mocks } };
@@ -115,6 +115,26 @@ describe("SettingsView", () => {
     expect(mocks.refreshModels).toHaveBeenCalledTimes(1);
     expect(await screen.findByText("claude-opus-5-5")).toBeTruthy();
     expect(screen.queryByText("claude-fable-5-1")).toBeNull();
+  });
+
+  it("removes a model with the x button and adds one by name", async () => {
+    const user = userEvent.setup();
+    const edited = {
+      runners: [
+        { ...testCatalog.runners[0], models: [{ runner: "claude", model: "my-model", display: null, source: "manual" as const }] },
+        testCatalog.runners[1],
+      ],
+    };
+    mocks.editModels.mockResolvedValue(edited);
+    wrap(<SettingsView />);
+    await user.click(await screen.findByRole("button", { name: "Remove claude-fable-5-1" }));
+    expect(mocks.editModels).toHaveBeenCalledWith({ runner: "claude", delete: ["claude-fable-5-1"] });
+    expect(await screen.findByText("my-model")).toBeTruthy();
+    expect(screen.queryByText("claude-sonnet-5-5")).toBeNull();
+    await user.type(screen.getByRole("textbox", { name: "Add a model to claude" }), "  new-one ");
+    await user.click(screen.getAllByRole("button", { name: "Add" })[0]);
+    expect(mocks.editModels).toHaveBeenLastCalledWith({ runner: "claude", add: ["new-one"] });
+    expect((screen.getByRole("textbox", { name: "Add a model to claude" }) as HTMLInputElement).value).toBe("");
   });
 
   it("shows the runner, mounts and scheduler", async () => {

@@ -581,7 +581,7 @@ export interface CatalogModel {
   runner: string;
   model: string;
   display: string | null;
-  source: "api" | "cache" | "profile" | "builtin";
+  source: "api" | "cache" | "profile" | "builtin" | "manual";
 }
 
 export interface RunnerCatalog {
