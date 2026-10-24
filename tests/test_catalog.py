@@ -17,7 +17,8 @@ from trajectree.runner.catalog import (
     UnknownModel,
     discover,
     load_catalog,
-    merge_failed,
+    edit_models,
+    merge_refresh,
     resolve_model,
     store_catalog,
 )
@@ -71,8 +72,7 @@ def test_codex_logged_in_without_cache_is_available_and_says_how_to_fill_it(sett
     (settings.codex_home / "auth.json").write_text("{}")
     r = runner(discover_with(settings), "codex")
     assert r.available and r.models == []
-    assert r.error == ("no model cache yet; run one Codex run with --runner codex --model <slug>"
-                       " (or use Codex once) and refresh")
+    assert r.error == 'no model cache yet; run one Codex run (trajectree ask --runner codex "Reply with OK."), then refresh'
     catalog = Catalog(runners=[r])
     assert resolve_model(catalog, "gpt-new", "codex") == Resolved(
         runner="codex", model="gpt-new", warning="model gpt-new is not in the catalog for codex")
@@ -161,7 +161,8 @@ def test_unreachable_backend_keeps_profile_models(settings):
     assert timeouts and all(t == {"connect": 0.5, "read": 0.5, "write": 0.5, "pool": 0.5} for t in timeouts)
     assert time.monotonic() - start < 2
     slow, fine = runner(c, "ccx:slow"), runner(c, "ccx:fine")
-    assert [m.model for m in slow.models] == ["m1"] and slow.error == "models endpoint unavailable: ConnectTimeout (127.0.0.1)"
+    assert [m.model for m in slow.models] == ["m1"] and slow.error == ("no model list from 127.0.0.1 (ConnectTimeout); edit the list with:"
+                                                                            " trajectree models --runner ccx:slow --add <model>")
     assert [m.model for m in fine.models] == ["m2", "m3"] and fine.error is None
 
 
@@ -223,7 +224,7 @@ def test_claude_falls_back_to_builtin(settings):
     store_oauth_token(settings, "oat-secret")
     r = runner(discover_with(settings, lambda req: httpx.Response(401)), "claude")
     assert [m.model for m in r.models] == list(BUILTIN_CLAUDE_MODELS)
-    assert {m.source for m in r.models} == {"builtin"} and r.error == "live list unavailable: 401"
+    assert {m.source for m in r.models} == {"builtin"} and r.error == "live list unavailable: 401; list unchanged"
 
 
 def test_claude_without_token_makes_no_call(settings):
@@ -234,11 +235,12 @@ def test_claude_without_token_makes_no_call(settings):
     assert not r.available and r.models == [] and r.error == "not logged in; run: trajectree login"
 
 
-def test_unavailable_runner_shows_no_models_after_earlier_refresh():
+def test_unavailable_runner_keeps_its_list_and_takes_the_error():
     prev = Catalog(runners=[rc("claude", [CatalogModel(runner="claude", model="live-1", source="api")])])
     fresh = Catalog(runners=[rc("claude", [], error="not logged in; run: trajectree login", available=False)])
-    claude = merge_failed(prev, fresh).runners[0]
-    assert claude.models == [] and not claude.available
+    claude = merge_refresh(prev, fresh).runners[0]
+    assert [m.model for m in claude.models] == ["live-1"] and not claude.available
+    assert claude.error == "not logged in; run: trajectree login"
 
 
 def test_no_secret_in_catalog(settings):
@@ -260,20 +262,93 @@ def rc(name, models, error=None, available=True, at=None):
     return RunnerCatalog(runner=name, available=available, models=models, refreshed_at=at or utcnow(), error=error)
 
 
-def test_merge_failed_keeps_previous_models_and_records_error():
+def cm(runner, model, source):
+    return CatalogModel(runner=runner, model=model, source=source)
+
+
+def test_merge_success_replaces_manual():
+    prev = Catalog(runners=[rc("codex", [cm("codex", "x", "cache"), cm("codex", "m", "manual")])])
+    fresh = Catalog(runners=[rc("codex", [cm("codex", "y", "cache")])])
+    assert [m.model for m in merge_refresh(prev, fresh).runners[0].models] == ["y"]
+
+
+def test_merge_failure_keeps_list():
     old_at = utcnow()
-    prev = Catalog(runners=[
-        rc("claude", [CatalogModel(runner="claude", model="live-1", source="api")], at=old_at),
-        rc("codex", [CatalogModel(runner="codex", model="gpt-a", source="cache")]),
-    ])
-    fresh = Catalog(runners=[
-        rc("claude", [CatalogModel(runner="claude", model="b", source="builtin")], error="live list unavailable: 401"),
-        rc("codex", [CatalogModel(runner="codex", model="gpt-b", source="cache")]),
-    ])
-    merged = merge_failed(prev, fresh)
-    claude, codex = merged.runners
-    assert [m.model for m in claude.models] == ["live-1"] and claude.error == "live list unavailable: 401" and claude.refreshed_at == old_at
-    assert [m.model for m in codex.models] == ["gpt-b"]
+    prev = Catalog(runners=[rc("ccx:d", [cm("ccx:d", "a", "profile"), cm("ccx:d", "m", "manual")], at=old_at)])
+    fresh = Catalog(runners=[rc("ccx:d", [cm("ccx:d", "a", "profile")], error="no model list from h (404); edit")])
+    d = merge_refresh(prev, fresh).runners[0]
+    assert [m.model for m in d.models] == ["a", "m"] and d.error == "no model list from h (404); edit"
+    assert d.refreshed_at == old_at
+
+
+def test_merge_first_seen_seeds():
+    fresh = Catalog(runners=[rc("ccx:d", [cm("ccx:d", "a", "profile")], error="no model list from h (404); edit")])
+    d = merge_refresh(Catalog(runners=[]), fresh).runners[0]
+    assert [m.model for m in d.models] == ["a"] and d.error
+
+
+def test_merge_empty_success_keeps_list():
+    prev = Catalog(runners=[rc("codex", [cm("codex", "x", "cache")])])
+    fresh = Catalog(runners=[rc("codex", [])])
+    assert [m.model for m in merge_refresh(prev, fresh).runners[0].models] == ["x"]
+
+
+def test_merge_drops_runners_missing_from_fresh():
+    prev = Catalog(runners=[rc("ccx:gone", [cm("ccx:gone", "a", "profile")])])
+    assert merge_refresh(prev, Catalog(runners=[])).runners == []
+
+
+def test_legacy_catalog_loads_and_merges(conn):
+    from trajectree.repo.state import set_state
+
+    stamp = utcnow().isoformat()
+    legacy = {"runners": [
+        {"runner": "claude", "available": True, "refreshed_at": stamp, "error": "live list unavailable: 401",
+         "models": [{"runner": "claude", "model": "claude-opus-5-5", "display": None, "source": "builtin"}]},
+        {"runner": "ccx:d", "available": True, "refreshed_at": stamp, "error": None,
+         "models": [{"runner": "ccx:d", "model": "a", "display": None, "source": "profile"},
+                    {"runner": "ccx:d", "model": "b", "display": "B", "source": "api"}]},
+    ]}
+    set_state(conn, "models:catalog", legacy)
+    prev = load_catalog(conn)
+    assert [m.source for m in prev.runners[1].models] == ["profile", "api"]
+    fresh = Catalog(runners=[rc("claude", [], error="live list unavailable: empty list; list unchanged"),
+                             rc("ccx:d", [cm("ccx:d", "c", "api")])])
+    merged = merge_refresh(prev, fresh)
+    assert [m.model for m in merged.runners[0].models] == ["claude-opus-5-5"]
+    assert [m.model for m in merged.runners[1].models] == ["c"]
+
+
+def test_edit_models_add_delete():
+    c = Catalog(runners=[rc("ccx:d", [cm("ccx:d", "a", "profile"), cm("ccx:d", "b", "api")]), rc("codex", [])])
+    out = edit_models(c, "ccx:d", ["p", "b", "q", "p"], ["a"])
+    assert [(m.model, m.source) for m in out.runners[0].models] == [("b", "api"), ("p", "manual"), ("q", "manual")]
+    assert out.runners[1] == c.runners[1]
+    assert [m.model for m in c.runners[0].models] == ["a", "b"]  # input untouched
+    with pytest.raises(KeyError):
+        edit_models(c, "ccx:nope", ["x"], [])
+
+
+def test_ccx_no_credentials_hint(settings):
+    d = settings.backends_cfg_dir / "kimi"
+    d.mkdir(parents=True)
+    (d / "settings.json").write_text(json.dumps({"env": {"ANTHROPIC_AUTH_TOKEN": ""}}))
+    r = runner(discover_with(settings), "ccx:kimi")
+    assert r.error == ("the profile has no API key or token; add one to"
+                       " ~/.config/claude-backends/kimi/settings.json, then run: trajectree backends sync")
+
+
+def test_codex_no_cache_hint(settings):
+    settings.codex_home.mkdir(parents=True)
+    (settings.codex_home / "auth.json").write_text("{}")
+    assert runner(discover_with(settings), "codex").error == (
+        'no model cache yet; run one Codex run (trajectree ask --runner codex "Reply with OK."), then refresh')
+
+
+def test_claude_empty_list_hint(settings):
+    store_oauth_token(settings, "oat-secret")
+    r = runner(discover_with(settings, lambda req: httpx.Response(200, json={"data": []})), "claude")
+    assert r.error == "live list unavailable: empty list; list unchanged"
 
 
 # -- model choice ---------------------------------------------------------------------------

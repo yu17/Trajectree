@@ -73,6 +73,23 @@ def test_cli_models_prints_and_refreshes(app, client, anon, capsys, settings):
     assert "claude  refreshed " in out and "  claude-opus-5-5" in out
 
 
+def test_cli_models_add_delete(app, client, anon, capsys, settings):
+    settings.backends_cfg_dir.joinpath("d").mkdir(parents=True)
+    (settings.backends_cfg_dir / "d" / "settings.json").write_text(json.dumps({"env": {"ANTHROPIC_API_KEY": "k", "ANTHROPIC_MODEL": "a"}}))
+    assert cli.main(["models", "--refresh"], client=anon, env=env_for(app)) == 0
+    capsys.readouterr()
+    calls = []
+    real_post = anon.post
+    anon.post = lambda *a, **k: (calls.append((a[0], k.get("json"))), real_post(*a, **k))[1]
+    assert cli.main(["models", "--runner", "ccx:d", "--add", "p", "--add", "q", "--delete", "a"], client=anon, env=env_for(app)) == 0
+    assert [(u.rsplit("/api", 1)[1], b) for u, b in calls] == [("/models/edit", {"runner": "ccx:d", "add": ["p", "q"], "delete": ["a"]})]
+    out = capsys.readouterr().out
+    assert "ccx:d" in out and "\n  p\n  q\n" in out and "  a\n" not in out
+    assert cli.main(["models", "--add", "p"], client=anon, env=env_for(app)) == 2
+    assert cli.main(["models", "--runner", "ccx:d", "--add", "p", "--refresh"], client=anon, env=env_for(app)) == 2
+    assert len(calls) == 1
+
+
 def test_slow_commands_get_a_long_http_timeout(monkeypatch, capsys):
     seen = []
 

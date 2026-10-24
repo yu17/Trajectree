@@ -32,10 +32,10 @@ STATE_KEY = "models:catalog"
 BUILTIN_CLAUDE_MODELS = ("claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5")
 ANTHROPIC_MODELS_URL = "https://api.anthropic.com/v1/models?limit=1000"
 MODELS_CACHE_MAX_BYTES = 8 * MiB
-NO_CODEX_CACHE = "no model cache yet; run one Codex run with --runner codex --model <slug> (or use Codex once) and refresh"
+NO_CODEX_CACHE = 'no model cache yet; run one Codex run (trajectree ask --runner codex "Reply with OK."), then refresh'
 _PROFILE_KEY = re.compile(r"^(ANTHROPIC_MODEL|ANTHROPIC_DEFAULT_[A-Z]+_MODEL|CLAUDE_CODE_SUBAGENT_MODEL)$")
 
-Source = Literal["api", "cache", "profile", "builtin"]
+Source = Literal["api", "cache", "profile", "builtin", "manual"]
 
 
 class CatalogModel(BaseModel):
@@ -91,7 +91,7 @@ def _claude(settings: Settings, now: datetime, http: httpx.Client, which, timeou
     if error is None and entries:
         models = [CatalogModel(runner="claude", model=e["id"], display=e.get("display_name"), source="api") for e in entries]
         return RunnerCatalog(runner="claude", available=True, models=models, refreshed_at=now, error=None)
-    return builtin(f"live list unavailable: {error or 'empty list'}", available=True)
+    return builtin(f"live list unavailable: {error or 'empty list'}; list unchanged", available=True)
 
 
 def _codex(settings: Settings, now: datetime, which) -> RunnerCatalog:
@@ -135,7 +135,10 @@ def _ccx(settings: Settings, name: str, now: datetime, http: httpx.Client, which
     if which(settings.claude_bin) is None:
         return unavailable("claude binary not found")
     if not profile_has_credentials(settings.backends_cfg_dir / name / "settings.json"):
-        return unavailable("no credentials in the profile; run: trajectree backends sync")
+        return unavailable(
+            "the profile has no API key or token; add one to "
+            f"~/.config/claude-backends/{name}/settings.json, then run: trajectree backends sync"
+        )
     env = _profile_env(settings, name)
     seen: dict[str, CatalogModel] = {}
     for key in sorted(env):
@@ -163,7 +166,7 @@ def _ccx(settings: Settings, name: str, now: datetime, http: httpx.Client, which
                 host = httpx.URL(url).host
             except httpx.InvalidURL:
                 host = "invalid url"
-            error = f"models endpoint unavailable: {err} ({host})"
+            error = f"no model list from {host} ({err}); edit the list with: trajectree models --runner {runner} --add <model>"
         for e in entries:
             if e["id"] not in seen:
                 seen[e["id"]] = CatalogModel(runner=runner, model=e["id"], display=e.get("display_name"), source="api")
@@ -210,24 +213,39 @@ def load_catalog(conn: apsw.Connection) -> Catalog:
         return Catalog(runners=[])
 
 
-def merge_failed(previous: Catalog, fresh: Catalog) -> Catalog:
-    """A runner whose refresh failed keeps the models it last listed, with the new error.
+def merge_refresh(previous: Catalog, fresh: Catalog) -> Catalog:
+    """A refresh replaces a runner's list only when its fetch succeeded with models.
 
-    Profile models come from a local file and are always current, so only the previous live
-    and cached entries are kept; a shipped fallback list never replaces a live one.
+    Otherwise the runner keeps the models and `refreshed_at` it had (hand edits included) and
+    takes the fresh availability and error. A runner seen for the first time takes fresh as is.
     """
     before = {r.runner: r for r in previous.runners}
     merged: list[RunnerCatalog] = []
     for r in fresh.runners:
         old = before.get(r.runner)
-        kept = [m for m in old.models if m.source in ("api", "cache")] if old else []
-        if r.error is None or not r.available or old is None or not kept:
+        if old is None or (r.error is None and r.models):
             merged.append(r)
-            continue
-        have = {m.model for m in kept}
-        profile = [m for m in r.models if m.source == "profile" and m.model not in have]
-        merged.append(r.model_copy(update={"models": profile + kept, "refreshed_at": old.refreshed_at}))
+        else:
+            merged.append(r.model_copy(update={"models": old.models, "refreshed_at": old.refreshed_at}))
     return Catalog(runners=merged)
+
+
+def edit_models(catalog: Catalog, runner: str, add: list[str], delete: list[str]) -> Catalog:
+    """The catalog with `add` appended to and `delete` removed from one runner's list."""
+    if not any(r.runner == runner for r in catalog.runners):
+        raise KeyError(runner)
+    runners: list[RunnerCatalog] = []
+    for r in catalog.runners:
+        if r.runner == runner:
+            models = [m for m in r.models if m.model not in set(delete)]
+            have = {m.model for m in models}
+            for name in add:
+                if name not in have:
+                    have.add(name)
+                    models.append(CatalogModel(runner=runner, model=name, source="manual"))
+            r = r.model_copy(update={"models": models})
+        runners.append(r)
+    return Catalog(runners=runners)
 
 
 def refresh(
@@ -236,7 +254,7 @@ def refresh(
     """Discover with no lock held, then store under a short one."""
     fresh = discover(settings, now=utcnow(), http=http, which=which, timeout_s=timeout_s)
     with ledger.locked() as conn:
-        merged = merge_failed(load_catalog(conn), fresh)
+        merged = merge_refresh(load_catalog(conn), fresh)
         store_catalog(conn, merged)
     return merged
 

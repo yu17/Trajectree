@@ -51,3 +51,31 @@ def test_backends_sync_answers_even_when_the_refresh_fails(client, app, settings
     r = client.post("/api/backends/sync")
     assert (r.status_code, r.json()) == (200, {"synced": ["ds"]})
     assert "catalog refresh after backends sync failed: RuntimeError" in caplog.text
+
+
+def test_edit_endpoint_adds_and_deletes(client, app, settings):
+    store_oauth_token(settings, "oat-secret")
+    app.state.model_transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, json={"data": [{"id": "claude-live-1"}, {"id": "claude-live-2"}]})
+    )
+    client.post("/api/models/refresh")
+    r = client.post("/api/models/edit", json={"runner": "claude", "add": ["my-model"], "delete": ["claude-live-1"]})
+    assert r.status_code == 200
+    claude = next(x for x in r.json()["runners"] if x["runner"] == "claude")
+    assert [(m["model"], m["source"]) for m in claude["models"]] == [("claude-live-2", "api"), ("my-model", "manual")]
+    assert client.get("/api/models").json() == r.json()
+
+
+def test_edit_unknown_runner_404(client):
+    assert client.post("/api/models/edit", json={"runner": "ccx:nope", "add": ["x"]}).status_code == 404
+
+
+def test_edit_empty_or_blank_422(client, app, settings):
+    store_oauth_token(settings, "oat-secret")
+    client.post("/api/models/refresh")
+    assert client.post("/api/models/edit", json={"runner": "claude"}).status_code == 422
+    assert client.post("/api/models/edit", json={"runner": "claude", "add": ["  "]}).status_code == 422
+
+
+def test_edit_requires_owner(anon):
+    assert anon.post("/api/models/edit", json={"runner": "claude", "add": ["x"]}).status_code == 401

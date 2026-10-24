@@ -198,6 +198,9 @@ def _parser() -> argparse.ArgumentParser:
 
     mdl = sub.add_parser("models", help="list the model catalog")
     mdl.add_argument("--refresh", action="store_true", help="refresh the catalog first")
+    mdl.add_argument("--runner", help="the runner whose list --add/--delete edit")
+    mdl.add_argument("--add", action="append", default=[], metavar="MODEL", help="add a model to the runner's list (repeatable)")
+    mdl.add_argument("--delete", action="append", default=[], metavar="MODEL", help="remove a model from the runner's list (repeatable)")
 
     rn = sub.add_parser("runner", help="runner commands")
     rn_sub = rn.add_subparsers(dest="sub", required=True)
@@ -537,7 +540,15 @@ def _cmd_backends_sync(api: _Api) -> None:
 
 
 def _cmd_models(args: argparse.Namespace, api: _Api) -> None:
-    catalog = api.post("/api/models/refresh", {}, slow=True) if args.refresh else api.get("/api/models")
+    editing = bool(args.add or args.delete)
+    if editing and (args.refresh or not args.runner):
+        raise _Fail("--add and --delete need --runner and cannot be combined with --refresh", 2)
+    if args.runner and not editing:
+        raise _Fail("--runner is for --add or --delete", 2)
+    if editing:
+        catalog = api.post("/api/models/edit", {"runner": args.runner, "add": args.add, "delete": args.delete})
+    else:
+        catalog = api.post("/api/models/refresh", {}, slow=True) if args.refresh else api.get("/api/models")
     if not catalog["runners"]:
         print("no catalog yet; run: trajectree models --refresh")
     for r in catalog["runners"]:
