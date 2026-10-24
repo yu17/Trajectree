@@ -92,3 +92,15 @@ def test_cli_connectors_login(app, anon, capsys):
     assert main(["connectors", "login", "gitlab"], client=anon, env=env_for(app), stdin=io.StringIO("\n")) == 2
     assert load_connector_token(app.state.settings, "gitlab") is None
     assert main(["connectors", "login", "nope"], client=anon, env=env_for(app), stdin=io.StringIO("x\n")) == 2
+
+
+def test_base_url_precedence(tmp_path):
+    from trajectree.cli.main import DEFAULT_URL, base_url
+
+    home = {"HOME": str(tmp_path)}
+    assert base_url(home) == DEFAULT_URL
+    (tmp_path / ".config" / "trajectree").mkdir(parents=True)
+    (tmp_path / ".config" / "trajectree" / "url").write_text("  http://127.0.0.1:40210/ \n")
+    assert base_url(home) == "http://127.0.0.1:40210"
+    assert base_url({**home, "TRAJECTREE_URL": ""}) == "http://127.0.0.1:40210"
+    assert base_url({**home, "TRAJECTREE_URL": "http://other:1/"}) == "http://other:1"

@@ -9,7 +9,7 @@ services:
       target: reports
       args:
         INSTALL_CODEX: "1"
-    ports: ["127.0.0.1:8742:8742"]
+    ports: ["127.0.0.1:${TRAJECTREE_HOST_PORT:-8742}:8742"]
     volumes:
       - ./data:/data
       - ./cfg:/cfg
@@ -23,6 +23,7 @@ services:
       TRAJECTREE_CODEX_SESSIONS: /host/codex/sessions
       TRAJECTREE_PATH_MAP: ${TRAJECTREE_PROJECTS_ROOT}=/projects
       TRAJECTREE_CFG_DIR: /cfg
+      TRAJECTREE_PUBLIC_URL: http://127.0.0.1:${TRAJECTREE_HOST_PORT:-8742}
       HOME: /cfg/home
       DISABLE_AUTOUPDATER: "1"
       TRAJECTREE_TZ: ${TZ:-UTC}

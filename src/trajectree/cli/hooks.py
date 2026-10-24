@@ -6,11 +6,13 @@ import json
 import os
 import shutil
 import sys
+from urllib.parse import urlsplit
 from pathlib import Path
 from typing import Any, Callable, Mapping, TextIO
 
 HOOK_EVENTS = ("SessionStart", "Stop", "SessionEnd")
 HOOK_LABEL = "hooks"
+HOOK_PATH = "/api/hooks/claude"
 
 
 def token_label(path: Path) -> str:
@@ -19,7 +21,7 @@ def token_label(path: Path) -> str:
 
 
 def hooks_url(base: str) -> str:
-    return base.rstrip("/") + "/api/hooks/claude"
+    return base.rstrip("/") + HOOK_PATH
 
 
 def settings_path(env: Mapping[str, str]) -> Path:
@@ -34,10 +36,15 @@ def handler(url: str, secret: str) -> dict[str, Any]:
     return {"type": "http", "url": url, "headers": {"Authorization": f"Bearer {secret}"}, "timeout": 3}
 
 
-def _strip(groups: list[dict[str, Any]], url: str) -> list[dict[str, Any]]:
+def _ours(h: dict[str, Any]) -> bool:
+    """A handler Trajectree wrote: it owns this path on whatever host and port it was installed for."""
+    return urlsplit(str(h.get("url", ""))).path == HOOK_PATH
+
+
+def _strip(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
     kept = []
     for group in groups:
-        hooks = [h for h in group.get("hooks", []) if h.get("url") != url]
+        hooks = [h for h in group.get("hooks", []) if not _ours(h)]
         if hooks:
             kept.append({**group, "hooks": hooks})
     return kept
@@ -47,18 +54,18 @@ def merge_hooks(settings: dict[str, Any], url: str, secret: str) -> dict[str, An
     merged = copy.deepcopy(settings)
     hooks = merged.setdefault("hooks", {})
     for event in HOOK_EVENTS:
-        groups = _strip(hooks.get(event, []), url)
+        groups = _strip(hooks.get(event, []))
         groups.append({"hooks": [handler(url, secret)]})
         hooks[event] = groups
     return merged
 
 
-def remove_hooks(settings: dict[str, Any], url: str) -> dict[str, Any]:
+def remove_hooks(settings: dict[str, Any]) -> dict[str, Any]:
     result = copy.deepcopy(settings)
     hooks = result.get("hooks", {})
     for event in HOOK_EVENTS:
         if event in hooks:
-            groups = _strip(hooks[event], url)
+            groups = _strip(hooks[event])
             if groups:
                 hooks[event] = groups
             else:
@@ -202,7 +209,7 @@ def uninstall(
     current = _load(path)
     if current is None:
         return 1
-    cleaned = remove_hooks(current, hooks_url(api.base))
+    cleaned = remove_hooks(current)
     if cleaned != current:
         try:
             _write(path, cleaned)

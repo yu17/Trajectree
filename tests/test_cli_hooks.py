@@ -17,7 +17,7 @@ def test_merge_preserves_other_hooks_and_is_idempotent():
         assert len(ours) == 1 and ours[0]["headers"]["Authorization"] == "Bearer trj_2" and ours[0]["type"] == "http" and ours[0]["timeout"] == 3
     assert twice["hooks"]["Stop"][0]["hooks"][0]["command"] == "notify" and twice["hooks"]["PreToolUse"] == EXISTING["hooks"]["PreToolUse"]
     assert twice["statusLine"] == EXISTING["statusLine"] and EXISTING["hooks"].get("SessionStart") is None   # input untouched
-    assert remove_hooks(twice, url) == EXISTING
+    assert remove_hooks(twice) == EXISTING
 
 def test_install_writes_backup_rotates_token_and_authenticates(app, client, anon, tmp_path, capsys):
     f = tmp_path / "settings.json"
@@ -129,3 +129,25 @@ def test_install_follows_symlink_and_rotates_legacy_tokens(app, client, anon, tm
     assert (tmp_path / "real.json.trajectree.bak").exists()
     assert f"rotated legacy token {legacy['id']}" in capsys.readouterr().out
     assert [t["label"] for t in client.get("/api/tokens").json()] == [token_label(real)]
+
+def test_hooks_install_replaces_other_port(app, anon, tmp_path):
+    f = tmp_path / "settings.json"
+    stale = "http://127.0.0.1:8742/api/hooks/claude"
+    other = "http://elsewhere/api/hooks/other"
+    f.write_text(json.dumps({"hooks": {"Stop": [{"hooks": [
+        {"type": "http", "url": stale}, {"type": "http", "url": other}]}]}}))
+    env = {**env_for(app), "HOME": str(tmp_path)}
+    assert cli.main(["hooks", "install", "--yes", "--settings-file", str(f)], client=anon, env=env) == 0
+    written = json.loads(f.read_text())
+    for ev in ("SessionStart", "Stop", "SessionEnd"):
+        urls = [h["url"] for g in written["hooks"][ev] for h in g["hooks"]]
+        assert urls.count("http://testserver/api/hooks/claude") == 1 and stale not in urls
+    assert other in [h["url"] for g in written["hooks"]["Stop"] for h in g["hooks"]]
+
+def test_hooks_uninstall_removes_any_port(app, anon, tmp_path):
+    f = tmp_path / "settings.json"
+    f.write_text(json.dumps({"hooks": {"Stop": [{"hooks": [
+        {"type": "http", "url": "http://127.0.0.1:8742/api/hooks/claude"}]}]}}))
+    env = {**env_for(app), "HOME": str(tmp_path), "TRAJECTREE_URL": "http://127.0.0.1:40210"}
+    assert cli.main(["hooks", "uninstall", "--settings-file", str(f)], client=anon, env=env) == 0
+    assert json.loads(f.read_text()) == {}

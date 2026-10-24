@@ -42,6 +42,7 @@ class Settings(BaseModel):
     ssh_bin: str = "ssh"
     gitlab_host: str | None = None  # the one host polled as GitLab (and sent the GitLab token)
     chatmaid_url: str | None = None
+    public_url: str | None = None  # where the owner reaches the daemon; only the ready line shows it
     marp_bin: str | None = None  # None: look up `marp` on PATH when exporting
     chrome_bin: str | None = None
 
@@ -180,6 +181,8 @@ def load_settings() -> Settings:
         values["tz"] = _valid_tz(str(values["tz"]))
     if os.environ.get("TRAJECTREE_CHATMAID_URL"):
         values["chatmaid_url"] = os.environ["TRAJECTREE_CHATMAID_URL"].strip()
+    if os.environ.get("TRAJECTREE_PUBLIC_URL", "").strip():
+        values["public_url"] = os.environ["TRAJECTREE_PUBLIC_URL"].strip()
     if os.environ.get("TRAJECTREE_MARP_BIN"):
         values["marp_bin"] = os.environ["TRAJECTREE_MARP_BIN"]
     if os.environ.get("TRAJECTREE_CHROME_BIN"):

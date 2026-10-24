@@ -56,3 +56,21 @@ async def test_remote_connector_sends_headers():
     assert h["x-trajectree-client"] == "shim"
     assert h["x-trajectree-cwd"] == "/proj"
     assert h["x-trajectree-session"] == "sess-1"
+
+
+def test_shim_uses_base_url_file(monkeypatch, tmp_path):
+    from trajectree.cli import shim
+
+    (tmp_path / ".config" / "trajectree").mkdir(parents=True)
+    (tmp_path / ".config" / "trajectree" / "url").write_text("http://127.0.0.1:40210/\n")
+    seen: list[str] = []
+
+    def fake_connector(url, *args, **kwargs):
+        seen.append(url)
+        return lambda: None
+
+    monkeypatch.setattr(shim, "remote_connector", fake_connector)
+    monkeypatch.setattr(shim, "build_proxy", lambda connector: None)
+    monkeypatch.setattr(shim.anyio, "run", lambda fn: None)
+    assert shim.run_shim({"HOME": str(tmp_path), "TRAJECTREE_TOKEN": "tok"}) == 0
+    assert seen == ["http://127.0.0.1:40210/mcp"]

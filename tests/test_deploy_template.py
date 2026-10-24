@@ -27,7 +27,8 @@ def test_instance_template_is_self_contained():
     assert svc["read_only"] is True
     assert svc["cap_drop"] == ["ALL"]
     assert "no-new-privileges:true" in svc["security_opt"]
-    assert svc["ports"] == ["127.0.0.1:8742:8742"]
+    assert svc["ports"] == ["127.0.0.1:${TRAJECTREE_HOST_PORT:-8742}:8742"]
+    assert svc["environment"]["TRAJECTREE_PUBLIC_URL"] == "http://127.0.0.1:${TRAJECTREE_HOST_PORT:-8742}"
     for key in (
         "TRAJECTREE_INGEST_EVERY",
         "TRAJECTREE_SCAN_SINCE_DAYS",
@@ -42,6 +43,7 @@ def test_dev_compose_cannot_replace_instance():
     doc = _load("compose.yaml")
     assert doc["name"] == "trajectree-dev"
     assert doc["services"]["trajectree"]["ports"] == ["127.0.0.1:8743:8742"]
+    assert doc["services"]["trajectree"]["environment"]["TRAJECTREE_PUBLIC_URL"] == "http://127.0.0.1:8743"
 
 
 def test_dev_state_lives_outside_the_checkout():

@@ -20,9 +20,11 @@ curl -fsSL https://raw.githubusercontent.com/yu17/Trajectree/main/deploy/env.exa
 mkdir -p data cfg && chmod 700 data cfg
 mkdir -p ~/.claude/projects ~/.config/claude-backends ~/.codex/sessions
 
-# 3. Build and start, then give the host CLI the token.
+# 3. Build and start, then give the host CLI the token and the URL (use the
+#    same port as TRAJECTREE_HOST_PORT in .env, 8742 by default).
 docker compose up -d --build
 mkdir -p ~/.config/trajectree && cp data/token ~/.config/trajectree/token
+echo http://127.0.0.1:${TRAJECTREE_HOST_PORT:-8742} > ~/.config/trajectree/url
 
 # 4. Install the host CLI.
 uv tool install git+https://github.com/yu17/Trajectree@<ref>
@@ -38,9 +40,19 @@ trajectree backends sync
 #    refresh again (see Codex below).
 trajectree models --refresh
 trajectree init-project <folder>
+
+# 7. Register the live-session hooks.
+trajectree hooks install
 ```
 
 Instance state must never live inside `TRAJECTREE_PROJECTS_ROOT`.
+
+A changed `.env` takes effect with `docker compose up -d`; `docker compose
+restart` keeps the old values. While a first import runs, set
+`TRAJECTREE_INGEST_EVERY=0` to pause the ingest loop, and run one pass by hand
+with `trajectree ingest`. After changing `TRAJECTREE_HOST_PORT`, update
+`~/.config/trajectree/url` and run `trajectree hooks install` again; it
+replaces the old entries.
 
 ## Development compose
 
@@ -69,7 +81,7 @@ mkdir -p ~/.claude/projects ~/.config/claude-backends ~/.codex/sessions
 export TRAJECTREE_PROJECTS_ROOT=$HOME/Projects
 docker compose up -d --build
 
-# Login URL (open it in a browser; replace 0.0.0.0 with 127.0.0.1)
+# Login URL (open it in a browser)
 docker compose logs trajectree | grep ready
 
 # Point the host CLI at the dev stack for this shell only. Never copy the dev
@@ -91,9 +103,10 @@ The image includes Claude Code (installed natively, auto-update disabled).
 
 The `trajectree` CLI and the `trajectree mcp` shim run on the host. Install
 them with `uv tool install .` (or `uv sync` and `uv run trajectree`). By default
-they talk to the instance at `http://127.0.0.1:8742` and read the token from
-`~/.config/trajectree/token`; `TRAJECTREE_URL` and `TRAJECTREE_TOKEN` override
-both (the development stack is `http://127.0.0.1:8743`, see above).
+they read the daemon URL from `~/.config/trajectree/url` (default
+`http://127.0.0.1:8742`) and the token from `~/.config/trajectree/token`;
+`TRAJECTREE_URL` and `TRAJECTREE_TOKEN` override both (the development stack is
+`http://127.0.0.1:8743`, see above).
 
 ## Connect a project folder
 
@@ -165,7 +178,8 @@ The CLI needs the token at `~/.config/trajectree/token` (copied from
 claude mcp add --scope user trajectree -- trajectree mcp
 ```
 
-The shim forwards to the daemon and defaults the project from
+The shim forwards to the daemon (at the URL in `TRAJECTREE_URL` or
+`~/.config/trajectree/url`) and defaults the project from
 `CLAUDE_PROJECT_DIR`. To skip the shim and talk to the daemon over HTTP:
 
 ```bash
@@ -340,7 +354,9 @@ for an ingest pass. It edits `~/.claude/settings.json` (or
 The hooks carry a dedicated liveness-only token, one per settings file, that can
 announce a session but cannot read or write the tracker; a settings file the
 command creates is made private (0600). `show` prints the hooks currently installed;
-`uninstall` removes only Trajectree's entries. All three accept
+`uninstall` removes only Trajectree's entries, whatever port they were installed
+for; `install` likewise replaces earlier entries, so changing the port leaves
+none stale. All three accept
 `--settings-file` to target another file.
 
 ## Routines
@@ -620,5 +636,7 @@ make sure `~/.codex/sessions` exists (`mkdir -p ~/.codex/sessions`) before
 | `TRAJECTREE_CHROME_BIN` | none (`/usr/bin/chromium` in the `reports` image) | Browser marp-cli uses (`--browser-path`) |
 | `TRAJECTREE_IMAGE_TARGET` | `app` | Image variant compose builds (`app` or `reports`); used by compose only |
 | `TRAJECTREE_PROJECTS_ROOT` | none (required by compose) | Host folder mounted read-only at `/projects`; used by compose only |
-| `TRAJECTREE_URL` | `http://127.0.0.1:8742` | Daemon URL for the host CLI and shim |
+| `TRAJECTREE_HOST_PORT` | `8742` | Host port the instance publishes (on 127.0.0.1); used by the instance compose only |
+| `TRAJECTREE_PUBLIC_URL` | none (set by both compose files) | Where you reach the daemon; only the `Trajectree ready:` login URL shows it |
+| `TRAJECTREE_URL` | first line of `~/.config/trajectree/url`, else `http://127.0.0.1:8742` | Daemon URL for the host CLI, shim and hooks |
 | `TRAJECTREE_TOKEN` | contents of `~/.config/trajectree/token` | Bearer token for the host CLI and shim |

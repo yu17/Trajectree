@@ -214,17 +214,32 @@ def _parser() -> argparse.ArgumentParser:
     return p
 
 
+def _config_file(env: Mapping[str, str], name: str) -> Path:
+    home = env.get("HOME") if env is not os.environ else None
+    base = Path(home) if home else Path.home()
+    return base / ".config" / "trajectree" / name
+
+
 def _token(env: Mapping[str, str]) -> str | None:
     token = env.get("TRAJECTREE_TOKEN")
     if token:
         return token.strip()
-    home = env.get("HOME") if env is not os.environ else None
-    base = Path(home) if home else Path.home()
-    path = base / ".config" / "trajectree" / "token"
     try:
-        return path.read_text().strip() or None
+        return _config_file(env, "token").read_text().strip() or None
     except OSError:
         return None
+
+
+def base_url(env: Mapping[str, str]) -> str:
+    """The daemon's URL: TRAJECTREE_URL, else the first line of ~/.config/trajectree/url, else the default."""
+    url = (env.get("TRAJECTREE_URL") or "").strip()
+    if not url:
+        try:
+            lines = _config_file(env, "url").read_text().splitlines()
+            url = lines[0].strip() if lines else ""
+        except OSError:
+            url = ""
+    return (url or DEFAULT_URL).rstrip("/")
 
 
 class _Api:
@@ -700,7 +715,7 @@ def main(
             file=sys.stderr,
         )
         return 2
-    base = env.get("TRAJECTREE_URL", DEFAULT_URL)
+    base = base_url(env)
     owned = client is None
     http: Any = httpx.Client(timeout=30) if owned else client
     try:

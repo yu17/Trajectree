@@ -13,6 +13,8 @@ def run() -> None:
     token = ensure_token(settings)
     ledger = Ledger(open_db(settings.db_path))
     app = create_app(settings, ledger=ledger)
-    print(f"Trajectree ready: http://{settings.host}:{settings.port}/?token={token}", flush=True)
+    # Inside a container the bind address is not where the owner connects.
+    url = (settings.public_url or f"http://{settings.host}:{settings.port}").rstrip("/")
+    print(f"Trajectree ready: {url}/?token={token}", flush=True)
     # access_log off: the login URL carries the token in its query string.
     uvicorn.run(app, host=settings.host, port=settings.port, access_log=False)

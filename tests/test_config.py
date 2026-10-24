@@ -133,3 +133,19 @@ def test_codex_sessions_root_from_env(monkeypatch, tmp_path):
     assert load_settings().codex_sessions_root is None
     (tmp_path / ".codex" / "sessions").mkdir(parents=True)
     assert load_settings().codex_sessions_root == tmp_path / ".codex" / "sessions"
+
+
+def test_public_url_from_env_and_ready_line(monkeypatch, tmp_path, capsys):
+    from trajectree import main as daemon
+
+    monkeypatch.setenv("TRAJECTREE_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(daemon, "create_app", lambda settings, ledger: None)
+    monkeypatch.setattr(daemon.uvicorn, "run", lambda *a, **k: None)
+    monkeypatch.delenv("TRAJECTREE_PUBLIC_URL", raising=False)
+    assert load_settings().public_url is None
+    daemon.run()
+    assert capsys.readouterr().out.startswith("Trajectree ready: http://127.0.0.1:8742/?token=")
+    monkeypatch.setenv("TRAJECTREE_PUBLIC_URL", "http://127.0.0.1:40210/")
+    assert load_settings().public_url == "http://127.0.0.1:40210/"
+    daemon.run()
+    assert capsys.readouterr().out.startswith("Trajectree ready: http://127.0.0.1:40210/?token=")
