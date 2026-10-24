@@ -108,10 +108,20 @@ class RunService:
 
     # -- enqueue ---------------------------------------------------------------------------
 
+    def validate(self, conn, request: RunRequest, *, default_runner: str | None = None) -> tuple[str, str]:
+        """The checks `enqueue` makes before it creates a run, so a caller can run them before
+        writing anything: runs not paused, runner well formed. Returns `(runner, backend)`.
+        Raises `RunsPaused` or `ValueError`. The caller holds the ledger lock."""
+        if get_caps(conn).paused:
+            raise RunsPaused("runs are paused")
+        return runner_parts(request.runner or default_runner or self.settings.default_runner)
+
+    def check(self, request: RunRequest) -> None:
+        with self.ledger.locked() as conn:
+            self.validate(conn, request)
+
     def enqueue(self, request: RunRequest) -> Run:
         with self.ledger.locked() as conn:
-            if get_caps(conn).paused:
-                raise RunsPaused("runs are paused")
             kind = KIND_OF[type(request)]
             default_runner, model = self.settings.default_runner, request.model
             routine_id, attempt, project_id = None, 1, None
@@ -120,7 +130,7 @@ class RunService:
                 default_runner = routine.runner or default_runner
                 model = model or routine.model
                 routine_id, attempt = routine.id, request.attempt
-            runner, backend = runner_parts(request.runner or default_runner)
+            runner, backend = self.validate(conn, request, default_runner=default_runner)
             if isinstance(request, StartingPointRequest):
                 project_id = resolve_project_ref(conn, request.project).id
             elif isinstance(request, SummarizeRequest):

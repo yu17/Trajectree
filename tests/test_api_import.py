@@ -134,3 +134,43 @@ def test_probe_and_import_are_owner_only(client, anon, app, tmp_path):
     # The same owner-only /api router as every other route: a scoped token is refused outright.
     assert probe.status_code in (401, 403) and imp.status_code in (401, 403)
     assert "import" not in props_of(client, p)
+
+
+def test_invalid_runner_leaves_nothing_and_retry_succeeds(client, app, tmp_path):
+    p, repo = setup(client, tmp_path, remotes=[("origin", "git@github.com:o/r.git")])
+    url = f"/api/projects/{p['id']}/import"
+    body = {
+        "sources": pick("git", "remote"),
+        "remotes": ["https://github.com/o/r"],
+        "starts": {"git": "2025-01-01"},
+        "start_block": {"runner": "bad runner", "model": "m"},
+    }
+    r = client.post(url, json=body)
+    assert r.status_code == 422 and "invalid runner" in r.json()["detail"]
+    conn = app.state.ledger.conn
+    assert "import" not in props_of(client, p)
+    assert [x["kind"] for x in client.get("/api/resources", params={"projects": p["id"]}).json()] == ["folder"]
+    assert get_state(conn, "remote:suggested") is None
+    assert conn.execute("select count(*) from run").fetchone()[0] == 0
+    body["start_block"]["runner"] = "claude"
+    ok = client.post(url, json=body)
+    assert ok.status_code == 200 and ok.json()["starting_point_run"]["id"]
+
+
+def test_paused_runs_leave_nothing(client, app, tmp_path):
+    p, repo = setup(client, tmp_path)
+    assert client.put("/api/caps", json={"paused": True}).status_code == 200
+    body = {"sources": pick("git"), "starts": {"git": "2025-01-01"}, "start_block": {"model": "m"}}
+    assert client.post(f"/api/projects/{p['id']}/import", json=body).status_code == 409
+    assert "import" not in props_of(client, p)
+    assert [x["kind"] for x in client.get("/api/resources", params={"projects": p["id"]}).json()] == ["folder"]
+
+
+def test_probe_path_outside_mapped_roots(client, settings, tmp_path):
+    settings.path_map = [(str(tmp_path / "host"), str(tmp_path / "local"))]
+    (tmp_path / "host" / "a").mkdir(parents=True)
+    other = client.post("/api/import/probe", json={"path": "/etc"})
+    assert other.status_code == 422 and other.json()["detail"] == "path /etc is outside every mapped folder"
+    escape = client.post("/api/import/probe", json={"path": f"{tmp_path}/host/../../etc"})
+    assert escape.status_code == 422 and "outside every mapped folder" in escape.json()["detail"]
+    assert client.post("/api/import/probe", json={"path": f"{tmp_path}/host/a/../a"}).status_code == 200

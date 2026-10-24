@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import posixpath
 from datetime import date
+from pathlib import PurePosixPath
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -15,13 +17,12 @@ from trajectree.db.ledger import Ledger
 from trajectree.importing import IMPORT_SOURCES, ImportRecord, SourceChoice
 from trajectree.models import Project, ProjectPatch, Resource, ResourceIn, Run
 from trajectree.repo import NotFound
-from trajectree.repo.caps import get_caps
 from trajectree.repo.projects import get_project, update_project
+from trajectree.repo.runs import update_run
 from trajectree.repo.resources import list_resources, upsert_resource
 from trajectree.repo.state import get_state, set_state
 from trajectree.runner.kinds import StartingPointRequest
 from trajectree.runner.service import RunService
-from trajectree.runner.spec import RunsPaused
 from trajectree.timeutil import utcnow
 
 router = APIRouter()
@@ -61,7 +62,17 @@ class ImportResult(BaseModel):
 def probe(body: ProbeRequest, ledger: Ledger = Depends(get_ledger), settings: Settings = Depends(get_settings)):
     if not body.path.startswith("/"):
         raise HTTPException(status_code=422, detail="path must be absolute")
-    return probe_folder(probe_state_reader(ledger), settings, body.path, now=utcnow())
+    path = _inside_mapped_roots(settings, body.path)
+    return probe_folder(probe_state_reader(ledger), settings, path, now=utcnow())
+
+
+def _inside_mapped_roots(settings: Settings, path: str) -> str:
+    """`path` normalized; 422 when a path map is configured and no mapped host root contains it."""
+    path = posixpath.normpath(path)
+    target = PurePosixPath(path)
+    if settings.path_map and not any(target.is_relative_to(PurePosixPath(host)) for host, _ in settings.path_map):
+        raise HTTPException(status_code=422, detail=f"path {path} is outside every mapped folder")
+    return path
 
 
 def _validate(body: ImportRequest) -> dict[str, str]:
@@ -95,7 +106,6 @@ def import_project(
         if project is None:
             raise NotFound(project_id)
         folders = list_resources(conn, project_ids=[project_id], kinds=["folder"])
-        paused = body.start_block is not None and get_caps(conn).paused
     existing = ImportRecord.model_validate(project.props["import"]) if "import" in project.props else None
     for source, choice in body.sources.items():
         prior = existing.sources.get(source) if existing else None
@@ -103,9 +113,18 @@ def import_project(
             raise HTTPException(status_code=409, detail=f"already imported: {source}")
     if not folders:
         raise HTTPException(status_code=422, detail="project has no folder resource; register the folder first")
-    if paused:
-        raise RunsPaused("runs are paused")
-    folder = min(folders, key=lambda r: len(r.locator)).locator
+    folder = _inside_mapped_roots(settings, min(folders, key=lambda r: len(r.locator)).locator)
+    runs: RunService = request.app.state.runs
+    start_request: StartingPointRequest | None = None
+    if body.start_block is not None:
+        # Everything enqueue would reject is checked before the first write.
+        try:
+            start_request = StartingPointRequest(
+                project=project_id, starts=body.starts, runner=body.start_block.runner, model=body.start_block.model
+            )
+            runs.check(start_request)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     actor = actor_from_request(request)
 
     sources = dict(existing.sources) if existing else {}
@@ -148,19 +167,24 @@ def import_project(
         props = {**project.props, "import": rec.model_dump(mode="json")}
         return update_project(ledger, actor, project_id, ProjectPatch(props=props), intent="record import choices")
 
-    updated = save(record)
     run: Run | None = None
-    if body.start_block is not None:
-        runs: RunService = request.app.state.runs
+    if start_request is not None:
+        # Enqueue before the record is saved, so a saved record always has the run the owner asked
+        # for; a failure here (a race with the checks above) leaves the record unsaved and the
+        # import retryable. Resources and suggestions written above are idempotent.
         try:
-            run = runs.enqueue(
-                StartingPointRequest(
-                    project=project_id, starts=body.starts, runner=body.start_block.runner, model=body.start_block.model
-                )
-            )
+            run = runs.enqueue(start_request)
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        updated = save(record.model_copy(update={"start_run_id": run.id}))
+            raise HTTPException(status_code=422, detail=f"starting-point run not queued, nothing recorded: {exc}") from exc
+        record = record.model_copy(update={"start_run_id": run.id})
+    try:
+        updated = save(record)
+    except Exception:
+        if run is not None:  # do not leave a run for an import that was not recorded
+            with ledger.locked() as conn:
+                with conn:
+                    update_run(conn, run.id, status="cancelled", finished=utcnow())
+        raise
     with ledger.locked() as conn:
         resources = list_resources(conn, project_ids=[project_id])
     return ImportResult(project=updated, resources=resources, starting_point_run=run)
