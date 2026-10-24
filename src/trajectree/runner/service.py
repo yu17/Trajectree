@@ -175,7 +175,7 @@ class RunService:
             if current is not None and current.status == "queued"
             else None
         )
-        prelocked = self._collect_history(current) if version is not None else None
+        prelocked = self._collect_history(current)  # None unless a queued starting_point run
         with self.ledger.locked() as conn:
             prepared = self._prepare(conn, run_id, version, prelocked)  # revokes its own token if it fails
             if isinstance(prepared, Run):

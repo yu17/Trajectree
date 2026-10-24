@@ -7,7 +7,7 @@ look as expected is skipped, never raised on. Files are only ever opened for rea
 
 import json
 from collections import Counter, deque
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO
@@ -247,52 +247,72 @@ def _transcripts(root: Path) -> list[Path]:
     return files
 
 
+MAX_TRANSCRIPT_FILES = 500  # transcripts parsed per `project_transcripts` call
+
+
+class ProjectTranscripts(BaseModel):
+    sessions: list[SessionSummary]  # newest first
+    capped: bool = False  # more matching files existed than `max_files`; the newest were read
+
+
 def project_transcripts(
     settings: Settings,
     folder: str,
     *,
     registered: Sequence[str],
     before: datetime | None = None,
-) -> list[SessionSummary]:
+    before_by_source: Mapping[str, datetime] | None = None,
+    max_files: int = MAX_TRANSCRIPT_FILES,
+) -> ProjectTranscripts:
     """Summaries of the transcripts whose cwd belongs to `folder` (a host path), newest first.
 
     A transcript belongs to `folder` when its recorded cwd lies in it and `folder` is the deepest
     of the `registered` folder host paths containing that cwd (the rule `project_for_path` uses),
-    so `/x/app-android` never counts for `/x/app`. With `before`, only sessions that ended before
-    it. Pure file I/O: no DB, no lock.
+    so `/x/app-android` never counts for `/x/app`. `before` keeps only sessions that ended before
+    it. `before_by_source` (import source -> cutoff) does the same per source and skips, without
+    reading, the transcripts of any source it does not list. At most `max_files` transcripts are
+    parsed (newest files first); `capped` says the rest were left out. Pure file I/O: no DB, no lock.
     """
     root_path = PurePosixPath(folder)
     deeper = [PurePosixPath(r) for r in registered if len(r) > len(folder)]
     prefix = encode_project_dir(folder)
-    found: list[SessionSummary] = []
+    candidates: list[tuple[float, str, Path]] = []
     for backend, root in transcript_roots(settings):
+        if before_by_source is not None and SESSION_SOURCE_OF_BACKEND[backend] not in before_by_source:
+            continue
         try:
-            dirs = sorted(d for d in root.iterdir() if d.is_dir() and (d.name == prefix or d.name.startswith(prefix + "-")))
+            dirs = [d for d in root.iterdir() if d.is_dir() and (d.name == prefix or d.name.startswith(prefix + "-"))]
         except OSError:
             continue
         for d in dirs:
             try:
-                files = sorted(f for f in d.glob("*.jsonl") if f.is_file())
+                for f in d.glob("*.jsonl"):
+                    if f.is_file():
+                        candidates.append((f.stat().st_mtime, backend, f))
             except OSError:
                 continue
-            for path in files:
-                try:
-                    summary, _ = _read_from(path, 0, SessionSummary(transcript_path=str(path.absolute()), backend=backend))
-                    ended = summary.t_end or datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
-                except OSError:
-                    continue
-                if summary.cwd is None:
-                    continue
-                cwd = PurePosixPath(summary.cwd)
-                if not (cwd == root_path or cwd.is_relative_to(root_path)):
-                    continue
-                if any(cwd == r or cwd.is_relative_to(r) for r in deeper):
-                    continue
-                if before is not None and ended >= before:
-                    continue
-                found.append(summary.model_copy(update={"t_end": ended}))
+    candidates.sort(key=lambda c: c[0], reverse=True)
+    capped = len(candidates) > max_files
+    found: list[SessionSummary] = []
+    for mtime, backend, path in candidates[:max_files]:
+        cutoff = before_by_source[SESSION_SOURCE_OF_BACKEND[backend]] if before_by_source is not None else before
+        try:
+            summary, _ = _read_from(path, 0, SessionSummary(transcript_path=str(path.absolute()), backend=backend))
+        except OSError:
+            continue
+        if summary.cwd is None:
+            continue
+        cwd = PurePosixPath(summary.cwd)
+        if not (cwd == root_path or cwd.is_relative_to(root_path)):
+            continue
+        if any(cwd == r or cwd.is_relative_to(r) for r in deeper):
+            continue
+        ended = summary.t_end or datetime.fromtimestamp(mtime, timezone.utc)
+        if cutoff is not None and ended >= cutoff:
+            continue
+        found.append(summary.model_copy(update={"t_end": ended}))
     found.sort(key=lambda sm: sm.t_end or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
-    return found
+    return ProjectTranscripts(sessions=found, capped=capped)
 
 
 def _stored_summary(state: Any) -> SessionSummary | None:

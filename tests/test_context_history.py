@@ -102,11 +102,75 @@ def test_project_transcripts_prefix_collision(settings, tmp_path):
     _transcript(home, "/x/transcriptor/android", "nested", "in nested", when="2024-01-01T00:00:00Z")
     registered = ["/x/transcriptor", "/x/transcriptor-android", "/x/transcriptor/android"]
     mine = project_transcripts(st, "/x/transcriptor", registered=registered)
-    assert [s.session_id for s in mine] == ["mine"]  # the sibling and the deeper registered folder are not ours
-    assert [s.session_id for s in project_transcripts(st, "/x/transcriptor-android", registered=registered)] == ["sibling"]
+    assert [s.session_id for s in mine.sessions] == ["mine"]  # the sibling and the deeper registered folder are not ours
+    assert [s.session_id for s in project_transcripts(st, "/x/transcriptor-android", registered=registered).sessions] == ["sibling"]
     # an unregistered sub-folder still belongs to its deepest registered ancestor
-    assert [s.session_id for s in project_transcripts(st, "/x/transcriptor", registered=["/x/transcriptor"])
+    assert [s.session_id for s in project_transcripts(st, "/x/transcriptor", registered=["/x/transcriptor"]).sessions
             if s.cwd == "/x/transcriptor/android"] == ["nested"]
     cut = project_transcripts(st, "/x/transcriptor", registered=["/x/transcriptor"],
                               before=datetime(2023, 1, 1, tzinfo=timezone.utc))
-    assert cut == []
+    assert cut.sessions == []
+
+
+def test_transcript_file_cap_and_unpicked_backends(settings, tmp_path, monkeypatch):
+    import trajectree.connectors.claude_sessions as cs
+    home, st = _with_home(settings, tmp_path)
+    for i in range(5):
+        _transcript(home, "/work/a", f"s{i}", f"prompt {i}", when=f"2020-0{i + 1}-01T10:00:00Z")
+        os.utime(home / "projects" / encode_project_dir("/work/a") / f"s{i}.jsonl", (1000 + i, 1000 + i))
+    codex = settings.model_copy(update={"claude_home": home})
+    reads = []
+    real = cs._read_from
+    monkeypatch.setattr(cs, "_read_from", lambda path, off, acc: (reads.append(path.name), real(path, off, acc))[1])
+    cutoff = {"claude": datetime(2025, 1, 1, tzinfo=timezone.utc)}
+    got = project_transcripts(codex, "/work/a", registered=["/work/a"], before_by_source=cutoff, max_files=2)
+    assert got.capped is True and len(got.sessions) == 2 and sorted(reads) == ["s3.jsonl", "s4.jsonl"]  # newest files
+    # a source that is not in the map is never read
+    reads.clear()
+    none = project_transcripts(codex, "/work/a", registered=["/work/a"], before_by_source={"codex": cutoff["claude"]})
+    assert none.sessions == [] and reads == []
+    text = session_history(codex, ["/work/a"], ["/work/a"], starts={"claude": date(2025, 1, 1)}, budget_chars=5000)
+    assert "prompt 4" in text and "prompt 0" in text and "only the newest" not in text
+
+
+def test_session_history_reports_cap(settings, tmp_path, monkeypatch):
+    import trajectree.context.history as hist
+    home, st = _with_home(settings, tmp_path)
+    for i in range(3):
+        _transcript(home, "/work/a", f"s{i}", f"prompt {i}", when=f"2020-0{i + 1}-01T10:00:00Z")
+    real = hist.project_transcripts
+    monkeypatch.setattr(hist, "project_transcripts", lambda *a, **k: real(*a, **{**k, "max_files": 2}))
+    text = session_history(st, ["/work/a"], ["/work/a"], starts={"claude": date(2025, 1, 1)}, budget_chars=5000)
+    assert "(only the newest 500 transcripts per folder were read)" in text
+
+
+def test_git_max_count_truncates(tmp_path, monkeypatch):
+    import trajectree.context.history as hist
+    repo = _repo(tmp_path, [f"2024-0{i + 1}-10T12:00:00+00:00" for i in range(5)])
+    monkeypatch.setattr(hist, "MAX_COMMITS", 3)
+    got = collect_history(None, folders=[repo], starts={"git": date(2025, 1, 1)}, tz="UTC", budget_chars=5000)
+    assert got.truncated is True and "only the newest 3 commits" in got.git_md
+    assert "commit 4 at 2024-05" in got.git_md and "commit 0 at 2024-01" not in got.git_md
+
+
+def test_git_failure_is_visible(tmp_path):
+    repo = tmp_path / "broken"
+    (repo / ".git").mkdir(parents=True)  # looks like a repo, is not one
+    got = collect_history(None, folders=[repo], starts={"git": date(2025, 1, 1)}, tz="UTC", budget_chars=5000)
+    assert got.git_md.startswith("git history unavailable for broken:")
+
+
+def test_folder_walk_budget_is_total(tmp_path, monkeypatch):
+    import trajectree.context.history as hist
+    root = tmp_path / "proj"
+    for name in ("a", "b", "c"):
+        (root / name).mkdir(parents=True)
+        for i in range(4):
+            f = root / name / f"f{i}.txt"
+            f.write_text("x")
+            os.utime(f, (1714521600, 1714521600))
+    monkeypatch.setattr(hist, "MAX_WALK_ENTRIES", 10)  # 3 top-level + 12 files > 10 in total
+    got = collect_history(None, folders=[root], starts={"folder": date(2025, 1, 1)}, tz="UTC", budget_chars=4000)
+    assert got.truncated is True and "folder walk stopped after 10 entries" in got.folder_md
+    files = sum(int(line.split("(")[1].split(" ")[0]) for line in got.folder_md.splitlines() if "/ (" in line)
+    assert files < 12  # a per-entry budget would have counted all twelve

@@ -791,3 +791,12 @@ def test_session_history_collected_outside_lock(ledger, human, settings, logged_
     done = s.execute(s.enqueue(StartingPointRequest(project="a", starts={"claude": date(2025, 1, 1)})).id)
     assert seen["lock_free"] is True and seen["folders"] == ["/work/a", "/work/b"] == seen["registered"]
     assert done.status == "ok"  # the sessions alone are enough history to run
+
+
+def test_starting_point_runs_when_version_probe_is_none(ledger, human, settings, logged_in, monkeypatch):
+    create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    monkeypatch.setattr(service_mod, "collect_history", lambda *a, **k: HistoryInput(git_md="- 2024-06-10 abc12345 x"))
+    env = {"PATH": os.environ["PATH"], "FAKE_CLAUDE_MODE": "ok", "FAKE_CLAUDE_STRUCTURED": STRUCTURED}
+    s = RunService(ledger, settings, base_env=env, version=lambda binary: None)
+    done = s.execute(s.enqueue(StartingPointRequest(project="a", starts={"git": date(2025, 1, 1)})).id)
+    assert done.status == "ok"

@@ -16,11 +16,12 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel
 
 from trajectree.config import Settings
-from trajectree.connectors.claude_sessions import SessionSummary, digest_transcript, project_transcripts
+from trajectree.connectors.claude_sessions import SessionSummary, MAX_TRANSCRIPT_FILES, digest_transcript, project_transcripts
 from trajectree.connectors.folders import DEFAULT_EXCLUDES, load_gitignore
 from trajectree.importing import SESSION_SOURCE_OF_BACKEND
 
-MAX_WALK_ENTRIES = 50_000
+MAX_WALK_ENTRIES = 50_000  # directory entries visited by one whole folder snapshot
+MAX_COMMITS = 5000  # newest commits read per repository
 _SUBJECT_CHARS = 100
 
 
@@ -43,12 +44,13 @@ def local_midnight(day: date, tz: str) -> datetime:
 # -- git and folders (no lock) -------------------------------------------------------------
 
 
-def _git_commits(folder: Path, before: datetime) -> list[tuple[datetime, str, str]]:
-    """`(committed, sha, subject)` of every commit in `folder` older than `before`."""
+def _git_commits(folder: Path, before: datetime) -> tuple[list[tuple[datetime, str, str]], str | None]:
+    """`(committed, sha, subject)` of the newest `MAX_COMMITS` commits in `folder` older than
+    `before`, and a one-line note when git could not answer (never a silent empty result)."""
     if not (folder / ".git").exists():
-        return []
+        return [], None
     cmd = [
-        "git", "-c", "safe.directory=*", "-C", str(folder), "log", "--all",
+        "git", "-c", "safe.directory=*", "-C", str(folder), "log", "--all", f"--max-count={MAX_COMMITS}",
         f"--before={before.isoformat()}", "--format=%H%x1f%cI%x1f%s",
     ]  # fmt: skip
     try:
@@ -61,10 +63,13 @@ def _git_commits(folder: Path, before: datetime) -> list[tuple[datetime, str, st
             timeout=60,
             env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
         )
-    except (subprocess.TimeoutExpired, OSError):
-        return []
+    except subprocess.TimeoutExpired:
+        return [], f"git history unavailable for {folder.name}: git log timed out"
+    except OSError as exc:
+        return [], f"git history unavailable for {folder.name}: {exc.strerror or type(exc).__name__}"
     if proc.returncode != 0:
-        return []
+        reason = (proc.stderr.strip().splitlines() or [f"git exited {proc.returncode}"])[0][:200]
+        return [], f"git history unavailable for {folder.name}: {reason}"
     commits: list[tuple[datetime, str, str]] = []
     for line in proc.stdout.splitlines():
         parts = line.split("\x1f")
@@ -75,7 +80,7 @@ def _git_commits(folder: Path, before: datetime) -> list[tuple[datetime, str, st
         except ValueError:
             continue
         commits.append((committed, parts[0], parts[2]))
-    return commits
+    return commits, None
 
 
 def _git_markdown(commits: list[tuple[datetime, str, str]], tz: str, budget: int) -> tuple[str, bool]:
@@ -107,13 +112,27 @@ def _git_markdown(commits: list[tuple[datetime, str, str]], tz: str, budget: int
     return "\n".join(out), True
 
 
-def _scan_entry(path: Path, cutoff: float, excludes: tuple[str, ...]) -> tuple[int, int, float]:
+class _Walk:
+    """The directory-entry budget shared by a whole folder snapshot."""
+
+    def __init__(self, limit: int) -> None:
+        self.left = limit
+        self.cut = False
+
+    def spend(self) -> bool:
+        if self.left <= 0:
+            self.cut = True
+            return False
+        self.left -= 1
+        return True
+
+
+def _scan_entry(path: Path, cutoff: float, excludes: tuple[str, ...], walk: _Walk) -> tuple[int, int, float]:
     """`(files, bytes, newest mtime)` under `path` among files last modified before `cutoff`."""
     count = total = 0
     newest = 0.0
-    seen = 0
     stack = [path]
-    while stack and seen < MAX_WALK_ENTRIES:
+    while stack and not walk.cut:
         directory = stack.pop()
         try:
             with os.scandir(directory) as it:
@@ -121,7 +140,8 @@ def _scan_entry(path: Path, cutoff: float, excludes: tuple[str, ...]) -> tuple[i
         except OSError:
             continue
         for entry in entries:
-            seen += 1
+            if not walk.spend():
+                break
             try:
                 if entry.is_dir(follow_symlinks=False):
                     if entry.name not in excludes:
@@ -150,8 +170,11 @@ def _folder_markdown(folders: list[Path], before: datetime, tz: str, budget: int
     """Top-level entries of each folder with their size and newest modification before `before`."""
     cutoff = before.timestamp()
     zone = ZoneInfo(tz)
+    walk = _Walk(MAX_WALK_ENTRIES)
     lines: list[str] = []
     for root in folders:
+        if walk.cut:
+            break
         try:
             spec = load_gitignore(root)
         except ValueError:
@@ -163,6 +186,8 @@ def _folder_markdown(folders: list[Path], before: datetime, tz: str, budget: int
             continue
         rows: list[str] = []
         for entry in entries:
+            if not walk.spend():
+                break
             try:
                 is_dir = entry.is_dir(follow_symlinks=False)
                 if not is_dir and not entry.is_file(follow_symlinks=False):
@@ -172,7 +197,7 @@ def _folder_markdown(folders: list[Path], before: datetime, tz: str, budget: int
                 ):
                     continue
                 if is_dir:
-                    count, total, newest = _scan_entry(Path(entry.path), cutoff, DEFAULT_EXCLUDES)
+                    count, total, newest = _scan_entry(Path(entry.path), cutoff, DEFAULT_EXCLUDES, walk)
                 else:
                     st = entry.stat(follow_symlinks=False)
                     count, total, newest = (1, st.st_size, st.st_mtime) if st.st_mtime < cutoff else (0, 0, 0.0)
@@ -186,14 +211,15 @@ def _folder_markdown(folders: list[Path], before: datetime, tz: str, budget: int
         if rows:
             lines.append(f"### {root.name}")
             lines.extend(rows)
-    out: list[str] = []
-    used = 0
+    note = f"(folder walk stopped after {MAX_WALK_ENTRIES} entries; sizes and dates are partial)"
+    out: list[str] = [note] if walk.cut else []
+    used = len(note) + 1 if walk.cut else 0
     for line in lines:
         if used + len(line) + 1 > budget:
             return "\n".join(out), True
         out.append(line)
         used += len(line) + 1
-    return "\n".join(out), False
+    return "\n".join(out), walk.cut
 
 
 def collect_history(
@@ -219,12 +245,22 @@ def collect_history(
     if "git" in starts:
         before = local_midnight(starts["git"], tz)
         commits: dict[str, tuple[datetime, str, str]] = {}
+        notes: list[str] = []
         for folder in folders:
-            for commit in _git_commits(folder, before):
+            found, note = _git_commits(folder, before)
+            if note:
+                notes.append(note)
+            if len(found) >= MAX_COMMITS:
+                notes.append(f"(only the newest {MAX_COMMITS} commits before the start were read for {folder.name})")
+                truncated = True
+            for commit in found:
                 commits.setdefault(commit[1], commit)
+        body = ""
         if commits:
-            git_md, git_truncated = _git_markdown(list(commits.values()), tz, budget_chars - len(folder_md))
+            room = budget_chars - len(folder_md) - sum(len(n) + 1 for n in notes)
+            body, git_truncated = _git_markdown(list(commits.values()), tz, max(room, 0))
             truncated = truncated or git_truncated
+        git_md = "\n".join([*notes, body] if body else notes)
     return HistoryInput(git_md=git_md, folder_md=folder_md, truncated=truncated)
 
 
@@ -245,13 +281,15 @@ def session_history(
     Reads the transcripts directly, so it does not depend on what the ingest scanner kept; a
     source that did not skip history is left out. `registered` is every registered folder host path.
     """
+    cutoffs = {source: local_midnight(day, settings.tz) for source, day in starts.items()}
     found: dict[str, tuple[datetime, SessionSummary]] = {}
+    capped = False
     for folder in folders:
-        for summary in project_transcripts(settings, folder, registered=registered):
-            start = starts.get(SESSION_SOURCE_OF_BACKEND[summary.backend])
-            if start is None or summary.t_end is None or summary.t_end >= local_midnight(start, settings.tz):
-                continue
-            found[summary.transcript_path] = (summary.t_end, summary)
+        scan = project_transcripts(settings, folder, registered=registered, before_by_source=cutoffs)
+        capped = capped or scan.capped
+        for summary in scan.sessions:
+            if summary.t_end is not None:
+                found[summary.transcript_path] = (summary.t_end, summary)
     zone = ZoneInfo(settings.tz)
     sections: list[str] = []
     used = 0
@@ -268,4 +306,6 @@ def session_history(
         section = f"{head}\n{digest}" if digest else head
         sections.append(section)
         used += len(section) + 2
+    if capped:
+        sections.append(f"(only the newest {MAX_TRANSCRIPT_FILES} transcripts per folder were read)")
     return "\n\n".join(sections)
