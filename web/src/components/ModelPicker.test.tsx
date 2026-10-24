@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -24,7 +24,7 @@ describe("ModelPicker", () => {
     const placeholder = screen.getByRole("option", { name: "Choose a model…" }) as HTMLOptionElement;
     expect(placeholder.disabled).toBe(true);
     const claude = select.querySelector('optgroup[label="claude"]')!;
-    expect(Array.from(claude.querySelectorAll("option"), o => o.textContent)).toEqual(["claude-fable-5-1", "Sonnet 5.5"]);
+    expect(Array.from(claude.querySelectorAll("option"), o => o.textContent)).toEqual(["default", "claude-fable-5-1", "Sonnet 5.5"]);
     const codex = select.querySelector('optgroup[label="codex (unavailable: codex is not installed)"]') as HTMLOptGroupElement;
     expect(codex.disabled).toBe(true);
   });
@@ -36,6 +36,25 @@ describe("ModelPicker", () => {
     await screen.findByRole("option", { name: "Sonnet 5.5" });
     await user.selectOptions(screen.getByRole("combobox", { name: "Model" }), FABLE_VALUE);
     expect(onChange).toHaveBeenCalledWith(FABLE);
+  });
+
+  it("reports a runner alone as a null model", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    wrap(<ModelPicker value={null} onChange={onChange} />);
+    await screen.findByRole("option", { name: "Sonnet 5.5" });
+    await user.selectOptions(screen.getByRole("combobox", { name: "Model" }), "claude|");
+    expect(onChange).toHaveBeenCalledWith({ runner: "claude", model: null });
+  });
+
+  it("keeps a held runner-only choice while the runner is available, and clears it when not", async () => {
+    const onChange = vi.fn();
+    wrap(<ModelPicker value={{ runner: "claude", model: null }} onChange={onChange} />);
+    await screen.findByRole("option", { name: "Sonnet 5.5" });
+    expect((screen.getByRole("combobox", { name: "Model" }) as HTMLSelectElement).value).toBe("claude|");
+    expect(onChange).not.toHaveBeenCalled();
+    wrap(<ModelPicker value={{ runner: "codex", model: null }} onChange={onChange} />);
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith(null));
   });
 
   it("shows the given value and a custom label", async () => {

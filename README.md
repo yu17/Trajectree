@@ -230,11 +230,14 @@ token-budgeted context pack built from the tracker.
 - `ask` and `add` apply nothing by themselves. The owner accepts a proposal in
   the web UI (Quick capture, Ask panel, Inbox) or with
   `trajectree accept <run_id> <n>` (n is 1-based).
-- All three require `--model` (a model from `trajectree models`; there is no
-  default), and take `--runner` (`claude`, `codex` or `ccx:<backend>`) and
-  `--no-wait`. Without `--model` the command stops with `no model was chosen;
-  pass --model (see: trajectree models)` before contacting the daemon.
-  `--runner` is needed only when two runners offer the same model name. A
+- All three need `--model` (a model from `trajectree models`), `--runner`
+  (`claude`, `codex` or `ccx:<backend>`) or both, and take `--no-wait`. A
+  runner alone starts the run without a model flag, so the runner uses its own
+  default model; the finished run records the model Claude reports using. With
+  neither, the command stops with `no model or runner was chosen; pass --runner
+  or --model (see: trajectree models)` before contacting the daemon.
+  `--runner` is needed with `--model` only when two runners offer the same
+  model name. A
   model the catalog does not list is refused (`unknown model <name>; run:
   trajectree models --refresh`) unless `--runner` names an available runner:
   the run then goes ahead and its result carries the warning `model <name> is
@@ -319,7 +322,8 @@ claude ...`), run `trajectree backends sync`: it copies each backend's
 
 ### Model catalog
 
-There are no default models: every run names one from the catalog, which lists
+There is no default choice: every run names a model from the catalog or a
+runner alone (which then uses its own default model). The catalog lists
 what each runner offers (`claude`, `codex`, one `ccx:<backend>` per synced
 profile). `trajectree models` prints it; `trajectree models --refresh` asks the
 runners again. The Settings tab has the same Refresh button. The daemon also
@@ -363,7 +367,7 @@ none stale. All three accept
 
 A routine is a scheduled run: a cron trigger in a time zone, a prompt, a scope,
 caps and a delivery, plus the runner and model it runs on. Two are seeded on
-first start, both disabled and without a model:
+first start, both disabled and without a runner or model:
 
 | Routine | Trigger | What it does |
 | --- | --- | --- |
@@ -372,7 +376,7 @@ first start, both disabled and without a model:
 
 ```bash
 trajectree routines                          # name, on/off, model, trigger, tz, next fire, last run
-trajectree routine set cross-project-review --model <model> [--runner <runner>]
+trajectree routine set cross-project-review [--model <model>] [--runner <runner>]   # at least one
 trajectree routine enable cross-project-review
 trajectree routine disable cross-project-review
 trajectree review [--model <model>] [--projects a,b] [--no-wait]   # run cross-project-review now
@@ -381,17 +385,18 @@ trajectree run <routine> [--model <model>] [--projects a,b] [--no-wait]
 trajectree scheduler [tick]                  # show the scheduler, or tick it now
 ```
 
-- A routine runs unattended on the model it stores, so set one with
-  `routine set` before enabling it: enabling a routine without a model fails
-  with `no model was chosen`, and the scheduler never fires one (it records
-  that as the routine's last error). At startup, a routine still enabled
-  without a model (from an older version) is disabled, with the last error
-  `disabled: no model was chosen`.
+- A routine runs unattended on the runner and model it stores, so set them with
+  `routine set` before enabling it (a runner alone is enough: it runs on its
+  default model). Enabling a routine with neither fails with `no model or
+  runner was chosen`, and the scheduler never fires one (it records that as the
+  routine's last error). At startup, a routine still enabled with neither
+  (from an older version) is disabled, with the last error `disabled: no model
+  or runner was chosen`.
 - `review`, `prep` and `run` use the routine's stored runner and model, and
-  fail with `no model was chosen` when it has none. `--model` (and `--runner`)
+  fail with `no model or runner was chosen` when it has neither. `--model` (and `--runner`)
   override them for that one run; the stored model is unchanged.
   `trajectree routines` shows each routine's model (`runner/model` when a
-  runner is set), or `no model`.
+  runner is set, `runner/default` for a runner alone), or `no model`.
 
 - The seeds take their time zone from `TRAJECTREE_TZ` when they are created;
   compose passes `TZ` from your shell or `.env` (default `UTC`). Changing it

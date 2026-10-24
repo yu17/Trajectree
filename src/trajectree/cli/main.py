@@ -108,7 +108,7 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_parser("mcp", help="run the stdio MCP shim that forwards to the daemon")
 
     def run_opts(sp: argparse.ArgumentParser) -> None:
-        sp.add_argument("--runner", help="needed only when the model name alone is ambiguous")
+        sp.add_argument("--runner", help="needed only when the model name alone is ambiguous; alone, it runs on its default model")
         sp.add_argument("--model", help="the model to run on (see: trajectree models)")
         sp.add_argument("--no-wait", action="store_true")
 
@@ -167,10 +167,10 @@ def _parser() -> argparse.ArgumentParser:
     rt_sub = rt.add_subparsers(dest="sub", required=True)
     for name in ("enable", "disable"):
         rt_sub.add_parser(name, help=f"{name} a routine").add_argument("name")
-    rt_set = rt_sub.add_parser("set", help="set the model a routine runs on")
+    rt_set = rt_sub.add_parser("set", help="set the runner and model a routine runs on")
     rt_set.add_argument("name")
-    rt_set.add_argument("--model", required=True)
-    rt_set.add_argument("--runner", help="needed only when the model name alone is ambiguous")
+    rt_set.add_argument("--model", help="omit to use the runner's own default model")
+    rt_set.add_argument("--runner", help="needed only when the model name alone is ambiguous; alone, it runs on its default model")
 
     def routine_opts(sp: argparse.ArgumentParser) -> None:
         sp.add_argument("--projects", help="comma-separated slugs")
@@ -453,14 +453,21 @@ def _cmd_caps(args: argparse.Namespace, api: _Api) -> None:
 
 
 ROUTINE_ALIASES = {"review": "cross-project-review", "prep": "meeting-prep"}
-MODEL_REQUIRED = ("summarize", "ask", "add")  # and `report draft`; routine runs may use the stored model
+MODEL_REQUIRED = ("summarize", "ask", "add")  # and `report draft` and `routine set`; routine runs may use the stored choice
+
+
+def _model_label(runner: str | None, model: str | None) -> str:
+    """How a routine's choice reads in a listing: runner/model, a runner's default, or nothing chosen."""
+    if runner:
+        return f"{runner}/{model or 'default'}"
+    return model or "no model"
 
 
 def _cmd_routines(args: argparse.Namespace, api: _Api) -> None:
     for r in api.get("/api/routines"):
         last = api.get(f"/api/runs/{r['last_run_id']}")["run"]["status"] if r["last_run_id"] else "-"
         enabled = "on" if r["enabled"] else "off"
-        model = f"{r['runner']}/{r['model']}" if r["runner"] and r["model"] else r["model"] or "no model"
+        model = _model_label(r["runner"], r["model"])
         print(f"{r['name']}  {enabled}  {model}  {r['trigger']}  {r['tz']}  {r['next_fire'] or '-'}  {last}")
 
 
@@ -469,7 +476,7 @@ def _cmd_routine(args: argparse.Namespace, api: _Api) -> None:
     if args.sub == "set":
         # Both are set: without --runner the catalog picks the runner at each run.
         r = api.patch(path, {"model": args.model, "runner": args.runner})
-        print(f"{r['name']}: model {r['model']}" + (f" via {r['runner']}" if r["runner"] else ""))
+        print(f"{r['name']}: model {r['model'] or 'default'}" + (f" via {r['runner']}" if r["runner"] else ""))
         return
     enable = args.sub == "enable"
     r = api.patch(path, {"enabled": enable})
@@ -569,9 +576,9 @@ def _run(
 ) -> None:
     cmd = args.cmd
     # Checked before any request; a routine run without --model uses the routine's stored model.
-    if cmd in MODEL_REQUIRED or (cmd == "report" and args.sub == "draft"):
-        if not args.model:
-            raise _Fail(f"{NO_MODEL_CHOSEN}; pass --model (see: trajectree models)", 2)
+    if cmd in MODEL_REQUIRED or (cmd == "report" and args.sub == "draft") or (cmd == "routine" and args.sub == "set"):
+        if not (args.model or args.runner):
+            raise _Fail(f"{NO_MODEL_CHOSEN}; pass --runner or --model (see: trajectree models)", 2)
     simple: dict[str, Callable[[argparse.Namespace, _Api], None]] = {
         "summarize": _cmd_summarize, "ask": _cmd_ask, "add": _cmd_add, "accept": _cmd_accept,
         "runs": _cmd_runs, "usage": _cmd_usage, "caps": _cmd_caps,

@@ -818,10 +818,10 @@ def test_enqueue_without_model_is_refused(ledger, human, settings):
     create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
     _routine(ledger, model=None)
     s = svc(ledger, settings)
-    for request in (AskRequest(question="q"), AskRequest(question="q", runner="claude"), SummarizeRequest(project="a"),
+    for request in (AskRequest(question="q"), SummarizeRequest(project="a"),
                     QuickAddRequest(text="t"), RoutineRequest(routine="rev"),
                     StartingPointRequest(project="a", starts={"git": date(2025, 1, 1)})):
-        with pytest.raises(NoModelChosen, match="^no model was chosen$"):
+        with pytest.raises(NoModelChosen, match="^no model or runner was chosen$"):
             s.enqueue(request)
     with pytest.raises(UnknownModel):
         s.check(AskRequest(question="q", model="nope"))
@@ -908,3 +908,33 @@ def test_null_optional_fields_take_defaults():
             "event_kind": None, "when": None, "due": None, "body_md": None, "status": None}
     (p,) = _proposals(ParsedResult(ok=True, subtype="success", structured={"answer": "", "proposals": [item]}))
     assert (p.event_kind, p.body_md, p.status, p.when, p.due) == ("note", "", "happened", None, None)
+
+
+def test_enqueue_runner_only_omits_model_flag(ledger, settings, logged_in):
+    argv_file = settings.claude_config_dir / "argv.json"
+    s = svc(ledger, settings, FAKE_CLAUDE_ARGV_FILE=str(argv_file))
+    run = s.enqueue(AskRequest(question="q", runner="claude"))
+    assert (run.runner, run.model) == ("claude", None)
+    assert s.execute(run.id).status == "ok"
+    assert "--model" not in json.loads(argv_file.read_text())
+
+
+def test_legacy_model_only_routine_runs(ledger, settings):
+    _routine(ledger, model="claude-sonnet-5-5", runner=None)
+    s = svc(ledger, settings)
+    run = s.enqueue(RoutineRequest(routine="rev"))
+    assert (run.runner, run.model) == ("claude", "claude-sonnet-5-5")
+
+
+def test_runner_only_routine_runs_without_a_model(ledger, settings):
+    _routine(ledger, model=None, runner="ccx:kimi")
+    run = svc(ledger, settings).enqueue(RoutineRequest(routine="rev"))
+    assert (run.runner, run.model) == ("ccx:kimi", None)
+
+
+def test_run_model_filled_from_model_usage(ledger, settings, logged_in):
+    usage = json.dumps({"a": {"outputTokens": 1}, "b": {"outputTokens": 9}})
+    s = svc(ledger, settings, FAKE_CLAUDE_MODEL_USAGE=usage)
+    assert s.execute(s.enqueue(AskRequest(question="q", runner="claude")).id).model == "b"
+    chosen = s.execute(s.enqueue(AskRequest(question="q", model=MODEL)).id)
+    assert chosen.model == MODEL  # a chosen model is never overwritten

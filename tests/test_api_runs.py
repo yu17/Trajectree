@@ -156,9 +156,9 @@ def test_enqueue_without_model_is_422(client, ledger):
         ("/api/routines/x/run", {}),
     ]
     for path, body in calls:
-        for extra in ({}, {"runner": "claude"}, {"model": ""}):  # a runner alone is no choice
+        for extra in ({}, {"model": ""}):  # neither a runner nor a model
             r = client.post(path, json={**body, **extra})
-            assert (r.status_code, r.json()["detail"]) == (422, "no model was chosen"), (path, extra)
+            assert (r.status_code, r.json()["detail"]) == (422, "no model or runner was chosen"), (path, extra)
     assert ledger.conn.execute("select count(*) from run").fetchone()[0] == 0
 
 

@@ -160,10 +160,10 @@ def test_invalid_runner_leaves_nothing_and_retry_succeeds(client, app, tmp_path)
 def test_start_block_without_model_is_422_and_leaves_nothing(client, app, tmp_path):
     p, repo = setup(client, tmp_path)
     url = f"/api/projects/{p['id']}/import"
-    for block in ({}, {"runner": "claude"}, {"model": None}):
+    for block in ({}, {"model": None}):
         body = {"sources": pick("git"), "starts": {"git": "2025-01-01"}, "start_block": block}
         r = client.post(url, json=body)
-        assert (r.status_code, r.json()["detail"]) == (422, "no model was chosen"), block
+        assert (r.status_code, r.json()["detail"]) == (422, "no model or runner was chosen"), block
     body["start_block"] = {"model": "nope"}
     assert client.post(url, json=body).json()["detail"] == "unknown model nope; run: trajectree models --refresh"
     assert "import" not in props_of(client, p)
@@ -231,7 +231,7 @@ def test_start_block_rerun(client, app, tmp_path):
     assert (conflict.status_code, conflict.json()["detail"]) == (409, "starting-point run already queued or running")
     with app.state.ledger.locked():
         update_run(conn, busy.id, status="failed")
-    assert client.post(url, json={}).json()["detail"] == "no model was chosen"
+    assert client.post(url, json={}).json()["detail"] == "no model or runner was chosen"
     ok = client.post(url, json={"runner": "claude", "model": "claude-opus-5-5"})
     assert ok.status_code == 200, ok.text
     run = ok.json()

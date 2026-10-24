@@ -304,10 +304,10 @@ def seed_catalog(ledger, catalog=TEST_CATALOG):
 
 def test_resolve_no_model():
     for model in (None, ""):
-        with pytest.raises(NoModelChosen, match="^no model was chosen$"):
+        with pytest.raises(NoModelChosen, match="^no model or runner was chosen$"):
             resolve_model(TEST_CATALOG, model, None)
     with pytest.raises(NoModelChosen):
-        resolve_model(TEST_CATALOG, None, "claude")
+        resolve_model(TEST_CATALOG, "", "")
     assert issubclass(NoModelChosen, ModelChoiceError) and issubclass(ModelChoiceError, ValueError)
 
 
@@ -344,3 +344,13 @@ def test_resolve_counts_only_available_runners():
     for runner in ("claude", "ccx:nope"):
         with pytest.raises(RunnerUnavailable, match=f"^runner {runner} is not available; run: trajectree models$"):
             resolve_model(catalog, "m", runner)
+
+
+def test_resolve_runner_only():
+    catalog = offering({"codex": [], "claude": ["claude-opus-5-5"]})
+    assert resolve_model(catalog, None, "codex") == Resolved(runner="codex", model=None)
+    assert resolve_model(catalog, "", "claude") == Resolved(runner="claude", model=None)
+    with pytest.raises(RunnerUnavailable, match="^runner ccx:nope is not available"):
+        resolve_model(catalog, None, "ccx:nope")
+    with pytest.raises(NoModelChosen):
+        resolve_model(catalog, None, None)

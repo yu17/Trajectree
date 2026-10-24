@@ -68,7 +68,7 @@ def _disable_modelless(ledger: Ledger) -> None:
     with ledger.locked() as conn:
         names = disable_modelless_routines(conn, now=utcnow())
     if names:
-        log.warning("disabled routines without a model: %s", ", ".join(names))
+        log.warning("disabled routines without a runner or model: %s", ", ".join(names))
 
 
 async def _startup_refresh(app: FastAPI) -> None:

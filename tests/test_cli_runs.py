@@ -115,7 +115,7 @@ def test_cli_routines_review_and_prep(app, client, anon, capsys):
                     ["meeting-prep", "off", "no model", "0 7 * * 1-5", "UTC", "-", "-"]]
     # No --model: the request is sent and the daemon refuses a routine that stores none.
     assert cli.main(["review", "--no-wait"], client=anon, env=env) == 1
-    assert capsys.readouterr().err.strip() == "no model was chosen"
+    assert capsys.readouterr().err.strip() == "no model or runner was chosen"
     assert client.get("/api/routines/cross-project-review/runs").json() == []
     client.patch("/api/routines/cross-project-review", json={"model": MODEL, "runner": "claude"})
     client.patch("/api/routines/meeting-prep", json={"model": "k2"})
@@ -140,7 +140,7 @@ def test_cli_routines_review_and_prep(app, client, anon, capsys):
 def test_cli_routine_enable_disable_and_scheduler(app, client, anon, capsys):
     env = env_for(app)
     assert cli.main(["routine", "enable", "meeting-prep"], client=anon, env=env) == 1   # seeded without a model
-    assert capsys.readouterr().err.strip() == "no model was chosen"
+    assert capsys.readouterr().err.strip() == "no model or runner was chosen"
     client.patch("/api/routines/meeting-prep", json={"model": MODEL})
     assert cli.main(["routine", "enable", "meeting-prep"], client=anon, env=env) == 0
     out = capsys.readouterr().out
@@ -168,11 +168,11 @@ def test_cli_routine_set(app, client, anon, capsys):
     r = client.get("/api/routines/meeting-prep").json()
     assert (r["runner"], r["model"]) == (None, "gpt-6.1-sol")   # no --runner: the catalog decides at run time
     assert cli.main(["routine", "enable", "meeting-prep"], client=anon, env=env) == 0
-    assert cli.main(["routine", "set", "meeting-prep"], client=anon, env=env) == 2   # --model is required
+    assert cli.main(["routine", "set", "meeting-prep"], client=anon, env=env) == 2   # a runner or a model is required
     assert cli.main(["routine", "set", "nope", "--model", "k2"], client=anon, env=env) == 1
 
 
-NO_MODEL = "no model was chosen; pass --model (see: trajectree models)"
+NO_MODEL = "no model or runner was chosen; pass --runner or --model (see: trajectree models)"
 
 
 def test_cli_requires_model(capsys):
@@ -180,7 +180,7 @@ def test_cli_requires_model(capsys):
         def __getattr__(self, name):
             raise AssertionError(f"HTTP {name} sent")
 
-    for argv in (["summarize", "clmi"], ["summarize", "--session", "s1"], ["ask", "q"], ["ask", "q", "--runner", "claude"],
+    for argv in (["summarize", "clmi"], ["summarize", "--session", "s1"], ["ask", "q"],
                  ["add", "t"], ["report", "draft", "--kind", "memo", "--title", "T", "--projects", "clmi"]):
         assert cli.main(argv, client=NoHttp(), env={"TRAJECTREE_TOKEN": "t"}) == 2, argv
         assert capsys.readouterr().err.strip() == NO_MODEL, argv
@@ -224,3 +224,16 @@ def test_cli_report_draft_list_and_export(app, client, anon, capsys, tmp_path, m
     assert capsys.readouterr().out.strip() == f"wrote {r['id']}.pdf"
     assert (tmp_path / f"{r['id']}.pdf").read_text().startswith("FAKE MARP .pdf")
     assert cli.main(["report", "draft", "--kind", "deck", "--title", "Q1", "--projects", "zzz", "--no-wait", "--model", MODEL], client=anon, env=env) == 1
+
+
+def test_cli_routine_set_runner_only(app, client, anon, capsys):
+    env = env_for(app)
+    assert cli.main(["routine", "set", "meeting-prep", "--runner", "codex"], client=anon, env=env) == 0
+    assert capsys.readouterr().out.strip() == "meeting-prep: model default via codex"
+    r = client.get("/api/routines/meeting-prep").json()
+    assert (r["runner"], r["model"]) == ("codex", None)
+    assert cli.main(["routine", "enable", "meeting-prep"], client=anon, env=env) == 0
+    assert cli.main(["routines"], client=anon, env=env) == 0
+    assert "codex/default" in capsys.readouterr().out
+    assert cli.main(["ask", "q"], client=anon, env=env) == 2
+    assert capsys.readouterr().err.strip() == NO_MODEL

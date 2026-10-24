@@ -252,7 +252,7 @@ def test_scheduler_skips_modelless_routine(ledger, human, settings, logged_in):
     rep = Scheduler(ledger, settings, _svc(ledger, settings), now=lambda: T0 + timedelta(minutes=2)).tick()
     assert rep.fired == [] and rep.errors == [] and sorted(rep.skipped) == ["bare", "wrap"]
     for r in (cron, wrap):
-        assert get_routine(ledger.conn, r.id).last_error == "no model was chosen"
+        assert get_routine(ledger.conn, r.id).last_error == "no model or runner was chosen"
     assert list_runs(ledger.conn) == []
     assert get_routine(ledger.conn, cron.id).next_fire > T0 + timedelta(minutes=2)  # the slot passes, unfired
 
@@ -269,3 +269,9 @@ async def test_loop_ticks_until_stopped(ledger, settings):
     stop.set()
     await asyncio.wait_for(task, 5)
     assert get_state(ledger.conn, "scheduler:last")["last_tick"] == to_db(T0)
+
+
+def test_scheduler_fires_a_runner_only_routine(ledger, human, settings, logged_in):
+    _routine(ledger, name="ro", model=None, runner="claude")
+    rep = Scheduler(ledger, settings, _svc(ledger, settings), now=lambda: T0 + timedelta(minutes=2)).tick()
+    assert rep.fired == ["ro"] and rep.skipped == []

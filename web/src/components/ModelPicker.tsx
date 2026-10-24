@@ -5,10 +5,10 @@ import type { ModelChoice } from "../api/types";
 import { errorText } from "./errorText";
 
 const SEP = "|";
-const encode = (c: ModelChoice) => `${c.runner}${SEP}${c.model}`;
+const encode = (c: ModelChoice) => `${c.runner}${SEP}${c.model ?? ""}`; // "R|" is the runner's default
 const decode = (v: string): ModelChoice => {
   const i = v.indexOf(SEP);
-  return { runner: v.slice(0, i), model: v.slice(i + 1) };
+  return { runner: v.slice(0, i), model: v.slice(i + 1) || null };
 };
 
 // A long error would widen the select past a phone screen.
@@ -18,7 +18,8 @@ const unavailableLabel = (runner: string, error: string | null) => {
   return label.length > LABEL_MAX ? `${label.slice(0, LABEL_MAX - 1)}…` : label;
 };
 
-// Two levels in one native select: a runner is an optgroup, its models are the options. The first
+// Two levels in one native select: a runner is an optgroup, its models are the options, led by "default"
+// (the runner on its own model). The first
 // option is a disabled placeholder, so nothing is preselected and nothing is remembered between uses.
 export function ModelPicker({ value, onChange, label = "Model" }: {
   value: ModelChoice | null;
@@ -29,7 +30,7 @@ export function ModelPicker({ value, onChange, label = "Model" }: {
   const id = useId();
   const catalog = useQuery({ queryKey: ["models"], queryFn: api.models });
   const offered = (c: ModelChoice) =>
-    (catalog.data?.runners ?? []).some(r => r.available && r.runner === c.runner && r.models.some(m => m.model === c.model));
+    (catalog.data?.runners ?? []).some(r => r.available && r.runner === c.runner && (c.model === null || r.models.some(m => m.model === c.model)));
   const stale = value !== null && catalog.data !== undefined && !offered(value);
   // A refresh can drop the model a control holds; clear it rather than act on a vanished model.
   useEffect(() => {
@@ -44,6 +45,7 @@ export function ModelPicker({ value, onChange, label = "Model" }: {
         {(catalog.data?.runners ?? []).map(r =>
           r.available ? (
             <optgroup key={r.runner} label={r.runner}>
+              <option value={encode({ runner: r.runner, model: null })}>default</option>
               {r.models.map(m => <option key={m.model} value={encode(m)}>{m.display ?? m.model}</option>)}
             </optgroup>
           ) : (

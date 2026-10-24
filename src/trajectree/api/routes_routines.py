@@ -25,9 +25,9 @@ class RunRoutineBody(BaseModel):
     model: str | None = None
 
 
-def _needs_model(enabled: bool, model: str | None) -> None:
-    """An enabled routine runs unattended, so it must name its model."""
-    if enabled and not model:
+def _needs_choice(enabled: bool, runner: str | None, model: str | None) -> None:
+    """An enabled routine runs unattended, so it must name a runner or a model."""
+    if enabled and not (runner or model):
         raise NoModelChosen(NO_MODEL_CHOSEN)
 
 
@@ -39,7 +39,7 @@ def routines_list(ledger: Ledger = Depends(get_ledger)):
 
 @router.post("/routines", response_model=Routine, status_code=201)
 def routines_create(body: RoutineIn, ledger: Ledger = Depends(get_ledger)):
-    _needs_model(body.enabled, body.model)
+    _needs_choice(body.enabled, body.runner, body.model)
     with ledger.locked() as conn:
         return create_routine(conn, body, now=utcnow())
 
@@ -55,8 +55,10 @@ def routines_patch(ref: str, body: RoutinePatch, ledger: Ledger = Depends(get_le
     with ledger.locked() as conn:
         routine = resolve_routine_ref(conn, ref)
         changed = body.model_fields_set
-        _needs_model(
-            body.enabled if "enabled" in changed else routine.enabled, body.model if "model" in changed else routine.model
+        _needs_choice(
+            body.enabled if "enabled" in changed else routine.enabled,
+            body.runner if "runner" in changed else routine.runner,
+            body.model if "model" in changed else routine.model,
         )
         return update_routine(conn, routine.id, body, now=utcnow())
 

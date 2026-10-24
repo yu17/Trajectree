@@ -177,16 +177,16 @@ def next_fires(conn: apsw.Connection) -> list[tuple[str, datetime]]:
 
 
 def disable_modelless_routines(conn: apsw.Connection, *, now: datetime) -> list[str]:
-    """Disable every enabled routine that names no model, recording why; return their names."""
+    """Disable every enabled routine that names neither a runner nor a model, recording why; return their names."""
     names = [
         r[0] for r in conn.execute(
-            "SELECT name FROM routine WHERE enabled = 1 AND (model IS NULL OR model = '') ORDER BY name"
+            "SELECT name FROM routine WHERE enabled = 1 AND (model IS NULL OR model = '') AND (runner IS NULL OR runner = '') ORDER BY name"
         )
     ]
     if names:
         conn.execute(
             "UPDATE routine SET enabled = 0, next_fire = NULL, last_error = ?, updated_at = ?"
-            " WHERE enabled = 1 AND (model IS NULL OR model = '')",
+            " WHERE enabled = 1 AND (model IS NULL OR model = '') AND (runner IS NULL OR runner = '')",
             (f"disabled: {NO_MODEL_CHOSEN}", to_db(now)),
         )
     return names

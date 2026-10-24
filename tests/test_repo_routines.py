@@ -123,6 +123,14 @@ def test_disable_modelless_routines(conn):
     assert disable_modelless_routines(conn, now=later) == ["bare", "empty"]
     for r in (bare, empty):
         after = get_routine(conn, r.id)
-        assert (after.enabled, after.next_fire, after.last_error, after.updated_at) == (False, None, "disabled: no model was chosen", later)
+        assert (after.enabled, after.next_fire, after.last_error, after.updated_at) == (False, None, "disabled: no model or runner was chosen", later)
     assert get_routine(conn, off.id).last_error is None and get_routine(conn, ok.id).enabled is True
     assert disable_modelless_routines(conn, now=later) == []
+
+
+def test_runner_only_routine_survives_startup(conn):
+    def make(name, **over):
+        return create_routine(conn, RoutineIn(name=name, trigger="@daily", prompt_ref="a.md", enabled=True, **over), now=NOW)
+    runner_only, neither = make("r", runner="codex"), make("n")
+    assert disable_modelless_routines(conn, now=NOW + timedelta(hours=1)) == ["n"]
+    assert get_routine(conn, runner_only.id).enabled is True and get_routine(conn, neither.id).enabled is False

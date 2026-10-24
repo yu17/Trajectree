@@ -95,21 +95,36 @@ describe("RoutinesSection", () => {
     expect(await within(row2).findByText("stored: gpt-9 on codex")).toBeTruthy();
   });
 
-  it("treats a runner-only routine as having no model", async () => {
-    api.routines.mockResolvedValue([routine("half", { runner: "claude" })]);
+  it("shows a runner-only routine as that runner's default and lets it run", async () => {
+    api.routines.mockResolvedValue([routine("half", { runner: "claude" }), routine("gone", { runner: "codex" })]);
     wrap(<RoutinesSection />);
     const row = (await screen.findByText("half")).closest("tr")!;
-    expect((within(row).getByRole("button", { name: "Run now" }) as HTMLButtonElement).disabled).toBe(true);
+    await waitFor(() => expect((within(row).getByRole("combobox", { name: "Model" }) as HTMLSelectElement).value).toBe("claude|"));
+    expect((within(row).getByRole("button", { name: "Run now" }) as HTMLButtonElement).disabled).toBe(false);
     expect(within(row).queryByText(/stored:/)).toBeNull();
+    const gone = screen.getByText("gone").closest("tr")!;
+    expect(await within(gone).findByText("stored: default on codex")).toBeTruthy();
+    expect((within(gone).getByRole("button", { name: "Run now" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("saves a runner's default as a null model", async () => {
+    api.routines.mockResolvedValue([routine("bare")]);
+    api.patchRoutine.mockImplementation(async (name: string, patch: Partial<Routine>) => routine(name, patch));
+    wrap(<RoutinesSection />);
+    const row = (await screen.findByText("bare")).closest("tr")!;
+    const picker = within(row).getByRole("combobox", { name: "Model" });
+    await waitFor(() => expect(picker.querySelector('option[value="claude|"]')).not.toBeNull());
+    await userEvent.setup().selectOptions(picker, "claude|");
+    await waitFor(() => expect(api.patchRoutine).toHaveBeenCalledWith("bare", { runner: "claude", model: null }));
   });
 
   it("shows the API's refusal when a routine without a model is enabled", async () => {
     const user = userEvent.setup();
     api.routines.mockResolvedValue([routine("bare", { enabled: false })]);
-    api.patchRoutine.mockRejectedValue(new Error("no model was chosen"));
+    api.patchRoutine.mockRejectedValue(new Error("no model or runner was chosen"));
     wrap(<RoutinesSection />);
     await user.click(await screen.findByRole("button", { name: "Enable" }));
-    expect(await screen.findByText("no model was chosen")).toBeTruthy();
+    expect(await screen.findByText("no model or runner was chosen")).toBeTruthy();
   });
 
   it("shows the empty state", async () => {

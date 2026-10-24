@@ -19,6 +19,8 @@ def result_line(**over):
     }
     if os.environ.get("FAKE_CLAUDE_STRUCTURED"):
         data["structured_output"] = json.loads(os.environ["FAKE_CLAUDE_STRUCTURED"])
+    if os.environ.get("FAKE_CLAUDE_MODEL_USAGE"):
+        data["modelUsage"] = json.loads(os.environ["FAKE_CLAUDE_MODEL_USAGE"])
     return json.dumps({**data, **over})
 
 

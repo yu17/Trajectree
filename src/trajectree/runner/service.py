@@ -407,6 +407,7 @@ class RunService:
             tokens_out=parsed.usage.tokens_out,
             tokens_cache=parsed.usage.tokens_cache,
             est_usd=parsed.est_usd,
+            **({"model": parsed.model} if parsed.model and not run.model else {}),  # a runner-only run learns its model
             turns=parsed.turns,
             duration_ms=outcome.duration_ms,
             session_id=parsed.session_id,

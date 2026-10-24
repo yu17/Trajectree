@@ -266,7 +266,7 @@ class RunnerUnavailable(ModelChoiceError):
 
 class Resolved(BaseModel):
     runner: str
-    model: str
+    model: str | None  # None: the runner starts without a model flag and uses its own default
     warning: str | None = None
 
 
@@ -275,10 +275,15 @@ def resolve_model(catalog: Catalog, model: str | None, runner: str | None) -> Re
 
     With `runner` given, a model missing from that runner's list is still accepted, with a
     warning: a shipped or cached list can lag a real new model. Model names pass verbatim.
+    A runner alone is a choice too: it runs on its own default model.
     """
-    if not model:
+    if not model and not runner:
         raise NoModelChosen(NO_MODEL_CHOSEN)
     available = {r.runner: r for r in catalog.runners if r.available}
+    if not model:
+        if runner not in available:
+            raise RunnerUnavailable(f"runner {runner} is not available; run: trajectree models")
+        return Resolved(runner=runner, model=None)
     if runner is not None:
         if runner not in available:
             raise RunnerUnavailable(f"runner {runner} is not available; run: trajectree models")

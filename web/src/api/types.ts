@@ -574,8 +574,8 @@ export interface Mounts {
   exports_dir: string;
 }
 
-/** What the owner picked in a model picker: the runner it runs on and the model name. */
-export type ModelChoice = { runner: string; model: string };
+/** What the owner picked in a model picker: the runner it runs on and the model name, or null for the runner's own default. */
+export type ModelChoice = { runner: string; model: string | null };
 
 export interface CatalogModel {
   runner: string;

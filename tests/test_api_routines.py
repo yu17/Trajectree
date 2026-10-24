@@ -85,18 +85,18 @@ def test_routine_run_uses_stored_model(client):
 def test_enable_routine_without_model_is_422(client):
     client.post("/api/routines", json={"name": "x", "trigger": "@daily", "prompt_ref": "a.md"})
     r = client.patch("/api/routines/x", json={"enabled": True})
-    assert (r.status_code, r.json()["detail"]) == (422, "no model was chosen")
+    assert (r.status_code, r.json()["detail"]) == (422, "no model or runner was chosen")
     assert client.get("/api/routines/x").json()["enabled"] is False
     r = client.patch("/api/routines/x", json={"enabled": True, "model": "k2", "runner": "ccx:kimi"})
     assert r.status_code == 200 and r.json()["enabled"] is True and r.json()["next_fire"]
-    r = client.patch("/api/routines/x", json={"model": None})  # an enabled routine keeps its model
-    assert (r.status_code, r.json()["detail"]) == (422, "no model was chosen")
+    r = client.patch("/api/routines/x", json={"model": None, "runner": None})  # an enabled routine keeps a choice
+    assert (r.status_code, r.json()["detail"]) == (422, "no model or runner was chosen")
     assert client.get("/api/routines/x").json()["model"] == "k2"
 
 
 def test_create_enabled_routine_without_model_is_422(client):
     r = client.post("/api/routines", json={"name": "x", "trigger": "@daily", "prompt_ref": "a.md", "enabled": True})
-    assert (r.status_code, r.json()["detail"]) == (422, "no model was chosen")
+    assert (r.status_code, r.json()["detail"]) == (422, "no model or runner was chosen")
     assert client.get("/api/routines/x").status_code == 404
     body = {"name": "x", "trigger": "@daily", "prompt_ref": "a.md", "enabled": True, "model": MODEL}
     assert client.post("/api/routines", json=body).status_code == 201
@@ -115,5 +115,11 @@ def test_startup_disables_modelless_enabled_routines(settings, ledger):
         create_routine(conn, RoutineIn(name="kept", trigger="@daily", prompt_ref="a.md", enabled=True, model=MODEL), now=now)
     with TestClient(create_app(settings, ledger=ledger)):
         old, kept = get_routine_by_name(ledger.conn, "old"), get_routine_by_name(ledger.conn, "kept")
-    assert (old.enabled, old.next_fire, old.last_error) == (False, None, "disabled: no model was chosen")
+    assert (old.enabled, old.next_fire, old.last_error) == (False, None, "disabled: no model or runner was chosen")
     assert kept.enabled is True and kept.last_error is None
+
+
+def test_enable_runner_only_routine(client):
+    client.post("/api/routines", json={"name": "x", "trigger": "@daily", "prompt_ref": "a.md"})
+    r = client.patch("/api/routines/x", json={"enabled": True, "runner": "codex"})
+    assert r.status_code == 200 and r.json()["enabled"] is True and r.json()["model"] is None

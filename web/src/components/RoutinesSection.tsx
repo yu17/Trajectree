@@ -10,11 +10,15 @@ import { useRun } from "./useRun";
 const ACTIVE = ["queued", "running"];
 const local = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : "never");
 
-// The picker's value for a routine's stored model: the runner's option when it is in the catalog, or,
-// with no runner stored, the one available runner offering the model. Otherwise null (the row shows the
+// The picker's value for a routine's stored choice: a runner alone is that runner's "default" while it is
+// available; with a model, the runner's option when it is in the catalog, or, with no runner stored, the
+// one available runner offering the model. Otherwise null (the row shows the
 // stored text and the daemon decides when it runs).
 function storedChoice(routine: Routine, catalog: Catalog | undefined): ModelChoice | null {
-  if (!routine.model || !catalog) return null;
+  if (!catalog) return null;
+  if (!routine.model) {
+    return routine.runner && catalog.runners.some(r => r.available && r.runner === routine.runner) ? { runner: routine.runner, model: null } : null;
+  }
   const offering = catalog.runners.filter(r => r.available && r.models.some(m => m.model === routine.model));
   if (routine.runner) return offering.some(r => r.runner === routine.runner) ? { runner: routine.runner, model: routine.model } : null;
   return offering.length === 1 ? { runner: offering[0].runner, model: routine.model } : null;
@@ -45,8 +49,9 @@ function RoutineRow({ routine, onNotice }: { routine: Routine; onNotice: (text: 
   });
   const catalog = useQuery({ queryKey: ["models"], queryFn: api.models });
   const stored = storedChoice(routine, catalog.data);
+  const chosen = Boolean(routine.model || routine.runner);
   const runNow = useMutation({
-    // Run now uses the stored model.
+    // Run now uses the stored runner and model.
     mutationFn: () => api.runRoutine(routine.name),
     onSuccess: r => {
       setQueued(r.id);
@@ -64,8 +69,8 @@ function RoutineRow({ routine, onNotice }: { routine: Routine; onNotice: (text: 
       <td>{status ? <span className={`badge run-${status}`}>{status}</span> : <span className="muted">—</span>}</td>
       <td>
         <ModelPicker value={setModel.isPending ? setModel.variables : stored} onChange={c => c && setModel.mutate(c)} />
-        {routine.model && !stored && !setModel.isPending && (
-          <span className="muted">{`stored: ${routine.model}${routine.runner ? ` on ${routine.runner}` : ""}`}</span>
+        {chosen && !stored && !setModel.isPending && (
+          <span className="muted">{`stored: ${routine.model ?? "default"}${routine.runner ? ` on ${routine.runner}` : ""}`}</span>
         )}
       </td>
       <td>
@@ -74,7 +79,7 @@ function RoutineRow({ routine, onNotice }: { routine: Routine; onNotice: (text: 
         </button>
       </td>
       <td>
-        <button disabled={!routine.model || runNow.isPending || busy} onClick={() => runNow.mutate()}>Run now</button>
+        <button disabled={!chosen || runNow.isPending || busy} onClick={() => runNow.mutate()}>Run now</button>
       </td>
     </tr>
   );

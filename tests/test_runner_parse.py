@@ -73,3 +73,11 @@ def test_parse_codex_reports_turn_failure():
 def test_parse_codex_error_event_without_turn_failed_and_default():
     assert parse_codex(json.dumps({"type": "error", "message": "boom"}) + "\n", None).error == "boom"
     assert parse_codex('{"type":"turn.started"}\n', None).error == "no last message"
+
+
+def test_claude_model_is_the_one_with_most_output():
+    usage = {"a": {"outputTokens": 1}, "b": {"outputTokens": 9}}
+    assert parse_claude_json(json.dumps({**RESULT, "modelUsage": usage})).model == "b"
+    for bad in (None, {}, [], "x", {"a": 1}, {"": {"outputTokens": 3}}):
+        assert parse_claude_json(json.dumps({**RESULT, "modelUsage": bad})).model is None
+    assert parse_claude_json(json.dumps(RESULT)).model is None

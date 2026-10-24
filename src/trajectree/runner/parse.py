@@ -23,6 +23,7 @@ class ParsedResult(BaseModel):
     turns: int = 0
     duration_ms: int = 0
     error: str | None = None
+    model: str | None = None  # the model the runner reported using, when it says
 
 
 def _json_object(text: str) -> dict | None:
@@ -50,6 +51,19 @@ def _session_id(value: object) -> str | None:
     if isinstance(value, str):
         return value or None
     return str(value) if _number(value) else None
+
+
+def _busiest_model(usage: object) -> str | None:
+    """The `modelUsage` key with the most output tokens: the model that did the work."""
+    if not isinstance(usage, dict):
+        return None
+    best, best_out = None, -1
+    for name, entry in usage.items():
+        if isinstance(entry, dict) and isinstance(name, str) and name:
+            out = _int(entry.get("outputTokens"))
+            if out > best_out:
+                best, best_out = name, out
+    return best
 
 
 def parse_claude_json(stdout: str) -> ParsedResult:
@@ -86,6 +100,7 @@ def parse_claude_json(stdout: str) -> ParsedResult:
         turns=_int(data.get("num_turns")),
         duration_ms=_int(data.get("duration_ms")),
         error=None if ok else (text or subtype),
+        model=_busiest_model(data.get("modelUsage")),
     )
 
 

@@ -297,7 +297,7 @@ SLOT_OF: dict[str, RunSlot] = {
 }
 RunStatus = Literal["queued", "running", "ok", "failed", "capped", "cancelled"]
 RUNNER_PATTERN = r"^(claude|codex|ccx:[A-Za-z0-9][A-Za-z0-9._-]*)$"
-NO_MODEL_CHOSEN = "no model was chosen"  # every run names its model; there is no default
+NO_MODEL_CHOSEN = "no model or runner was chosen"  # every run names a model or a runner; there is no default
 ProposalKind = Literal["event", "todo"]
 
 

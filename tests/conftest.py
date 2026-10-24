@@ -49,6 +49,7 @@ def settings(tmp_path):
             "FAKE_CLAUDE_MODE",
             "FAKE_CLAUDE_MODE_FILE",
             "FAKE_CLAUDE_STRUCTURED",
+            "FAKE_CLAUDE_MODEL_USAGE",
             "FAKE_CLAUDE_RESULT",
             "FAKE_CLAUDE_PROJECT",
             "FAKE_CLAUDE_ARGV_FILE",

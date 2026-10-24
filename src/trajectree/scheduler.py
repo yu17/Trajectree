@@ -145,12 +145,12 @@ class Scheduler:
                     missed = routine.next_fire < now - grace
                     # Move next_fire first: a failing enqueue never fires the same slot twice.
                     fields: dict = {"next_fire": compute_next_fire(routine.trigger, routine.tz, after=now)}
-                    if not routine.model:
-                        fields["last_error"] = NO_MODEL_CHOSEN  # never fired on a model nobody picked
+                    if not (routine.model or routine.runner):
+                        fields["last_error"] = NO_MODEL_CHOSEN  # never fired on a choice nobody made
                     elif missed:
                         fields["last_error"] = f"missed fire at {to_db(routine.next_fire)} skipped"
                     set_run_state(conn, routine_id, **fields)
-                if missed or not routine.model:
+                if missed or not (routine.model or routine.runner):
                     report.skipped.append(name)
                     continue
                 self.runs.enqueue(RoutineRequest(routine=routine_id, reason="cron"))
@@ -213,7 +213,7 @@ class Scheduler:
                     routine = get_routine(conn, routine_id)
                     if routine is None or (routine.paused_until is not None and routine.paused_until > now):
                         continue
-                    if not routine.model:
+                    if not (routine.model or routine.runner):
                         record_error(conn, routine_id, NO_MODEL_CHOSEN)
                         report.skipped.append(name)
                         continue
