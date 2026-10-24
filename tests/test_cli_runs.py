@@ -73,6 +73,29 @@ def test_cli_models_prints_and_refreshes(app, client, anon, capsys, settings):
     assert "claude  refreshed " in out and "  claude-opus-5-5" in out
 
 
+def test_slow_commands_get_a_long_http_timeout(monkeypatch, capsys):
+    seen = []
+
+    class Recording:
+        def __init__(self, timeout):
+            self.default = timeout
+
+        def post(self, url, **kw):
+            seen.append((url.rsplit("/api", 1)[1], kw.get("timeout", self.default)))
+            body = {"synced": ["kimi"]} if url.endswith("/backends/sync") else {"runners": []}
+            return type("R", (), {"status_code": 200, "json": lambda self: body})()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(cli.httpx, "Client", Recording)
+    env = {"TRAJECTREE_TOKEN": "t", "TRAJECTREE_URL": "http://127.0.0.1:1"}
+    assert cli.main(["models", "--refresh"], env=env) == 0
+    assert cli.main(["backends", "sync"], env=env) == 0
+    assert [path for path, _ in seen] == ["/models/refresh", "/backends/sync"]
+    assert all(timeout >= 120 for _, timeout in seen)
+
+
 def test_print_run_hides_applied_and_dismissed_hints(capsys):
     import sys
     detail = {"run": {"id": "r1", "status": "ok", "result_md": "", "est_usd": 0, "turns": 1, "duration_ms": 1, "error": None,

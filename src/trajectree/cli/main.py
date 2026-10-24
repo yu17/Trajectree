@@ -19,6 +19,7 @@ from trajectree.timeutil import to_db, utcnow
 
 DEFAULT_URL = "http://127.0.0.1:8742"
 POLL_S = 2.0
+SLOW_TIMEOUT_S = 120.0  # a catalog refresh asks every runner and backend in turn
 _sleep = time.sleep
 
 
@@ -101,6 +102,8 @@ def _parser() -> argparse.ArgumentParser:
     init.add_argument("--remote", action="append", default=[], metavar="URL", help="follow this git remote (repeatable)")
     init.add_argument("--no-remotes", action="store_true", help="follow no git remote")
     init.add_argument("--yes", action="store_true", help="never prompt; a missing choice is an error")
+    init.add_argument("--start-block-only", action="store_true",
+                      help="queue the starting-point summary of the skipped history again (needs a model)")
 
     sub.add_parser("mcp", help="run the stdio MCP shim that forwards to the daemon")
 
@@ -225,8 +228,9 @@ def _token(env: Mapping[str, str]) -> str | None:
 
 
 class _Api:
-    def __init__(self, client: _Client, base: str, token: str) -> None:
+    def __init__(self, client: _Client, base: str, token: str, *, slow_timeout: float | None = None) -> None:
         self.client = client
+        self.slow_timeout = slow_timeout  # for requests that may take minutes; None: the client's default
         self.base = base.rstrip("/")
         self.headers = {"Authorization": f"Bearer {token}", "X-Trajectree-Client": "cli"}
 
@@ -242,8 +246,10 @@ class _Api:
     def get(self, path: str) -> Any:
         return self._handle(self.client.get(self.base + path, headers=self.headers))
 
-    def post(self, path: str, body: dict[str, Any]) -> Any:
-        return self._handle(self.client.post(self.base + path, json=body, headers=self.headers))
+    def post(self, path: str, body: dict[str, Any], *, slow: bool = False) -> Any:
+        """`slow`: the request may take minutes, so it gets `slow_timeout`."""
+        extra = {"timeout": self.slow_timeout} if slow and self.slow_timeout is not None else {}
+        return self._handle(self.client.post(self.base + path, json=body, headers=self.headers, **extra))
 
     def put(self, path: str, body: dict[str, Any]) -> Any:
         return self._handle(self.client.put(self.base + path, json=body, headers=self.headers))
@@ -504,12 +510,12 @@ def _cmd_connectors_login(api: _Api, name: str, stdin: TextIO) -> None:
 
 
 def _cmd_backends_sync(api: _Api) -> None:
-    synced = api.post("/api/backends/sync", {})["synced"]
+    synced = api.post("/api/backends/sync", {}, slow=True)["synced"]
     print("synced: " + (", ".join(synced) if synced else "none"))
 
 
 def _cmd_models(args: argparse.Namespace, api: _Api) -> None:
-    catalog = api.post("/api/models/refresh", {}) if args.refresh else api.get("/api/models")
+    catalog = api.post("/api/models/refresh", {}, slow=True) if args.refresh else api.get("/api/models")
     if not catalog["runners"]:
         print("no catalog yet; run: trajectree models --refresh")
     for r in catalog["runners"]:
@@ -598,7 +604,7 @@ def _run(
             interactive=(sys.stdin.isatty() if interactive is None else interactive) and not args.yes,
             sources=args.sources, since=args.since, start_model=args.start_model,
             start_runner=args.start_runner, no_start_block=args.no_start_block,
-            remote=args.remote, no_remotes=args.no_remotes,
+            remote=args.remote, no_remotes=args.no_remotes, start_block_only=args.start_block_only,
         )
         if code:
             raise _Fail("", code)
@@ -698,7 +704,8 @@ def main(
     owned = client is None
     http: Any = httpx.Client(timeout=30) if owned else client
     try:
-        _run(args, _Api(http, base, token), runner, stdin, env, ask, interactive)
+        api = _Api(http, base, token, slow_timeout=SLOW_TIMEOUT_S if owned else None)
+        _run(args, api, runner, stdin, env, ask, interactive)
     except _Fail as exc:
         if str(exc):
             print(str(exc), file=sys.stderr)

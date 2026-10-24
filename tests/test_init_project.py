@@ -298,7 +298,10 @@ def test_bad_answers_reprompt(tmp_path, capsys):
         assert reason in out
     (body,) = api.imports()
     assert body["sources"] == {"git": {"picked": True, "since": "2024-05-01"}, "folder": {"picked": True, "since": None}}
-    assert body["start_block"] is None and body["starts"] == {}  # the owner chose none: no default model
+    # the owner chose none: no default model, but the skipped history is recorded for a later block
+    assert body["start_block"] is None and body["starts"] == {"git": "2024-05-01"}
+    assert ("  history before 2024-05-01 will be neither imported nor summarised"
+            f" (later: trajectree init-project {(tmp_path / "proj").resolve()} --start-block-only)") in out
 
 
 def test_all_with_nothing_pickable_is_not_offered(tmp_path, capsys):
@@ -514,7 +517,12 @@ def test_flags_import_through_the_daemon(tmp_path, client, app, capsys):
     assert main(args, client=client, env=env_for(app), runner=FakeClaude()) == 0
     assert "next ingest pass imports the history" in capsys.readouterr().out
     (p,) = user_projects(client)
-    assert p["props"]["import"]["sources"] == {"folder": {"picked": True, "since": None}}
+    # "default" is stored as the concrete day it meant at import
+    from trajectree.importing import default_since
+    from trajectree.timeutil import utcnow
+    settings = app.state.settings
+    day = default_since(utcnow(), settings.scan_since_days, settings.tz).isoformat()
+    assert p["props"]["import"]["sources"] == {"folder": {"picked": True, "since": day}}
     assert main(args, client=client, env=env_for(app), runner=FakeClaude()) == 0  # now imported
     assert "4. folder  (imported)" in capsys.readouterr().out
 
@@ -525,3 +533,103 @@ def test_created_project_has_empty_import_record_in_the_daemon(tmp_path, client,
     assert main(["init-project", str(plain), "--sources", "none"], client=client, env=env_for(app), runner=FakeClaude()) == 0
     (p,) = user_projects(client)
     assert p["props"]["import"]["sources"] == {}
+
+
+def test_no_start_block_prints_what_is_left_out(tmp_path, capsys):
+    api = FakeApi(make_probe())
+    code, out, _, _ = dialogue(tmp_path, capsys, api, interactive=False, sources="git", since=["git=default"],
+                               no_start_block=True)
+    assert code == 0
+    folder = (tmp_path / "proj").resolve()
+    assert (f"  history before {DEFAULT_SINCE} will be neither imported nor summarised"
+            f" (later: trajectree init-project {folder} --start-block-only)") in out.splitlines()
+    (body,) = api.imports()
+    assert body["start_block"] is None and body["starts"] == {"git": DEFAULT_SINCE}   # kept for a later block
+    # with a block, no such line
+    _, out, _, _ = dialogue(tmp_path, capsys, FakeApi(make_probe()), interactive=False, sources="git",
+                            since=["git=default"], start_model="m1")
+    assert "neither imported nor summarised" not in out
+
+
+FOLLOWED = {"url": "https://github.com/a/followed", "title": "a/followed", "declined": False, "followed": True}
+
+
+def test_followed_remotes_are_shown_never_asked_and_not_missing(tmp_path, capsys):
+    api = FakeApi(make_probe(remotes=[FOLLOWED]))
+    code, out, err, _ = dialogue(tmp_path, capsys, api, interactive=False, sources="claude")
+    assert code == 0 and err == "" and api.imports()[0]["remotes"] == []
+    assert f"remote {FOLLOWED['url']} (following)" in out
+    api = FakeApi(make_probe(remotes=[FOLLOWED, REMOTE]))
+    _, out, _, ask = dialogue(tmp_path, capsys, api, "2", "n", "y")
+    asked = [p for p in ask.prompts if "Also follow remote" in p]
+    assert asked == [f"Also follow remote {REMOTE['url']}? [y/n]: "] and "(following)" in out
+
+
+class WithStarts(FakeApi):
+    def __init__(self, starts, catalog=CATALOG):
+        super().__init__(make_probe(), catalog)
+        self.starts = starts
+
+    def get(self, path):
+        if path == "/api/projects":
+            return [{"id": "prj_1", "slug": "proj", "title": "Proj", "props": {"import": {"starts": self.starts}}}]
+        return super().get(path)
+
+    def post(self, path, body):
+        if path.endswith("/import/start-block"):
+            self.calls.append((path, body))
+            return {"id": "run_7"}
+        return super().post(path, body)
+
+
+def test_start_block_only_asks_for_the_model_and_queues(tmp_path, capsys):
+    api = WithStarts({"git": "2025-01-01"})
+    code, out, _, ask = dialogue(tmp_path, capsys, api, "claude-sonnet-5-5", start_block_only=True)
+    assert code == 0 and "skipped history: git before 2025-01-01" in out and "starting-point run run_7 queued" in out
+    assert api.calls == [("/api/projects/prj_1/import/start-block", {"runner": "claude", "model": "claude-sonnet-5-5"})]
+    assert any("Model to summarise the skipped history of git" in p for p in ask.prompts)
+    assert not (tmp_path / "proj" / ".claude").exists()   # no host write in this mode
+    # none queues nothing
+    api = WithStarts({"git": "2025-01-01"})
+    code, out, _, _ = dialogue(tmp_path, capsys, api, "none", start_block_only=True)
+    assert code == 0 and api.calls == [] and "no starting-point run queued" in out
+
+
+def test_start_block_only_non_interactive_needs_a_model(tmp_path, capsys):
+    api = WithStarts({"git": "2025-01-01"})
+    code, _, err, _ = dialogue(tmp_path, capsys, api, interactive=False, start_block_only=True)
+    assert code == 2 and err.strip() == "missing choices: --start-model" and api.calls == []
+    code, _, _, ask = dialogue(tmp_path, capsys, api, interactive=False, start_block_only=True,
+                               start_model="m1", start_runner="ccx:a")
+    assert code == 0 and ask.prompts == []
+    assert api.calls == [("/api/projects/prj_1/import/start-block", {"runner": "ccx:a", "model": "m1"})]
+
+
+def test_start_block_only_refusals(tmp_path, capsys):
+    code, _, err, _ = dialogue(tmp_path, capsys, FakeApi(make_probe()), interactive=False, start_block_only=True,
+                               start_model="m1")
+    assert code == 2 and "no project proj" in err and "run: trajectree init-project" in err
+    code, _, err, _ = dialogue(tmp_path, capsys, WithStarts({}), interactive=False, start_block_only=True,
+                               start_model="m1")
+    assert code == 2 and "no skipped history recorded" in err
+    code, _, err, _ = dialogue(tmp_path, capsys, WithStarts({"git": "2025-01-01"}), interactive=False,
+                               start_block_only=True, no_start_block=True)
+    assert code == 2 and "--start-block-only excludes --no-start-block" in err
+
+
+def test_start_block_only_through_the_daemon(tmp_path, client, app, capsys):
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "notes.txt").write_text("x")
+    assert main(["init-project", str(work), "--sources", "folder"], client=client, env=env_for(app), runner=FakeClaude()) == 0
+    capsys.readouterr()
+    args = ["init-project", str(work), "--start-block-only", "--start-model", "claude-opus-5-5"]
+    assert main(args, client=client, env=env_for(app), runner=FakeClaude(), interactive=False) == 2
+    assert "no skipped history recorded" in capsys.readouterr().err   # the folder's history was all imported
+    (p,) = user_projects(client)
+    body = {"sources": {"claude": {"picked": True}}, "starts": {"claude": "2025-01-01"}}
+    assert client.post(f"/api/projects/{p['id']}/import", json=body).status_code == 200
+    assert main(args, client=client, env=env_for(app), runner=FakeClaude(), interactive=False) == 0
+    out = capsys.readouterr().out
+    run_id = out.split("starting-point run ")[1].split()[0]
+    assert user_projects(client)[0]["props"]["import"]["start_run_id"] == run_id

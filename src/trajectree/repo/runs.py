@@ -119,16 +119,21 @@ def running_runs(conn: apsw.Connection) -> list[Run]:
     return [_to_run(conn, r) for r in rows]
 
 
-def find_active_summarize(conn: apsw.Connection, project_id: str) -> Run | None:
-    """The queued or running summarize run for `project_id`, if any."""
+def find_active(conn: apsw.Connection, project_id: str, kind: str) -> Run | None:
+    """The oldest queued or running run of `kind` for `project_id`, if any."""
     rows = select_rows(
         conn,
         "run",
-        ["kind = 'summarize'", "project_id = ?", "status IN ('queued', 'running')"],
-        [project_id],
+        ["kind = ?", "project_id = ?", "status IN ('queued', 'running')"],
+        [kind, project_id],
         "created_at, id LIMIT 1",
     )
     return _to_run(conn, rows[0]) if rows else None
+
+
+def find_active_summarize(conn: apsw.Connection, project_id: str) -> Run | None:
+    """The queued or running summarize run for `project_id`, if any."""
+    return find_active(conn, project_id, "summarize")
 
 
 _DAY = "substr(coalesce(started, created_at), 1, 10)"

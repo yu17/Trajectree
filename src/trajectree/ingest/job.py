@@ -58,11 +58,22 @@ DISCOVERY_ACTOR = Actor(kind="connector", ref="local-git", tool="git")
 
 
 def _chosen(
-    conn: apsw.Connection, settings: Settings, resources: list[Resource], source: str, now: datetime
+    conn: apsw.Connection,
+    settings: Settings,
+    resources: list[Resource],
+    source: str,
+    now: datetime,
+    *,
+    picked_only: bool = True,
 ) -> tuple[list[Resource], dict[str, datetime | None]]:
-    """The resources whose project picked `source`, and where each one's first poll starts."""
+    """The resources whose project picked `source` (all of them unless `picked_only`), and where
+    each one's first poll starts."""
     projects = {p.id: p for p in list_projects(conn)}
-    kept = [r for r in resources if r.project_id in projects and source_picked(projects[r.project_id], source)]
+    kept = [
+        r
+        for r in resources
+        if r.project_id in projects and (not picked_only or source_picked(projects[r.project_id], source))
+    ]
     starts = {
         r.id: source_start(
             projects[r.project_id], source, now=now, default_days=settings.scan_since_days, tz=settings.tz
@@ -170,6 +181,8 @@ def run_ingest(ledger: Ledger, settings: Settings, *, now: datetime | None = Non
                     else [],
                     "remote",
                     now,
+                    # accepting a remote is the owner's choice, whatever `sources.remote` said at import
+                    picked_only=False,
                 )
                 remote_states = read_remote_states(conn, remote_resources)
             if remote_run:
@@ -191,19 +204,24 @@ def run_ingest(ledger: Ledger, settings: Settings, *, now: datetime | None = Non
                 if slurm_run:
                     slurm_collection = collect_slurm(settings, since=slurm_from)
                     slurm = write_slurm(ledger, settings, slurm_collection, now=now)
-            # folders: same three phases, the walk runs with no lock; skipped until due
+            # folders: same three phases, the walk runs with no lock. A folder never scanned yet
+            # (just picked) is scanned on every pass; the others wait until the pass is due.
             with ledger.locked() as conn:
                 due = folders_due(conn, now=now, every_h=settings.folders_scan_every_h)
+                enabled = settings.folders_scan_every_h > 0
                 folder_resources, folder_starts = _chosen(
-                    conn, settings, list_resources(conn, kinds=["folder"]) if due else [], "folder", now
+                    conn, settings, list_resources(conn, kinds=["folder"]) if enabled else [], "folder", now
                 )
                 folder_states = read_folder_states(conn, folder_resources)
-            if due:
+                if not due:
+                    folder_resources = [r for r in folder_resources if folder_states.get(r.id) is None]
+            if folder_resources or due:
                 folder_collection = collect_folders(
                     settings, folder_resources, folder_states, now=now, starts=folder_starts
                 )
                 with ledger.locked() as conn:
-                    folders_written = write_folders(conn, folder_collection, now=now)
+                    # only a full (due) pass moves the schedule of the others
+                    folders_written = write_folders(conn, folder_collection, now=now, stamp=due)
                 folders = FoldersReport(
                     folders=len(folder_resources),
                     signals_written=folders_written,

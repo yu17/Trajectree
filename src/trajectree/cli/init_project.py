@@ -85,8 +85,17 @@ def init_project(
     no_start_block: bool = False,
     remote: list[str] | None = None,
     no_remotes: bool = False,
+    start_block_only: bool = False,
 ) -> int:
     path = path.resolve()
+    if start_block_only:
+        clash = [flag for flag, given in (
+            ("--sources", sources is not None), ("--since", bool(since)), ("--remote", bool(remote)),
+            ("--no-remotes", no_remotes), ("--no-start-block", no_start_block),
+        ) if given]
+        if clash:
+            print(f"--start-block-only excludes {', '.join(clash)}", file=sys.stderr)
+            return 2
     flags = _parse_flags(sources, since)
     if isinstance(flags, str):
         print(flags, file=sys.stderr)
@@ -106,6 +115,11 @@ def init_project(
             print(f"invalid slug: {slug}", file=sys.stderr)
         return 2
     project = next((p for p in api.get("/api/projects") if p["slug"] == slug), None)
+    if start_block_only:
+        return _start_block_only(
+            api, path, slug, project, out=out, ask=ask, interactive=interactive,
+            start_model=start_model, start_runner=start_runner,
+        )
     if project is None:
         # An empty import record means nothing is picked, so the background ingest imports
         # nothing between this call and the owner's confirmed choices.
@@ -165,7 +179,7 @@ def init_project(
     if report is None:  # --sources none
         return 0
     return _import_dialogue(
-        api, pid, report, flags, out=out, ask=ask, interactive=interactive,
+        api, pid, path, report, flags, out=out, ask=ask, interactive=interactive,
         start_model=start_model, start_runner=start_runner, no_start_block=no_start_block,
         remote=remote or [], no_remotes=no_remotes,
     )
@@ -315,9 +329,58 @@ def _check_pick(answer: str, probes: list[dict[str, Any]], pickable: list[str]) 
     return list(dict.fromkeys(chosen))
 
 
+def _start_block_only(
+    api: Any,
+    path: Path,
+    slug: str,
+    project: dict[str, Any] | None,
+    *,
+    out: TextIO,
+    ask: Callable[[str], str],
+    interactive: bool,
+    start_model: str | None,
+    start_runner: str | None,
+) -> int:
+    """Queue the starting-point block again from the starts the import recorded; no host writes."""
+    if project is None:
+        print(f"no project {slug} for {path}; run: trajectree init-project {path}", file=sys.stderr)
+        return 2
+    starts = ((project.get("props") or {}).get("import") or {}).get("starts") or {}
+    if not starts:
+        print(f"{slug}: no skipped history recorded, nothing to summarise", file=sys.stderr)
+        return 2
+    print("skipped history: " + ", ".join(f"{name} before {day}" for name, day in sorted(starts.items())), file=out)
+    choice = (start_runner, start_model) if start_model else None
+    if choice is None:
+        if not interactive:
+            print("missing choices: --start-model", file=sys.stderr)
+            return 2
+        try:
+            choice = _ask_model(api, ask, out, sorted(starts))
+        except _Abort:
+            print("input ended; nothing queued", file=sys.stderr)
+            return 2
+        if choice is None:
+            print("no starting-point run queued", file=out)
+            return 0
+    run = api.post(f"/api/projects/{project['id']}/import/start-block", {"runner": choice[0], "model": choice[1]})
+    print(f"starting-point run {run['id']} queued", file=out)
+    return 0
+
+
+def _skipped_line(starts: dict[str, str], path: Path) -> str:
+    days = sorted(set(starts.values()))
+    when = days[0] if len(days) == 1 else ", ".join(f"{day} ({name})" for name, day in sorted(starts.items()))
+    return (
+        f"history before {when} will be neither imported nor summarised"
+        f" (later: trajectree init-project {path} --start-block-only)"
+    )
+
+
 def _import_dialogue(
     api: Any,
     pid: str,
+    path: Path,
     report: dict[str, Any],
     flags: tuple[list[str] | None, dict[str, str]],
     *,
@@ -396,7 +459,8 @@ def _import_dialogue(
                 starts[name] = effective.isoformat()
         if starts and not interactive and not start_model and not no_start_block:
             missing.append("--start-model or --no-start-block")
-        if not interactive and not remote and not no_remotes and any(not r["declined"] for r in report["remotes"]):
+        undecided = [r for r in report["remotes"] if not r["declined"] and not r.get("followed")]
+        if not interactive and not remote and not no_remotes and undecided:
             missing.append("--remote <url> or --no-remotes")
         if missing:
             print("missing choices: " + ", ".join(missing), file=sys.stderr)
@@ -405,7 +469,9 @@ def _import_dialogue(
         # The daemon records every remote not sent as declined, so it is never sent by default.
         remotes: list[str] = list(dict.fromkeys(remote))
         for found in report["remotes"]:
-            if found["declined"]:
+            if found.get("followed"):
+                print(f"remote {found['url']} (following)", file=out)
+            elif found["declined"]:
                 print(f"remote {found['url']} (declined before)", file=out)
             elif interactive and not remote and not no_remotes:
                 if _prompt(ask, out, f"Also follow remote {found['url']}? [y/n]: ", _yes_no):
@@ -419,8 +485,7 @@ def _import_dialogue(
                 choice = _ask_model(api, ask, out, list(starts))
             if choice is not None:
                 start_block = {"runner": choice[0], "model": choice[1]}
-        if start_block is None:
-            starts = {}  # no block, no summary run
+        # `starts` is sent even without a block: the daemon keeps it for --start-block-only.
 
         print("import summary:", file=out)
         for name in picked:
@@ -432,6 +497,8 @@ def _import_dialogue(
         if start_block:
             via = f" via {start_block['runner']}" if start_block["runner"] else ""
             print(f"  starting point: {start_block['model']}{via} summarises the skipped history of {', '.join(starts)}", file=out)
+        elif starts:
+            print("  " + _skipped_line(starts, path), file=out)
         if interactive and not _prompt(ask, out, "Import now? [y/n]: ", _yes_no):
             print("nothing imported", file=out)
             return 0

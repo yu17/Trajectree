@@ -233,6 +233,14 @@ def test_all_lifts_transcript_cutoff(ledger, human, settings, tmp_path):
     assert [x.payload["session_id"] for x in list_signals(ledger.conn, project_ids=[other.id])] == ["4" * 36]
     assert list_signals(ledger.conn, project_ids=[p.id]) == []
 
+def test_default_cutoff_is_local_midnight_of_the_default_day(ledger, settings):
+    from trajectree.connectors.claude_sessions import transcript_cutoff
+    s = settings.model_copy(update={"tz": "Europe/Berlin", "scan_since_days": 30})
+    now = datetime(2026, 10, 24, 15, 30, tzinfo=UTC)
+    midnight = datetime(2026, 9, 23, 22, tzinfo=UTC).timestamp()   # 2026-09-24 00:00 in Berlin (CEST)
+    assert transcript_cutoff(ledger.conn, s, now, "claude") == midnight
+    assert transcript_cutoff(ledger.conn, s, now, "codex") == midnight
+
 def test_digest_transcript_missing_file_raises(tmp_path):
     from trajectree.connectors.claude_sessions import digest_transcript
     import pytest

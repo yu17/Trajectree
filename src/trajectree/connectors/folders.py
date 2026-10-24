@@ -232,13 +232,14 @@ def collect_folders(
     return FolderCollection(signals=signals, polled=polled, errors=errors)
 
 
-def write_folders(conn: apsw.Connection, collection: FolderCollection, *, now: datetime) -> int:
-    """Upsert the signals, advance the scanned cursors and stamp `folders:last` in one transaction."""
+def write_folders(conn: apsw.Connection, collection: FolderCollection, *, now: datetime, stamp: bool = True) -> int:
+    """Upsert the signals, advance the scanned cursors and (with `stamp`) `folders:last`, in one transaction."""
     with conn:
         written = upsert_signals(conn, collection.signals)
         for rid in collection.polled:
             set_state(conn, _state_key(rid), {"last_scan": to_db(now)})
-        set_state(conn, "folders:last", {"at": to_db(now)})
+        if stamp:
+            set_state(conn, "folders:last", {"at": to_db(now)})
     return written
 
 

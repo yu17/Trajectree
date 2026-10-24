@@ -14,11 +14,11 @@ from trajectree.connectors.local_git import discover_remotes
 from trajectree.connectors.probe import ProbeReport, probe_folder, probe_state_reader
 from trajectree.connectors.remote import normalize_remote
 from trajectree.db.ledger import Ledger
-from trajectree.importing import IMPORT_SOURCES, ImportRecord, SourceChoice
+from trajectree.importing import IMPORT_SOURCES, ImportRecord, SourceChoice, default_since, import_record
 from trajectree.models import Project, ProjectPatch, Resource, ResourceIn, Run
 from trajectree.repo import NotFound
 from trajectree.repo.projects import get_project, update_project
-from trajectree.repo.runs import update_run
+from trajectree.repo.runs import find_active, update_run
 from trajectree.repo.resources import list_resources, upsert_resource
 from trajectree.repo.state import get_state, set_state
 from trajectree.runner.kinds import StartingPointRequest
@@ -127,11 +127,14 @@ def import_project(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
     actor = actor_from_request(request)
 
+    # "default" is stored as the concrete day it means now, so ingest starts where the probe and
+    # the starting-point block put the boundary, not at a default that moves with each pass.
+    default_day = default_since(utcnow(), settings.scan_since_days, settings.tz)
     sources = dict(existing.sources) if existing else {}
     for source, choice in body.sources.items():
         prior = sources.get(source)
         if prior is None or not prior.picked:
-            sources[source] = choice
+            sources[source] = choice.model_copy(update={"since": default_day}) if choice.picked and choice.since is None else choice
     if picked_remotes and "remote" not in sources:
         sources["remote"] = SourceChoice(picked=True)
 
@@ -161,6 +164,7 @@ def import_project(
         sources=sources,
         recorded_at=existing.recorded_at if existing else utcnow(),
         start_run_id=existing.start_run_id if existing else None,
+        starts={**(existing.starts if existing else {}), **body.starts},  # kept even without a block
     )
 
     def save(rec: ImportRecord) -> Project:
@@ -188,3 +192,41 @@ def import_project(
     with ledger.locked() as conn:
         resources = list_resources(conn, project_ids=[project_id])
     return ImportResult(project=updated, resources=resources, starting_point_run=run)
+
+
+@router.post("/projects/{project_id}/import/start-block", response_model=Run)
+def rerun_start_block(
+    project_id: str,
+    body: StartBlockChoice,
+    request: Request,
+    ledger: Ledger = Depends(get_ledger),
+):
+    """Queue the starting-point block again from the starts stored at import, for a block that
+    failed, was capped, cancelled or declined. One per project in flight."""
+    runs: RunService = request.app.state.runs
+    actor = actor_from_request(request)
+    # The ledger lock is re-entrant: the in-flight check, the enqueue and the record update are
+    # one critical section, so two requests cannot both queue a block.
+    with ledger.locked() as conn:
+        project = get_project(conn, project_id)
+        if project is None:
+            raise NotFound(project_id)
+        record = import_record(project)
+        if record is None or not record.starts:
+            raise HTTPException(status_code=422, detail="no skipped history recorded for this project")
+        if find_active(conn, project_id, "starting_point") is not None:
+            raise HTTPException(status_code=409, detail="starting-point run already queued or running")
+        try:
+            run = runs.enqueue(
+                StartingPointRequest(project=project_id, starts=record.starts, runner=body.runner, model=body.model)
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        props = {**project.props, "import": record.model_copy(update={"start_run_id": run.id}).model_dump(mode="json")}
+        try:
+            update_project(ledger, actor, project_id, ProjectPatch(props=props), intent="re-run starting-point block")
+        except Exception:
+            with conn:  # no run the record does not name
+                update_run(conn, run.id, status="cancelled", finished=utcnow())
+            raise
+    return run

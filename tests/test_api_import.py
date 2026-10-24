@@ -188,3 +188,62 @@ def test_probe_path_outside_mapped_roots(client, settings, tmp_path):
     escape = client.post("/api/import/probe", json={"path": f"{tmp_path}/host/../../etc"})
     assert escape.status_code == 422 and "outside every mapped folder" in escape.json()["detail"]
     assert client.post("/api/import/probe", json={"path": f"{tmp_path}/host/a/../a"}).status_code == 200
+
+
+# -- stored starts, concrete default days and re-running the block ------------------------------
+
+
+def test_default_since_is_stored_as_a_concrete_day_shared_with_the_block(client, app, settings, tmp_path):
+    from trajectree.importing import import_record, local_midnight, source_start
+    from trajectree.repo.projects import get_project
+
+    p, repo = setup(client, tmp_path)
+    probe = client.post("/api/import/probe", json={"path": str(repo)}).json()
+    day = probe["default_since"]
+    # what init-project sends for "default" when history is older: since null, the block from the probe's day
+    body = {"sources": pick("git", "claude"), "starts": {"git": day}}
+    out = client.post(f"/api/projects/{p['id']}/import", json=body).json()
+    record = out["project"]["props"]["import"]
+    assert record["sources"]["git"]["since"] == day and record["sources"]["claude"]["since"] == day
+    assert record["starts"] == {"git": day}   # stored although no block was requested
+    project = get_project(app.state.ledger.conn, p["id"])
+    later = datetime(2030, 1, 1, tzinfo=timezone.utc)   # a later pass computes no default of its own
+    start = source_start(project, "git", now=later, default_days=settings.scan_since_days, tz=settings.tz)
+    assert start == local_midnight(import_record(project).starts["git"], settings.tz)
+
+
+def test_start_block_rerun(client, app, tmp_path):
+    from trajectree.repo.runs import create_run, update_run
+
+    p, repo = setup(client, tmp_path)
+    url = f"/api/projects/{p['id']}/import/start-block"
+    assert client.post(url, json={"model": "claude-opus-5-5"}).status_code == 422   # nothing imported yet
+    client.post(f"/api/projects/{p['id']}/import", json={"sources": pick("folder")})
+    none = client.post(url, json={"model": "claude-opus-5-5"})
+    assert none.status_code == 422 and none.json()["detail"] == "no skipped history recorded for this project"
+    client.post(f"/api/projects/{p['id']}/import", json={"sources": pick("git"), "starts": {"git": "2025-01-01"}})
+    conn = app.state.ledger.conn
+    with app.state.ledger.locked():
+        busy = create_run(conn, kind="starting_point", runner="claude", backend="claude", model="claude-opus-5-5",
+                          project_id=p["id"], props={})
+        update_run(conn, busy.id, status="running")   # running: no worker picks it up
+    conflict = client.post(url, json={"model": "claude-opus-5-5"})
+    assert (conflict.status_code, conflict.json()["detail"]) == (409, "starting-point run already queued or running")
+    with app.state.ledger.locked():
+        update_run(conn, busy.id, status="failed")
+    assert client.post(url, json={}).json()["detail"] == "no model was chosen"
+    ok = client.post(url, json={"runner": "claude", "model": "claude-opus-5-5"})
+    assert ok.status_code == 200, ok.text
+    run = ok.json()
+    assert run["kind"] == "starting_point" and run["props"]["request"]["starts"] == {"git": "2025-01-01"}
+    assert props_of(client, p)["import"]["start_run_id"] == run["id"]
+    assert client.post("/api/projects/nope/import/start-block", json={"model": "m"}).status_code == 404
+
+
+def test_probe_marks_followed_remotes(client, tmp_path):
+    p, repo = setup(client, tmp_path, remotes=[("origin", "git@github.com:o/r.git"), ("up", "https://github.com/o/s.git")])
+    body = {"sources": pick("git", "remote"), "remotes": ["https://github.com/o/r"]}
+    assert client.post(f"/api/projects/{p['id']}/import", json=body).status_code == 200
+    remotes = {r["url"]: r for r in client.post("/api/import/probe", json={"path": str(repo)}).json()["remotes"]}
+    assert remotes["https://github.com/o/r"]["followed"] is True and remotes["https://github.com/o/r"]["declined"] is False
+    assert remotes["https://github.com/o/s"]["followed"] is False and remotes["https://github.com/o/s"]["declined"] is True

@@ -9,7 +9,7 @@ import json
 import os
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO
 
@@ -18,7 +18,7 @@ from pydantic import AwareDatetime, BaseModel, ValidationError
 
 from trajectree.config import Settings
 from trajectree.connectors.paths import encode_project_dir
-from trajectree.importing import SESSION_SOURCE_OF_BACKEND, source_picked, source_start
+from trajectree.importing import SESSION_SOURCE_OF_BACKEND, default_since, local_midnight, source_picked, source_start
 from trajectree.models import Project, SignalIn
 from trajectree.repo.projects import list_projects
 from trajectree.repo.resources import project_for_path
@@ -403,7 +403,8 @@ def transcript_cutoff(
     The earliest `source` start among the projects that picked it, so a project that asked
     for more history than the default gets it; with no such project, the default.
     """
-    default = (now - timedelta(days=settings.scan_since_days)).timestamp()
+    # the one default rule (local midnight of the default day), as `source_start` uses
+    default = local_midnight(default_since(now, settings.scan_since_days, settings.tz), settings.tz).timestamp()
     starts = [
         source_start(p, source, now=now, default_days=settings.scan_since_days, tz=settings.tz)
         for p in list_projects(conn)

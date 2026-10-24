@@ -267,3 +267,50 @@ def test_run_ingest_scans_codex_sessions(ledger, human, settings, tmp_path):
     report = run_ingest(ledger, s, now=datetime.now(UTC))
     assert report.scan.files_seen == 1 and report.scan.signals_written == 1
     assert [x["session_id"] for x in get_state(ledger.conn, "live_sessions")] == [CODEX_SID]
+
+
+def _import_record(**sources):
+    return {"import": {"sources": sources, "recorded_at": "2026-10-01T00:00:00+00:00"}}
+
+
+def test_accepted_remote_is_polled_although_remote_was_not_picked(ledger, human, settings, monkeypatch):
+    import trajectree.connectors.remote as remote
+
+    # registered with git picked from a date and no remote; a remote accepted later
+    props = _import_record(git={"picked": True, "since": "2026-03-01"}, remote={"picked": False})
+    p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research", props=props))
+    upsert_resource(ledger, human, ResourceIn(project_id=p.id, kind="git_remote", locator="https://github.com/o/r"))
+    seen = []
+
+    def fake_collect(settings, resources, states, *, now, starts, client=None):
+        seen.append(([r.locator for r in resources], starts))
+        return remote.RemoteCollection(signals=[], releases=[], polled=[r.id for r in resources], errors=[])
+
+    monkeypatch.setattr(job, "collect_remote", fake_collect)
+    report = run_ingest(ledger, settings, now=datetime(2026, 10, 22, 12, tzinfo=UTC))
+    assert report.remote.repos == 1
+    ((locators, starts),) = seen
+    assert locators == ["https://github.com/o/r"]
+    assert list(starts.values()) == [datetime(2026, 3, 1, tzinfo=UTC)]   # the first poll starts at the git start
+
+
+def test_newly_picked_folder_is_scanned_before_the_next_due_pass(ledger, human, settings, tmp_path):
+    import os
+    from datetime import timedelta
+    now = datetime(2026, 10, 21, 12, tzinfo=UTC)
+    first, later = tmp_path / "first", tmp_path / "later"
+    for d in (first, later):
+        d.mkdir()
+        (d / "a.txt").write_text("x")
+        os.utime(d / "a.txt", (now.timestamp(), now.timestamp()))
+    p = create_project(ledger, human, ProjectIn(slug="gm", title="GM", kind="research"))
+    upsert_resource(ledger, human, ResourceIn(project_id=p.id, kind="folder", locator=str(first)))
+    assert run_ingest(ledger, settings, now=now).folders.folders == 1   # stamps folders:last
+    stamp = get_state(ledger.conn, "folders:last")
+    q = create_project(ledger, human, ProjectIn(slug="new", title="New", kind="research"))
+    upsert_resource(ledger, human, ResourceIn(project_id=q.id, kind="folder", locator=str(later)))
+    soon = now + timedelta(minutes=5)   # long before the next due pass
+    report = run_ingest(ledger, settings, now=soon)
+    assert report.folders.folders == 1 and report.folders.signals_written == 1   # only the new, uncursored one
+    assert get_state(ledger.conn, "folders:last") == stamp   # the others keep their schedule
+    assert run_ingest(ledger, settings, now=soon + timedelta(minutes=5)).folders is None

@@ -20,14 +20,19 @@ SESSION_SOURCE_OF_BACKEND: defaultdict[str, str] = defaultdict(lambda: "claude",
 
 
 class SourceChoice(BaseModel):
+    # None: the default cutoff, computed when ingest runs; the import endpoint stores the
+    # concrete default day instead. "all": everything.
     picked: bool
-    since: date | Literal["all"] | None = None  # None: the default cutoff; "all": everything
+    since: date | Literal["all"] | None = None
 
 
 class ImportRecord(BaseModel):
     sources: dict[str, SourceChoice]
     recorded_at: AwareDatetime
     start_run_id: str | None = None
+    # Each source whose older history was skipped -> where its import starts: what a
+    # starting-point block summarises, kept so the block can be run again later.
+    starts: dict[str, date] = {}
 
 
 def import_record(project: Project) -> ImportRecord | None:

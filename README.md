@@ -102,7 +102,8 @@ with a count and the oldest date; a source with nothing to import is shown as
 2. for each picked source that reaches back before the default cutoff, choose
    where it starts: `YYYY-MM-DD`, `all` or `default` (no default is ever
    assumed; an empty answer is asked again);
-3. follow each git remote found, y/n (remotes declined before are not asked);
+3. follow each git remote found, y/n (remotes declined before are not asked;
+   remotes already followed show as `(following)` and are not asked either);
 4. if history is skipped, pick the model that summarises it (a starting-point
    run) from the numbered catalog list (`runner/model` lines; answer with the
    number or the name), or `none`;
@@ -120,6 +121,19 @@ declined, so a non-interactive run must say). With `--yes`, or
 when stdin is not a terminal, nothing is asked: any missing choice is listed on
 one stderr line starting `missing choices:` and the command exits 2 without
 importing. `--sources none` registers the folder and imports nothing.
+
+A `default` start is recorded as the date it meant at import, so the starting
+point and the import share one boundary. Where history was skipped, the import
+records each source's start even when no starting-point run was asked for, and
+the summary says `history before <date> will be neither imported nor summarised`.
+To summarise it later, or again after a run that failed, was capped or was
+cancelled, run `trajectree init-project <folder> --start-block-only`: it asks for
+the model from the catalog list as above (non-interactive, pass `--start-model
+<name>`, optionally `--start-runner <runner>`) and queues the starting-point run
+from the recorded starts; one per project can be queued or running at a time.
+Starting-point runs obey the run caps like every run (by default 1 USD per run
+and 5 USD per day; see `trajectree caps`). To bootstrap many projects at once,
+raise the day cap first: `trajectree caps --usd-per-day <n>`.
 
 The CLI needs the token at `~/.config/trajectree/token` (copied from
 `data/token`, see above) or in `TRAJECTREE_TOKEN`.

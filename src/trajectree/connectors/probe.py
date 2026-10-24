@@ -23,6 +23,7 @@ from trajectree.db.ledger import Ledger
 from trajectree.importing import IMPORT_SOURCES, ImportRecord, default_since, import_record
 from trajectree.models import Project, Resource
 from trajectree.repo.resources import list_resources, project_for_path
+from trajectree.repo.review import pending_txns
 from trajectree.repo.state import get_state
 
 FOLDER_PROBE_MAX_FILES = 200_000
@@ -44,6 +45,7 @@ class RemoteProbe(BaseModel):
     url: str
     title: str
     declined: bool = False
+    followed: bool = False  # an accepted git_remote resource of the project already polls it
 
 
 class ProbeReport(BaseModel):
@@ -60,6 +62,7 @@ class ProbeState(BaseModel):
     registered: list[str] = []  # host paths of every folder and git_local resource
     project: Project | None = None  # the project the path already belongs to, if any
     declined: list[str] = []  # remote URLs suggested before and not accepted
+    followed: list[str] = []  # remote URLs of the project's accepted git_remote resources
 
 
 ConnReader = Callable[[str], ProbeState]
@@ -73,12 +76,16 @@ def probe_state_reader(ledger: Ledger) -> ConnReader:
             registered = [r.locator for r in list_resources(conn, kinds=["folder", "git_local"])]
             project = project_for_path(conn, host_path)
             declined: list[str] = []
+            followed: list[str] = []
             if project is not None:
                 suggested = get_state(conn, "remote:suggested")
                 urls = suggested.get(project.id) if isinstance(suggested, dict) else None
-                have = {r.locator for r in list_resources(conn, project_ids=[project.id], kinds=["git_remote"])}
+                remotes = list_resources(conn, project_ids=[project.id], kinds=["git_remote"])
+                have = {r.locator for r in remotes}
                 declined = [u for u in urls if u not in have] if isinstance(urls, list) else []
-        return ProbeState(registered=registered, project=project, declined=declined)
+                unreviewed = pending_txns(conn, "resource")
+                followed = [r.locator for r in remotes if r.id not in unreviewed]
+        return ProbeState(registered=registered, project=project, declined=declined, followed=followed)
 
     return read
 
@@ -175,7 +182,9 @@ def probe_folder(
         sources.append(probes[name].model_copy(update={"imported": choice is not None and choice.picked}))
     anchor = Resource(id="probe", project_id="probe", kind="git_local", locator=host_path)
     remotes = [
-        RemoteProbe(url=url, title=urlparse(url).path.strip("/"), declined=url in state.declined)
+        RemoteProbe(
+            url=url, title=urlparse(url).path.strip("/"), declined=url in state.declined, followed=url in state.followed
+        )
         for _, url in discover_remotes(settings, [anchor])
     ]
     return ProbeReport(
