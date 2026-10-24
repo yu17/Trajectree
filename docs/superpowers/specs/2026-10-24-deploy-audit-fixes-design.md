@@ -20,8 +20,9 @@ round, and chose a way for a local backend (LM Studio) to reach the host.
   works before any run.
 - The daemon makes the data dir and the cfg dir `0700` at startup, and the entrypoint sets
   `umask 077`. The README's setup line becomes `chmod 700 data cfg`.
-- Codex runs pass `-c features.code_mode_host=false`, because the image ships no
-  `codex-code-mode-host`, and Codex logs an error on every run without it.
+- The image ships `codex-code-mode-host` (pinned digest) next to `codex`, because Codex logs an
+  error on every run without it and the `-c features.code_mode_host=false` flag only changed the
+  error text.
 
 ### Server address (findings 1, 2, 3, 7)
 

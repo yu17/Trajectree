@@ -21,11 +21,12 @@ curl -fsSL https://raw.githubusercontent.com/yu17/Trajectree/main/deploy/env.exa
 mkdir -p data cfg sockets && chmod 700 data cfg sockets
 mkdir -p ~/.claude/projects ~/.config/claude-backends ~/.codex/sessions
 
-# 3. Build and start, then give the host CLI the token and the URL (use the
-#    same port as TRAJECTREE_HOST_PORT in .env, 8742 by default).
+# 3. Build and start, then give the host CLI the token and the URL (compose
+#    reads .env and prints the published 127.0.0.1:<port>, whatever
+#    TRAJECTREE_HOST_PORT is).
 docker compose up -d --build
 mkdir -p ~/.config/trajectree && cp data/token ~/.config/trajectree/token
-echo http://127.0.0.1:${TRAJECTREE_HOST_PORT:-8742} > ~/.config/trajectree/url
+echo "http://$(docker compose port trajectree 8742)" > ~/.config/trajectree/url
 
 # 4. Install the host CLI.
 uv tool install git+https://github.com/yu17/Trajectree@<ref>
@@ -37,13 +38,40 @@ docker compose exec trajectree codex login --device-auth
 trajectree backends sync
 
 # 6. Refresh the model catalog, then connect a project folder. If Codex lists
-#    no models yet, start one run with --runner codex --model <slug>, then
-#    refresh again (see Codex below).
+#    no models yet, start one run with `trajectree ask --runner codex
+#    "Reply with OK."`, then refresh again (see Codex below).
 trajectree models --refresh
 trajectree init-project <folder>
 
 # 7. Register the live-session hooks.
 trajectree hooks install
+```
+
+### Upgrade an instance
+
+An instance made before the sockets directory existed ignores sockets silently,
+and the firewall rule below would do nothing. To upgrade it:
+
+```bash
+# 1. Re-fetch deploy/compose.yaml, and compare the new env.example with your .env.
+curl -fsSLO https://raw.githubusercontent.com/yu17/Trajectree/main/deploy/compose.yaml
+curl -fsSL https://raw.githubusercontent.com/yu17/Trajectree/main/deploy/env.example | diff .env -
+
+# 2. A port you edited by hand in compose.yaml now goes in .env as
+#    TRAJECTREE_HOST_PORT.
+
+# 3. Create the sockets folder yourself (Docker would make it root-owned).
+mkdir -p sockets && chmod 700 sockets
+
+# 4. Recreate the container: a changed network needs down, not only up.
+docker compose down && docker compose up -d --build
+
+# 5. Rewrite the URL file (the step 3 command above).
+echo "http://$(docker compose port trajectree 8742)" > ~/.config/trajectree/url
+
+# 6. Check the bridge and the mount.
+ip link show trajectree0
+docker compose exec trajectree ls -ld /host/sockets
 ```
 
 Instance state must never live inside `TRAJECTREE_PROJECTS_ROOT`.
@@ -238,7 +266,8 @@ token-budgeted context pack built from the tracker.
 - All three need `--model` (a model from `trajectree models`), `--runner`
   (`claude`, `codex` or `ccx:<backend>`) or both, and take `--no-wait`. A
   runner alone starts the run without a model flag, so the runner uses its own
-  default model; the finished run records the model Claude reports using. With
+  default model; the finished run records the model Claude reports using (ledger
+  writes made during the run record no model). With
   neither, the command stops with `no model or runner was chosen; pass --runner
   or --model (see: trajectree models)` before contacting the daemon.
   `--runner` is needed with `--model` only when two runners offer the same
@@ -344,10 +373,14 @@ systemctl --user daemon-reload && systemctl --user enable --now trajectree-backe
 
 # 4. Recreate the container: a changed network needs down, not only up.
 docker compose down && docker compose up -d
+ip link show trajectree0   # the bridge must exist before the rule below
 
 # 5. One-time firewall rule: the container reaches no host port at all (read
-#    the first bullet below before you run it). On an empty ufw ruleset,
-#    `insert 1` fails with "Invalid position"; run `sudo ufw deny in on trajectree0`.
+#    the first bullet below before you run it). `sudo ufw status` must say
+#    `active`; with ufw inactive the rule is stored but has no effect. On an
+#    empty ufw ruleset, `insert 1` fails with "Invalid position"; run
+#    `sudo ufw deny in on trajectree0`.
+sudo ufw status
 sudo ufw insert 1 deny in on trajectree0
 
 # 6. List the backend's models through the socket.
@@ -491,8 +524,10 @@ trajectree scheduler [tick]                  # show the scheduler, or tick it no
   (from an older version) is disabled, with the last error `disabled: no model
   or runner was chosen`.
 - `review`, `prep` and `run` use the routine's stored runner and model, and
-  fail with `no model or runner was chosen` when it has neither. `--model` (and `--runner`)
-  override them for that one run; the stored model is unchanged.
+  fail with `no model or runner was chosen` when it has neither. A request
+  naming a runner or a model (`--runner`, `--model`) replaces the routine's
+  choice wholesale for that one run, and a runner alone means its default model;
+  the stored choice is unchanged.
   `trajectree routines` shows each routine's model (`runner/model` when a
   runner is set, `runner/default` for a runner alone), or `no model`.
 
@@ -679,11 +714,10 @@ trajectree models --refresh
 
 Codex lists its models from the model cache it writes in `cfg/codex/`. If
 `trajectree models` shows none for codex yet (`no model cache yet`), start one
-run with `--runner codex --model <slug>`: a logged-in Codex is available even
-without the cache, so the run goes ahead (with a warning that the model is not
-in the catalog) and Codex writes its cache. Then refresh again. Pick a Codex
-model with `--model`, adding `--runner codex` when another runner offers the
-same name.
+run with `trajectree ask --runner codex "Reply with OK."`: a logged-in Codex
+is available even without the cache, so the run goes ahead and Codex writes
+its cache. Then run `trajectree models --refresh`. Pick a Codex model with
+`--model`, adding `--runner codex` when another runner offers the same name.
 
 ## What gets written where
 
