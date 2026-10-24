@@ -45,6 +45,14 @@ def test_plan_summarize(ledger, human, settings, tmp_path):
     assert plan.tools.disallowed == [f"Read(//{cfg}/**)", f"Read(//{data}/**)"]
     assert all(rule.startswith("Read(//") and not rule.startswith("Read(///") for rule in plan.tools.disallowed)
 
+def test_summarize_denies_backend_profiles(ledger, human, settings, tmp_path):
+    ensure_prompts(settings)
+    s = settings.model_copy(update={"backends_root": tmp_path / "backends"})
+    p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    run = create_run(ledger.conn, kind="summarize", runner="claude", backend="claude", model=None, project_id=p.id)
+    plan = plan_run(ledger.conn, s, run=run, request=SummarizeRequest(project="a"), now=NOW)
+    assert f"Read(//{str(tmp_path / 'backends').lstrip('/')}/**)" in plan.tools.disallowed
+
 def test_plan_ask_and_unknown_project(ledger, human, settings):
     ensure_prompts(settings)
     create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))

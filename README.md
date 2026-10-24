@@ -166,6 +166,48 @@ token-budgeted context pack built from the tracker.
   get the shipped version back at the next start. Existing deployments only get
   the activity section added to `summarize.md` in phase 4 this way.
 
+### Run confinement
+
+Every runner process (`claude`, `codex`, `ccx:<backend>`) starts behind a
+Landlock ruleset (`python -I -m trajectree.runner.confine … -- <runner argv>`),
+so the kernel, not the agent CLI, decides what the run and everything it
+starts can touch.
+
+- **Read and execute:** the system directories (`/usr`, `/lib`, `/lib64`,
+  `/bin`, `/sbin`, `/etc`, `/opt`, `/app`), `/proc`, `/sys`, and the folder of
+  every registered project (all projects, not only the run's, through the path
+  map). The set is computed when the run starts; folders under `/projects`
+  that no project registers stay unreadable.
+- **Read and write:** `/dev`; a private temp directory (the run's `TMPDIR`,
+  created 0700 under `/tmp` and removed when the run ends); the run's own
+  directory `data/runs/<run_id>/`, which holds its `HOME` (`home/`), MCP config
+  and output files; and that runner's own config directory only (`cfg/claude`,
+  `cfg/backends/<name>` or `cfg/codex`).
+- **Denied:** everything else, including the rest of `data/` (database, owner
+  token, other runs), the rest of `cfg/` (other runners' logins, connector
+  tokens), `/host/*` (transcripts, backend profiles) and `/tmp` as a whole.
+  Where the kernel supports it (Landlock ABI 6+), abstract Unix sockets and
+  signals are scoped to the run too.
+- **Fail closed:** if Landlock is unavailable or a rule cannot be added, the run
+  fails as an infrastructure failure (`landlock unavailable: …`) and the runner
+  never starts unconfined. A runner binary that cannot be executed fails the
+  same way (`trajectree-confine: cannot run …`). The Landlock ABI used is
+  recorded on the run (`props.landlock_abi`).
+- **Codex** runs with `--sandbox danger-full-access`: its own bubblewrap
+  sandbox cannot start in the hardened container, and Codex documents this
+  mode for when the container provides the isolation. Landlock is that
+  isolation.
+- **Claude** keeps its permission rules (`Bash(git log *)`, read-deny rules for
+  `cfg/`, `data/` and the backend profiles) as a second layer.
+- **Still possible, by design:** a run can read its own runner's login, and
+  the network stays open (the model API needs it).
+- The daemon's own subprocesses (`git`, `ssh`, `marp`) are not confined; no
+  model controls them.
+- `bash scripts/smoke-confined-codex.sh` (needs Docker) builds the image with
+  Codex and checks, against a local mock of the Responses API, that a confined
+  `codex exec` reads a project file but gets `Permission denied` for the owner
+  token, the Claude login and `/proc/1/root/data/token`.
+
 ## Log in the runner
 
 The runner needs its own Claude credentials inside the container. The device
@@ -409,8 +451,8 @@ your Codex `auth.json` to `cfg/codex/auth.json`, then use `--runner codex`.
 
 | Where | What |
 | --- | --- |
-| Container, `./data` | `trajectree.db`, `token`, `exports/` (project summaries), `runs/*.log` and `runs/<run_id>/` (run logs and working files; `runs/<run_id>/mcp.json` holds the run's MCP token, 0600, only while the run is running), `prompts/*.md` (editable prompts) |
-| Container, `./cfg` (`/cfg`) | Claude Code config for the runner, `claude/oauth_token`, `claude/settings.json`, `claude/.claude.json`, backend profile copies in `backends/<name>/`, `home/` (the run home), `codex/` |
+| Container, `./data` | `trajectree.db`, `token`, `exports/` (project summaries), `runs/*.log` and `runs/<run_id>/` (run logs and working files, with the run's `HOME` in `runs/<run_id>/home/`; `runs/<run_id>/mcp.json` holds the run's MCP token, 0600, only while the run is running), `prompts/*.md` (editable prompts) |
+| Container, `./cfg` (`/cfg`) | Claude Code config for the runner, `claude/oauth_token`, `claude/settings.json`, `claude/.claude.json`, backend profile copies in `backends/<name>/`, `home/` (the daemon's home, for ssh and Chromium), `codex/` |
 | Container, `./cfg/connectors/` | `<name>_token` for `github`, `gitlab` and `chatmaid` (0600), written by `trajectree connectors login` |
 | Container, `./data/exports/reports/` | `<id>.md`, `<id>.html`, `<id>.pdf`, `<id>.pptx`, written on export |
 | Container, `./cfg/home/.ssh/` | `known_hosts`: the Slurm login node's host key, accepted on first connect |
@@ -441,6 +483,7 @@ of it. The project folders mount read-only.
 | `TRAJECTREE_CODEX_BIN` | `codex` (`/opt/codex/bin/codex` in Docker) | Codex binary the runner spawns |
 | `TRAJECTREE_DEFAULT_RUNNER` | `claude` | Runner used when none is chosen (`claude`, `codex`, or `ccx:<backend>`) |
 | `TRAJECTREE_RUN_ENV_PASSTHROUGH` | none | Comma-separated environment variable names passed through to runner processes |
+| `TRAJECTREE_CONFINE_EXTRA_RO` | none | Development and tests only: colon-separated extra directories a confined run may read and execute (such as `tests/bin` and the repo's `.venv`) |
 | `TRAJECTREE_TZ` | `UTC` (compose: `$TZ`, else `UTC`) | Time zone given to the seeded routines and used to expand recurrence rules; an unknown zone falls back to `UTC` with a warning |
 | `TRAJECTREE_SCHEDULER_EVERY` | `30` | Seconds between scheduler ticks; `0` disables the loop |
 | `TRAJECTREE_SCHEDULER_GRACE_S` | `3600` | A routine fire missed by more than this many seconds is skipped, not run late |

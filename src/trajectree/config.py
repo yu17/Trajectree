@@ -27,6 +27,7 @@ class Settings(BaseModel):
     codex_bin: str = "codex"
     default_runner: str = "claude"
     run_env_passthrough: list[str] = []
+    confine_extra_ro: list[Path] = []  # dev/tests only: more read-only dirs for confined runs
     tz: str = "UTC"
     scheduler_interval_s: int = 30
     scheduler_grace_s: int = 3600
@@ -189,6 +190,10 @@ def load_settings() -> Settings:
             item.strip()
             for item in os.environ["TRAJECTREE_RUN_ENV_PASSTHROUGH"].split(",")
             if item.strip()
+        ]
+    if os.environ.get("TRAJECTREE_CONFINE_EXTRA_RO"):
+        values["confine_extra_ro"] = [
+            Path(item).expanduser() for item in os.environ["TRAJECTREE_CONFINE_EXTRA_RO"].split(":") if item
         ]
     for var, field in _INT_ENV.items():
         if var in os.environ:

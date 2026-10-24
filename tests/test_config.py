@@ -13,6 +13,14 @@ def test_runner_settings_from_env(monkeypatch, tmp_path):
     assert s.run_env_passthrough == ["HTTPS_PROXY", "NO_PROXY"]
 
 
+def test_confine_extra_ro_from_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("TRAJECTREE_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("TRAJECTREE_CONFINE_EXTRA_RO", raising=False)
+    assert load_settings().confine_extra_ro == []
+    monkeypatch.setenv("TRAJECTREE_CONFINE_EXTRA_RO", f"{tmp_path}/bin::{tmp_path}/.venv")
+    assert load_settings().confine_extra_ro == [tmp_path / "bin", tmp_path / ".venv"]
+
+
 def test_cfg_defaults_under_data_dir(monkeypatch, tmp_path):
     monkeypatch.setenv("TRAJECTREE_DATA_DIR", str(tmp_path))
     monkeypatch.delenv("TRAJECTREE_CFG_DIR", raising=False)

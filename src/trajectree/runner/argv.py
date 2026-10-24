@@ -52,7 +52,7 @@ def claude_argv(spec: RunSpec, *, binary: str, mcp_config_path: Path) -> list[st
 def codex_argv(spec: RunSpec, *, binary: str, schema_path: Path | None, last_message_path: Path) -> list[str]:
     argv = [
         binary, "exec", "--json", "--ephemeral", "--skip-git-repo-check",
-        "--sandbox", "read-only",
+        "--sandbox", "danger-full-access",  # the Landlock wrapper is the isolation (see runner/confine.py)
         "-C", str(spec.cwd),
         "-c", f'mcp_servers.{MCP_SERVER_NAME}.url="{spec.mcp_url}"',
         "-c", f'mcp_servers.{MCP_SERVER_NAME}.bearer_token_env_var="TRAJECTREE_RUN_TOKEN"',
@@ -72,7 +72,6 @@ def run_env(spec: RunSpec, settings: Settings, *, base: Mapping[str, str], oauth
         if key in base:
             env[key] = base[key]
     env["TERM"] = "dumb"
-    env["HOME"] = str(settings.run_home)
     env["DISABLE_AUTOUPDATER"] = "1"
     if spec.runner == "claude":
         if not oauth_token:

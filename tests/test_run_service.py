@@ -1,4 +1,5 @@
-import asyncio, json, os
+import asyncio, json, os, sys
+from pathlib import Path
 import pytest
 from trajectree.auth.scopes import Scope
 from trajectree.auth.tokens import resolve_token
@@ -8,7 +9,9 @@ from trajectree.repo.caps import set_caps
 from trajectree.repo.events import list_events
 from trajectree.repo.projects import create_project
 from trajectree.repo.runs import get_run, update_run
+from trajectree.runner.confine import LandlockUnavailable
 from trajectree.runner.kinds import AskRequest, QuickAddRequest, SummarizeRequest
+from trajectree.runner.launch import RunOutcome
 from trajectree.runner.service import RunService
 from trajectree.runner.spec import AlreadyApplied, RunsPaused
 import trajectree.runner.service as service_mod
@@ -88,7 +91,7 @@ def test_invalid_runner_and_unknown_project_rejected_at_enqueue(ledger, human, s
 @pytest.mark.anyio
 async def test_worker_continues_after_timeout(ledger, human, settings, logged_in, tmp_path):
     set_caps(ledger.conn, Caps(timeout_s=1))
-    mode = tmp_path / "mode"
+    mode = settings.claude_config_dir / "mode"   # inside what a confined claude run may read
     mode.write_text("sleep")
     s = svc(ledger, settings, FAKE_CLAUDE_MODE_FILE=str(mode))
     real_launch = s.launch
@@ -183,7 +186,8 @@ def test_launch_exception_marks_failed_and_revokes_token(ledger, human, settings
 
 def test_execute_keeps_token_and_prompt_off_argv_and_removes_mcp_config(ledger, human, settings, logged_in, tmp_path, monkeypatch):
     create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
-    argv_file, prompt_file = tmp_path / "argv.json", tmp_path / "prompt.txt"
+    # The confined fake-claude may write only to its own config dir (and the run's dirs).
+    argv_file, prompt_file = settings.claude_config_dir / "argv.json", settings.claude_config_dir / "prompt.txt"
     seen = {}
     real = service_mod.mint_token
     def spy(conn, **kw):
@@ -232,6 +236,97 @@ def test_unparseable_stdout_error_is_masked(ledger, human, settings, logged_in):
     s = RunService(ledger, settings, launch=leaky, base_env={"PATH": os.environ["PATH"]})
     run = s.execute(s.enqueue(AskRequest(question="q")).id)
     assert run.status == "failed" and run.error == "oops *** and ***"
+
+
+def test_launch_argv_is_confined(ledger, human, settings, logged_in):
+    argv_file = settings.claude_config_dir / "argv.json"
+    seen = {}
+    real_launch = service_mod.launch
+    def spy(argv, **kw):
+        seen["argv"] = argv
+        return real_launch(argv, **kw)
+    s = svc(ledger, settings, FAKE_CLAUDE_ARGV_FILE=str(argv_file))
+    s.launch = spy
+    run = s.execute(s.enqueue(AskRequest(question="q")).id)
+    assert run.status == "ok", run.error
+    argv = seen["argv"]
+    assert argv[:4] == [sys.executable, "-I", "-m", "trajectree.runner.confine"]
+    runner_argv = argv[argv.index("--") + 1:]
+    assert runner_argv[:2] == [settings.claude_bin, "-p"] and "--mcp-config" in runner_argv
+    assert json.loads(argv_file.read_text()) == runner_argv[1:]   # what the confined fake-claude received
+
+
+def test_confined_run_cannot_write_data_dir(ledger, human, settings, logged_in):
+    leak = settings.data_dir / "leak.json"   # outside the run's own directory
+    run = svc(ledger, settings, FAKE_CLAUDE_ARGV_FILE=str(leak)).execute(
+        svc(ledger, settings).enqueue(AskRequest(question="q")).id)
+    assert run.status == "failed" and not leak.exists()
+    log = (settings.runs_dir / f"{run.id}.log").read_text()
+    assert "Permission denied" in log
+
+
+def test_env_has_private_tmp_and_home(ledger, human, settings, logged_in):
+    seen = {}
+    real_launch = service_mod.launch
+    def spy(argv, *, env, **kw):
+        tmp = Path(env["TMPDIR"])
+        seen.update(env=env, tmp_mode=tmp.stat().st_mode & 0o777, home_is_dir=Path(env["HOME"]).is_dir())
+        return real_launch(argv, env=env, **kw)
+    s = svc(ledger, settings)
+    s.launch = spy
+    run = s.execute(s.enqueue(AskRequest(question="q")).id)
+    assert run.status == "ok", run.error
+    env = seen["env"]
+    assert env["HOME"] == str(settings.runs_dir / run.id / "home") and seen["home_is_dir"]
+    assert seen["tmp_mode"] == 0o700 and run.id in Path(env["TMPDIR"]).name
+    assert not Path(env["TMPDIR"]).exists()   # removed after the run
+
+
+def test_landlock_unavailable_fails_closed(ledger, human, settings, logged_in):
+    def no_landlock():
+        raise LandlockUnavailable(38, "landlock abi: Function not implemented")
+    def never(*a, **kw):
+        raise AssertionError("launch must not be called")
+    s = RunService(ledger, settings, launch=never, landlock_abi=no_landlock, base_env={"PATH": os.environ["PATH"]})
+    run = s.execute(s.enqueue(AskRequest(question="q")).id)
+    assert run.status == "failed" and run.props["failure"] == "infra"
+    assert run.error.startswith("landlock unavailable") and "Function not implemented" in run.error
+    assert ledger.conn.execute("select count(*) from token").fetchone()[0] == 0
+
+
+def _wrapper_outcome(exit_code, stderr, seen):
+    def fake(argv, *, env, log_path, **kw):
+        seen["tmp"] = Path(env["TMPDIR"])
+        log_path.write_text("")
+        return RunOutcome(exit_code=exit_code, timed_out=False, stdout="", stderr_tail=stderr,
+                          log_path=str(log_path), duration_ms=1)
+    return fake
+
+
+def test_wrapper_exit_97_is_infra(ledger, human, settings, logged_in):
+    seen = {}
+    fake = _wrapper_outcome(97, "trajectree-confine: landlock unavailable: x\n", seen)
+    s = RunService(ledger, settings, launch=fake, base_env={"PATH": os.environ["PATH"]})
+    run = s.execute(s.enqueue(AskRequest(question="q")).id)
+    assert run.status == "failed" and run.props["failure"] == "infra"
+    assert run.error == "trajectree-confine: landlock unavailable: x"
+    assert not seen["tmp"].exists()   # removed when the run fails too
+
+
+def test_wrapper_exit_127_cannot_run_is_infra(ledger, human, settings, logged_in):
+    fake = _wrapper_outcome(127, "trajectree-confine: cannot run /opt/claude: No such file or directory\n", {})
+    s = RunService(ledger, settings, launch=fake, base_env={"PATH": os.environ["PATH"]})
+    run = s.execute(s.enqueue(AskRequest(question="q")).id)
+    assert run.status == "failed" and run.props["failure"] == "infra"
+    assert run.error == "trajectree-confine: cannot run /opt/claude: No such file or directory"
+
+
+def test_abi_recorded(ledger, human, settings, logged_in):
+    s = RunService(ledger, settings, landlock_abi=lambda: 7,
+                   base_env={"PATH": os.environ["PATH"], "FAKE_CLAUDE_MODE": "ok", "FAKE_CLAUDE_STRUCTURED": STRUCTURED})
+    run = s.execute(s.enqueue(AskRequest(question="q")).id)
+    assert run.status == "ok", run.error
+    assert run.props["landlock_abi"] == 7 and "request" in run.props
 
 
 @pytest.mark.anyio

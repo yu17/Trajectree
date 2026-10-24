@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+"""Stand-in for the OpenAI Responses API, for the confined-Codex container smoke test. Stdlib only.
+
+The first POST answers with one `exec_command` function call running env MOCK_CMD; a POST whose
+`input` carries `function_call_output` items answers with an assistant message echoing them.
+Listens on 127.0.0.1:MOCK_PORT (default 60001).
+"""
+import json
+import os
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+CMD = os.environ.get("MOCK_CMD", "echo hello")
+WORKDIR = os.environ.get("MOCK_WORKDIR", "/tmp")
+PORT = int(os.environ.get("MOCK_PORT", "60001"))
+
+
+def completed(rid: str) -> dict:
+    usage = {"input_tokens": 0, "input_tokens_details": None, "output_tokens": 0,
+             "output_tokens_details": None, "total_tokens": 0}
+    return {"type": "response.completed", "response": {"id": rid, "usage": usage}}
+
+
+def sse(events: list[dict]) -> bytes:
+    return "".join(f"event: {e['type']}\ndata: {json.dumps(e)}\n\n" for e in events).encode()
+
+
+def outputs(body: dict) -> list[str]:
+    found = []
+    for item in body.get("input", []) or []:
+        if isinstance(item, dict) and item.get("type") == "function_call_output":
+            out = item.get("output")
+            found.append(out if isinstance(out, str) else json.dumps(out))
+    return found
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, fmt: str, *args: object) -> None:
+        print("[mock]", self.command, self.path, file=sys.stderr)
+
+    def do_GET(self) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'{"object":"list","data":[]}')
+
+    def do_POST(self) -> None:
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        done = outputs(body)
+        if not done:
+            args = json.dumps({"cmd": CMD, "workdir": WORKDIR, "yield_time_ms": 5000})
+            events = [
+                {"type": "response.created", "response": {"id": "r1"}},
+                {"type": "response.output_item.done",
+                 "item": {"type": "function_call", "call_id": "c1", "name": "exec_command", "arguments": args}},
+                completed("r1"),
+            ]
+        else:
+            text = "TOOL OUTPUT >>>\n" + "\n".join(done) + "\n<<<"
+            events = [
+                {"type": "response.created", "response": {"id": "r2"}},
+                {"type": "response.output_item.done",
+                 "item": {"type": "message", "role": "assistant", "id": "m1",
+                          "content": [{"type": "output_text", "text": text}]}},
+                completed("r2"),
+            ]
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        self.wfile.write(sse(events))
+
+
+if __name__ == "__main__":
+    HTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

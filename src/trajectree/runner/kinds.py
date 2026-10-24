@@ -236,7 +236,7 @@ def _plan_summarize(
             allowed=["Read", "Grep", "Glob", "Bash(git log *)", "mcp__trajectree__*"],
             # Keep the daemon's secrets (OAuth token, run MCP configs, the DB) out of reach.
             # Read deny rules also govern Grep and Glob.
-            disallowed=[_deny_read(settings.cfg_root), _deny_read(settings.data_dir)],
+            disallowed=_secret_denies(settings),
         ),
         json_schema=PROPOSAL_SCHEMA,
         scope=Scope(projects=[project.id], tools=["set_project_summary"], write=True),
@@ -255,6 +255,14 @@ def _folder_cwd(conn: apsw.Connection, settings: Settings, project_id: str) -> P
 def _deny_read(path: Path) -> str:
     """A Read deny rule for everything under `path`; `//` anchors at the filesystem root."""
     return f"Read(//{str(path.absolute()).lstrip('/')}/**)"
+
+
+def _secret_denies(settings: Settings) -> list[str]:
+    """Read deny rules for the daemon's secrets and the host's backend profiles (API keys)."""
+    roots = [settings.cfg_root, settings.data_dir]
+    if settings.backends_root is not None:
+        roots.append(settings.backends_root)
+    return [_deny_read(root) for root in roots]
 
 
 def _read_only_plan(settings: Settings, run: Run, prompt: str) -> RunPlan:
@@ -433,7 +441,7 @@ def _plan_routine(
             tools=routine.tool_policy,
             allowed=[*routine.tool_policy, "mcp__trajectree__*"],
             disallowed=(
-                [_deny_read(settings.cfg_root), _deny_read(settings.data_dir)] if routine.tool_policy else []
+                _secret_denies(settings) if routine.tool_policy else []
             ),
         ),
         json_schema=PROPOSAL_SCHEMA,

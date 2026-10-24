@@ -33,6 +33,7 @@ def agent():
 def settings(tmp_path):
     from trajectree.config import Settings
 
+    repo = Path(__file__).resolve().parent.parent
     # Null the transcript roots so no test ever reads the developer's real ~/.claude.
     return Settings(
         data_dir=tmp_path / "data",
@@ -41,6 +42,8 @@ def settings(tmp_path):
         ingest_interval_s=0,
         cfg_dir=tmp_path / "cfg",
         claude_bin=str(Path(__file__).parent / "bin" / "fake-claude"),
+        # Confined runs may execute the fakes and the repo's interpreter, which live outside the system dirs.
+        confine_extra_ro=[repo / "tests" / "bin", repo / ".venv"],
         run_env_passthrough=[
             "FAKE_CLAUDE_MODE",
             "FAKE_CLAUDE_MODE_FILE",

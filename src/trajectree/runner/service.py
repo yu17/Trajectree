@@ -11,9 +11,12 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from pydantic import ValidationError
 
@@ -36,6 +39,7 @@ from trajectree.repo.runs import (
     update_run,
 )
 from trajectree.runner.argv import claude_argv, codex_argv, mask_text, mcp_config_json, run_env
+from trajectree.runner.confine import CONFINE_FAILED_EXIT, LandlockUnavailable, confine_argv, landlock_abi
 from trajectree.runner.credentials import cli_version, ensure_cfg_dirs, load_oauth_token
 from trajectree.runner.kinds import (
     KIND_OF,
@@ -54,6 +58,7 @@ from trajectree.runner.kinds import (
 from trajectree.runner.launch import launch
 from trajectree.runner.parse import ParsedResult, parse_claude_json, parse_codex
 from trajectree.runner.routines import after_routine, finish_routine_run, retry_props, routine_cap
+from trajectree.runner.sandbox import run_paths, runner_cfg_dir
 from trajectree.runner.spec import (
     AlreadyApplied,
     MissingCredentials,
@@ -78,6 +83,7 @@ class RunService:
         now: Callable[[], datetime] = utcnow,
         base_env: Mapping[str, str] | None = None,
         version=cli_version,
+        landlock_abi: Callable[[], int] = landlock_abi,
     ) -> None:
         self.ledger = ledger
         self.settings = settings
@@ -86,6 +92,7 @@ class RunService:
         self.now = now
         self.base_env = base_env
         self.version = version
+        self.landlock_abi = landlock_abi
 
     def today(self) -> str:
         return self.now().astimezone(timezone.utc).strftime("%Y-%m-%d")
@@ -168,10 +175,29 @@ class RunService:
         secrets = [spec.mcp_token, oauth_token or ""]
         run_dir = self.settings.runs_dir / run_id
         mcp_path = run_dir / "mcp.json"
+        tmp_dir: Path | None = None
         try:
             try:
+                try:
+                    abi = self.landlock_abi()
+                except LandlockUnavailable as exc:
+                    # Fail closed: a run never starts unconfined.
+                    return self._abort(run_id, token_id, f"landlock unavailable: {exc.strerror or exc}")
                 ensure_cfg_dirs(self.settings)
                 run_dir.mkdir(parents=True, exist_ok=True)
+                cfg_dir = runner_cfg_dir(self.settings, run.runner, run.backend)
+                cfg_dir.mkdir(mode=0o700, parents=True, exist_ok=True)  # a Landlock rule needs it to exist
+                tmp_dir = Path(tempfile.mkdtemp(prefix=f"trajectree-run-{run_id}-"))  # created 0700
+                home = run_dir / "home"
+                home.mkdir(mode=0o700, exist_ok=True)
+                env = {**env, "TMPDIR": str(tmp_dir), "HOME": str(home)}
+                with self.ledger.locked() as conn:
+                    paths = run_paths(
+                        conn, self.settings, runner=run.runner, backend=run.backend,
+                        run_dir=run_dir, tmp_dir=tmp_dir, cwd=plan.cwd,
+                    )
+                    current = get_run(conn, run_id) or run
+                    update_run(conn, run_id, props={**current.props, "landlock_abi": abi})
                 last_path = run_dir / "last.md"
                 stdin_text: str | None = None
                 if run.runner == "codex":
@@ -187,7 +213,7 @@ class RunService:
                     argv = claude_argv(spec, binary=self.settings.claude_bin, mcp_config_path=mcp_path.absolute())
                     stdin_text = spec.prompt
                 outcome = self.launch(
-                    argv,
+                    confine_argv(paths.ro, paths.rw, argv),
                     env=env,
                     cwd=plan.cwd,
                     timeout_s=caps.timeout_s,
@@ -206,15 +232,17 @@ class RunService:
                     revoke_token(conn, token_id)
         finally:
             mcp_path.unlink(missing_ok=True)
+            if tmp_dir is not None:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
         if done.kind != "routine":
             return done
         # Delivery runs with the lock released; the token is already revoked.
         return finish_routine_run(self.ledger, self.settings, done, plan, actor=actor, now=self.now())
 
-    def _abort(self, run_id: str, token_id: str, error: str) -> None:
+    def _abort(self, run_id: str, token_id: str, error: str) -> Run:
         with self.ledger.locked() as conn:
             try:
-                self._fail(conn, run_id, error, infra=True)
+                return self._fail(conn, run_id, error, infra=True)
             finally:
                 revoke_token(conn, token_id)
 
@@ -295,6 +323,8 @@ class RunService:
             return self._fail(conn, run.id, f"timeout after {timeout_s}s", infra=True)
         if outcome.exit_code is None:
             return self._fail(conn, run.id, outcome.stderr_tail, infra=True)
+        if wrapper_error := _confine_error(outcome):
+            return self._fail(conn, run.id, wrapper_error, infra=True)
         try:
             if run.runner == "codex":
                 last = last_path.read_text(encoding="utf-8") if last_path.exists() else None
@@ -464,6 +494,18 @@ class RunService:
                 for i, p in enumerate(run.proposals)
             ]
             return update_run(conn, run_id, proposals=updated)
+
+
+def _confine_error(outcome) -> str | None:
+    """The wrapper's own error line when it, not the runner, ended the run: Landlock could not be
+    applied (exit 97) or the runner binary could not be executed (exit 127)."""
+    if outcome.exit_code == CONFINE_FAILED_EXIT:
+        prefix = "trajectree-confine:"
+    elif outcome.exit_code == 127:
+        prefix = "trajectree-confine: cannot run"
+    else:
+        return None
+    return next((line for line in outcome.stderr_tail.splitlines() if line.startswith(prefix)), None)
 
 
 def _write_private(path, text: str) -> None:

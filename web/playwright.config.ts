@@ -31,6 +31,11 @@ export default defineConfig({
       TRAJECTREE_CLAUDE_HOME: "",
       TRAJECTREE_BACKENDS_ROOT: "",
       TRAJECTREE_CLAUDE_BIN: path.resolve(import.meta.dirname,"../tests/bin/fake-claude"),
+      // Runs are confined: fake-claude and the repo's interpreter live outside the system dirs.
+      TRAJECTREE_CONFINE_EXTRA_RO: [
+        path.resolve(import.meta.dirname, "../tests/bin"),
+        path.resolve(import.meta.dirname, "../.venv"),
+      ].join(":"),
       TRAJECTREE_CFG_DIR: path.join(dataDir, "cfg"),
       TRAJECTREE_RUN_ENV_PASSTHROUGH: "FAKE_CLAUDE_MODE,FAKE_CLAUDE_STRUCTURED,FAKE_CLAUDE_RESULT",
       FAKE_CLAUDE_MODE: "ok",

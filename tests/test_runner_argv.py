@@ -42,18 +42,24 @@ def test_claude_argv_disallowed_tools():
 def test_codex_argv():
     argv = codex_argv(spec(runner="codex", backend="codex", model="gpt-5", system_prompt="Sys."), binary="codex",
                       schema_path=Path("/tmp/s.json"), last_message_path=Path("/tmp/last.md"))
-    assert argv[:3] == ["codex", "exec", "--json"] and "--ephemeral" in argv and argv[argv.index("--sandbox") + 1] == "read-only"
+    assert argv[:3] == ["codex", "exec", "--json"] and "--ephemeral" in argv
     assert 'mcp_servers.trajectree.url="http://127.0.0.1:8742/mcp"' in argv
     assert 'mcp_servers.trajectree.bearer_token_env_var="TRAJECTREE_RUN_TOKEN"' in argv
     assert argv[argv.index("-o") + 1] == "/tmp/last.md" and argv[argv.index("--output-schema") + 1] == "/tmp/s.json"
     assert argv[-1] == "Sys.\n\nQ?" and argv[argv.index("-m") + 1] == "gpt-5"
+
+def test_codex_argv_uses_danger_full_access():
+    argv = codex_argv(spec(runner="codex", backend="codex"), binary="codex", schema_path=None,
+                      last_message_path=Path("/tmp/last.md"))
+    i = argv.index("--sandbox")
+    assert argv[i:i + 2] == ["--sandbox", "danger-full-access"] and "read-only" not in argv
 
 def test_run_env_is_built_from_scratch(settings):
     base = {"PATH": "/usr/bin", "TRAJECTREE_DATA_DIR": "/data", "ANTHROPIC_API_KEY": "leak", "LANG": "C.UTF-8", "HTTPS_PROXY": "http://p"}
     s = settings.model_copy(update={"run_env_passthrough": ["HTTPS_PROXY", "TRAJECTREE_DATA_DIR", "ANTHROPIC_API_KEY"]})
     env = run_env(spec(), s, base=base, oauth_token="oat")
     assert env["PATH"] == "/usr/bin" and env["LANG"] == "C.UTF-8" and env["TERM"] == "dumb" and env["HTTPS_PROXY"] == "http://p"
-    assert env["CLAUDE_CONFIG_DIR"] == str(s.claude_config_dir) and env["HOME"] == str(s.run_home)
+    assert env["CLAUDE_CONFIG_DIR"] == str(s.claude_config_dir) and "HOME" not in env   # the service sets a per-run HOME
     assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "oat" and env["DISABLE_AUTOUPDATER"] == "1"
     assert "TRAJECTREE_DATA_DIR" not in env and "ANTHROPIC_API_KEY" not in env and "TRAJECTREE_RUN_TOKEN" not in env
 
