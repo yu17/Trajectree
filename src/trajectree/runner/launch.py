@@ -75,6 +75,12 @@ def launch(
         except subprocess.TimeoutExpired:
             # A grandchild escaped the process group and still holds the pipes.
             stdout, stderr = "", ""
+    # Nothing the runner started outlives the run, even after a normal exit: a backgrounded
+    # child would keep its write access to the run's dirs.
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
     exit_code = proc.returncode
     duration_ms = int((time.monotonic() - start) * 1000)
     stdout = stdout or ""

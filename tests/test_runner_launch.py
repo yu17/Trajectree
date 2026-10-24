@@ -42,3 +42,21 @@ def test_fake_claude_garbage_and_version(tmp_path):
     assert out.exit_code == 1 and "boom" in out.stderr_tail
     out = launch([FAKE, "--version"], env={**os.environ}, cwd=tmp_path, timeout_s=5, log_path=tmp_path / "v.log", secrets=[])
     assert out.stdout.startswith("2.1.309")
+
+def _gone(pid: int) -> bool:
+    try:
+        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+    except (FileNotFoundError, ProcessLookupError):   # already reaped
+        return True
+    return state in ("Z", "X")   # killed, waiting for its new parent to reap it
+
+def test_launch_kills_backgrounded_children_after_exit(tmp_path):
+    # The runner exits at once; the child it left behind must not outlive the run.
+    out = launch(["/bin/sh", "-c", "sleep 30 >/dev/null 2>&1 </dev/null & echo $!"], env={"PATH": "/bin:/usr/bin"},
+                 cwd=tmp_path, timeout_s=10, log_path=tmp_path / "r.log", secrets=[])
+    pid = int(out.stdout.strip())
+    assert out.exit_code == 0 and not out.timed_out
+    deadline = time.monotonic() + 5
+    while not _gone(pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert _gone(pid)
