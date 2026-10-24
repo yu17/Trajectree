@@ -10,6 +10,7 @@ never logged or put in an error message.
 """
 
 import re
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 from urllib.parse import quote, urlparse
@@ -273,7 +274,7 @@ def collect_remote(
     states: dict[str, dict | None],
     *,
     now: datetime,
-    since_days: int,
+    starts: Mapping[str, datetime | None],
     client: httpx.Client | None = None,
 ) -> RemoteCollection:
     """Fetch each git_remote resource's recent activity and build its signals; no DB access."""
@@ -297,7 +298,7 @@ def collect_remote(
                 continue
             if repo.kind not in tokens:
                 tokens[repo.kind] = load_connector_token(settings, repo.kind)
-            since = _since(states.get(resource.id), now, since_days)
+            since = _since(states.get(resource.id), starts.get(resource.id))
             fetch = fetch_github if repo.kind == "github" else fetch_gitlab
             try:
                 items = fetch(http, repo, tokens[repo.kind], since=since)

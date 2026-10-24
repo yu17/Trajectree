@@ -123,10 +123,52 @@ def test_collect_git_runs_without_a_connection(ledger, human, settings, tmp_path
     p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
     upsert_resource(ledger, human, ResourceIn(project_id=p.id, kind="git_local", locator=str(repo)))
     resources = list_resources(ledger.conn, kinds=["git_local"])
-    c = collect_git(settings, resources, {resources[0].id: None}, now=datetime(2026, 1, 7, tzinfo=UTC), since_days=30)
+    c = collect_git(settings, resources, {resources[0].id: None}, now=datetime(2026, 1, 7, tzinfo=UTC), starts={resources[0].id: datetime(2025, 12, 8, tzinfo=UTC)})
     assert len(c.signals) == 2 and c.errors == [] and c.polled == [resources[0].id]
     # nothing was written: the caller writes later, under the lock
     assert list_signals(ledger.conn, project_ids=[p.id]) == [] and get_state(ledger.conn, f"git:{resources[0].id}") is None
+
+
+def test_first_poll_uses_project_start(ledger, human, settings, tmp_path):
+    from trajectree.connectors.local_git import collect_git
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    commit(repo, "a", "2023-05-05T10:00:00+00:00")
+    commit(repo, "b", "2026-01-06T09:00:00+00:00")
+    p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    upsert_resource(ledger, human, ResourceIn(project_id=p.id, kind="git_local", locator=str(repo)))
+    resources = list_resources(ledger.conn, kinds=["git_local"])
+    rid = resources[0].id
+    now = datetime(2026, 1, 7, tzinfo=UTC)
+
+    def days(start):
+        c = collect_git(settings, resources, {}, now=now, starts={rid: start})
+        return sorted(s.dedupe_key.rsplit(":", 1)[1] for s in c.signals)
+
+    assert days(datetime(2023, 1, 1, tzinfo=UTC)) == ["2023-05-05", "2026-01-06"]
+    assert days(datetime(2025, 1, 1, tzinfo=UTC)) == ["2026-01-06"]
+    assert days(None) == ["2023-05-05", "2026-01-06"]
+
+
+def test_cursor_wins_over_start(ledger, human, settings, tmp_path):
+    from trajectree.connectors.local_git import collect_git
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    commit(repo, "old", "2023-05-05T10:00:00+00:00")
+    commit(repo, "a", "2026-01-05T10:00:00+00:00")
+    commit(repo, "b", "2026-01-06T09:00:00+00:00")
+    p =create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    upsert_resource(ledger, human, ResourceIn(project_id=p.id, kind="git_local", locator=str(repo)))
+    resources = list_resources(ledger.conn, kinds=["git_local"])
+    rid = resources[0].id
+    states = {rid: {"last_poll": "2026-01-06T12:00:00+00:00"}}
+    starts = {rid: datetime(1970, 1, 1, tzinfo=UTC)}
+    c = collect_git(settings, resources, states, now=datetime(2026, 1, 7, tzinfo=UTC), starts=starts)
+    assert [s.dedupe_key.rsplit(":", 1)[1] for s in c.signals] == ["2026-01-06", "2026-01-05"]  # the cursor, a day back; not 2023
 
 
 def test_discover_remotes(ledger, human, settings, tmp_path):

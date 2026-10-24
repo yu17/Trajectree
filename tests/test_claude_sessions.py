@@ -192,6 +192,47 @@ def test_digest_transcript_skips_noise_and_keeps_first_and_last_assistant(tmp_pa
     assert "x" * 301 not in d.split("## Final message")[0]
     assert "## Final message\nstep 25 " in d
 
+def import_props(**sources):
+    return {"import": {"sources": sources, "recorded_at": "2026-10-01T00:00:00+00:00"}}
+
+def setup_with_import(ledger, human, settings, tmp_path, **sources):
+    home = tmp_path / "claude"
+    s = settings.model_copy(update={"claude_home": home, "backends_root": tmp_path / "backends"})
+    p = create_project(ledger, human, ProjectIn(slug="proj", title="Proj", kind="research", props=import_props(**sources)))
+    upsert_resource(ledger, human, ResourceIn(project_id=p.id, kind="folder", locator=CWD))
+    return home, s, p
+
+def test_unpicked_sessions_not_attached(ledger, human, settings, tmp_path):
+    home, s, p = setup_with_import(ledger, human, settings, tmp_path, claude={"picked": False})
+    write_transcript(home, CWD, SID, [rec_user("2026-01-05T10:00:00.000Z")])
+    report = scan_transcripts(ledger.conn, s, now=datetime.now(UTC))
+    assert report.signals_written == 0 and report.live == []
+    assert list_signals(ledger.conn, project_ids=[p.id]) == []
+
+def test_session_before_start_not_attached(ledger, human, settings, tmp_path):
+    home, s, p = setup_with_import(ledger, human, settings, tmp_path, claude={"picked": True, "since": "2026-05-01"})
+    write_transcript(home, CWD, SID, [rec_user("2026-03-01T10:00:00.000Z"), rec_assistant("2026-03-01T10:02:00.000Z")])
+    other = "2" * 36
+    write_transcript(home, CWD, other, [rec_user("2026-06-01T10:00:00.000Z", sid=other)])
+    scan_transcripts(ledger.conn, s, now=datetime.now(UTC))
+    assert [x.payload["session_id"] for x in list_signals(ledger.conn, project_ids=[p.id])] == [other]
+
+def test_all_lifts_transcript_cutoff(ledger, human, settings, tmp_path):
+    old = (datetime.now(UTC) - timedelta(days=800)).timestamp()
+    home, s, p = setup(ledger, human, settings, tmp_path)
+    path = write_transcript(home, CWD, SID, [rec_user("2024-08-01T10:00:00.000Z")])
+    os.utime(path, (old, old))
+    assert scan_transcripts(ledger.conn, s, now=datetime.now(UTC)).files_seen == 0
+    # another project asking for everything lifts the file cutoff; this project still starts at the default
+    other = create_project(ledger, human, ProjectIn(slug="deep", title="Deep", kind="research", props=import_props(claude={"picked": True, "since": "all"})))
+    upsert_resource(ledger, human, ResourceIn(project_id=other.id, kind="folder", locator="/home/u/deep"))
+    write_transcript(home, "/home/u/deep", "4" * 36, [rec_user("2024-08-01T10:00:00.000Z", cwd="/home/u/deep", sid="4" * 36)])
+    os.utime(home / "projects" / encode_project_dir("/home/u/deep") / f"{'4' * 36}.jsonl", (old, old))
+    report = scan_transcripts(ledger.conn, s, now=datetime.now(UTC))
+    assert report.files_seen == 2 and report.signals_written == 1
+    assert [x.payload["session_id"] for x in list_signals(ledger.conn, project_ids=[other.id])] == ["4" * 36]
+    assert list_signals(ledger.conn, project_ids=[p.id]) == []
+
 def test_digest_transcript_missing_file_raises(tmp_path):
     from trajectree.connectors.claude_sessions import digest_transcript
     import pytest

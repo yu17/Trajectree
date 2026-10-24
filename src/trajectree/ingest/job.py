@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 
 from urllib.parse import urlparse
 
+import apsw
 from pydantic import AwareDatetime, BaseModel
 
 from trajectree.config import Settings
@@ -36,8 +37,10 @@ from trajectree.connectors.remote import (
 )
 from trajectree.connectors.slurm import SlurmReport, collect_slurm, slurm_due, slurm_since, write_slurm
 from trajectree.db.ledger import Ledger
+from trajectree.importing import source_picked, source_start
 from trajectree.ingest.exports import render_exports, write_files
-from trajectree.models import Actor, ResourceIn
+from trajectree.models import Actor, Resource, ResourceIn
+from trajectree.repo.projects import list_projects
 from trajectree.repo.resources import find_resource, list_resources, upsert_resource
 from trajectree.repo.signals import stale_projects
 from trajectree.repo.review import pending_txns
@@ -51,6 +54,21 @@ class IngestBusy(Exception):
 
 _RUNNING = threading.Lock()
 DISCOVERY_ACTOR = Actor(kind="connector", ref="local-git", tool="git")
+
+
+def _chosen(
+    conn: apsw.Connection, settings: Settings, resources: list[Resource], source: str, now: datetime
+) -> tuple[list[Resource], dict[str, datetime | None]]:
+    """The resources whose project picked `source`, and where each one's first poll starts."""
+    projects = {p.id: p for p in list_projects(conn)}
+    kept = [r for r in resources if r.project_id in projects and source_picked(projects[r.project_id], source)]
+    starts = {
+        r.id: source_start(
+            projects[r.project_id], source, now=now, default_days=settings.scan_since_days, tz=settings.tz
+        )
+        for r in kept
+    }
+    return kept, starts
 
 
 class IngestReport(BaseModel):
@@ -95,11 +113,11 @@ def run_ingest(ledger: Ledger, settings: Settings, *, now: datetime | None = Non
                     scan = scan_transcripts(conn, settings, now=now)
             # git runs between two locked phases, never while the lock is held
             with ledger.locked() as conn:
-                git_resources = list_resources(conn, kinds=["git_local"])
+                git_resources, git_starts = _chosen(
+                    conn, settings, list_resources(conn, kinds=["git_local"]), "git", now
+                )
                 git_states = read_git_states(conn, git_resources)
-            collection = collect_git(
-                settings, git_resources, git_states, now=now, since_days=settings.scan_since_days
-            )
+            collection = collect_git(settings, git_resources, git_states, now=now, starts=git_starts)
             with ledger.locked() as conn:
                 git_written = write_git(conn, collection, now=now)
             git = GitReport(
@@ -136,15 +154,19 @@ def run_ingest(ledger: Ledger, settings: Settings, *, now: datetime | None = Non
                 remote_run = remote_due(conn, now=now, every_m=settings.remote_every_m)
                 # only accepted remotes are polled: a pending (discovered) one must not receive tokens
                 unreviewed = pending_txns(conn, "resource") if remote_run else {}
-                remote_resources = (
+                remote_resources, remote_starts = _chosen(
+                    conn,
+                    settings,
                     [r for r in list_resources(conn, kinds=["git_remote"]) if r.id not in unreviewed]
                     if remote_run
-                    else []
+                    else [],
+                    "remote",
+                    now,
                 )
                 remote_states = read_remote_states(conn, remote_resources)
             if remote_run:
                 remote_collection = collect_remote(
-                    settings, remote_resources, remote_states, now=now, since_days=settings.scan_since_days
+                    settings, remote_resources, remote_states, now=now, starts=remote_starts
                 )
                 remote_signals, remote_milestones = write_remote(ledger, remote_collection, now=now)
                 remote = RemoteReport(
@@ -164,11 +186,13 @@ def run_ingest(ledger: Ledger, settings: Settings, *, now: datetime | None = Non
             # folders: same three phases, the walk runs with no lock; skipped until due
             with ledger.locked() as conn:
                 due = folders_due(conn, now=now, every_h=settings.folders_scan_every_h)
-                folder_resources = list_resources(conn, kinds=["folder"]) if due else []
+                folder_resources, folder_starts = _chosen(
+                    conn, settings, list_resources(conn, kinds=["folder"]) if due else [], "folder", now
+                )
                 folder_states = read_folder_states(conn, folder_resources)
             if due:
                 folder_collection = collect_folders(
-                    settings, folder_resources, folder_states, now=now, since_days=settings.scan_since_days
+                    settings, folder_resources, folder_states, now=now, starts=folder_starts
                 )
                 with ledger.locked() as conn:
                     folders_written = write_folders(conn, folder_collection, now=now)

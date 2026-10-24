@@ -21,6 +21,10 @@ EPOCH_BEFORE_T1 = datetime(2026, 3, 1, tzinfo=UTC)
 NOW = datetime(2026, 3, 12, 8, 0, tzinfo=UTC)
 
 
+def start_30d(resources):
+    return {r.id: datetime(2026, 2, 10, tzinfo=UTC) for r in resources}
+
+
 def test_scan_folder_counts_per_day_honours_gitignore_and_excludes(tmp_path):
     root = tmp_path / "p"
     (root / "src").mkdir(parents=True)
@@ -71,7 +75,7 @@ def test_collect_and_write_folders_signals(ledger, human, settings, tmp_path):
     upsert_resource(ledger, human, ResourceIn(project_id=p.id, kind="folder", locator=str(tmp_path / "gone")))
     resources = list_resources(ledger.conn, kinds=["folder"])
     states = read_folder_states(ledger.conn, resources)
-    c = collect_folders(settings, resources, states, now=NOW, since_days=30)
+    c = collect_folders(settings, resources, states, now=NOW, starts=start_30d(resources))
     assert len(c.signals) == 1 and len(c.errors) == 1 and c.errors[0].startswith(str(tmp_path / "gone"))
     good = next(r for r in resources if r.locator == str(root))
     assert c.polled == [good.id]
@@ -83,9 +87,34 @@ def test_collect_and_write_folders_signals(ledger, human, settings, tmp_path):
     assert get_state(ledger.conn, f"folders:{good.id}")["last_scan"]
     assert get_state(ledger.conn, "folders:last") is not None
     # second pass is idempotent
-    c2 = collect_folders(settings, resources, read_folder_states(ledger.conn, resources), now=NOW, since_days=30)
+    c2 = collect_folders(settings, resources, read_folder_states(ledger.conn, resources), now=NOW, starts=start_30d(resources))
     write_folders(ledger.conn, c2, now=NOW)
     assert len(list_signals(ledger.conn, project_ids=[p.id], kinds=["files_changed"])) == 1
+
+
+def test_unpicked_folder_is_not_scanned(ledger, human, settings, tmp_path):
+    from trajectree.ingest.job import run_ingest
+
+    picked, skipped = tmp_path / "picked", tmp_path / "skipped"
+    for root in (picked, skipped):
+        root.mkdir()
+        (root / "a.txt").write_text("hello")
+        os.utime(root / "a.txt", (T1, T1))
+    on = create_project(ledger, human, ProjectIn(slug="on", title="On", kind="research"))
+    off = create_project(
+        ledger,
+        human,
+        ProjectIn(
+            slug="off", title="Off", kind="research",
+            props={"import": {"sources": {"folder": {"picked": False}}, "recorded_at": NOW.isoformat()}},
+        ),
+    )  # fmt: skip
+    upsert_resource(ledger, human, ResourceIn(project_id=on.id, kind="folder", locator=str(picked)))
+    upsert_resource(ledger, human, ResourceIn(project_id=off.id, kind="folder", locator=str(skipped)))
+    report = run_ingest(ledger, settings, now=NOW)
+    assert report.folders.folders == 1 and report.folders.signals_written == 1
+    assert len(list_signals(ledger.conn, project_ids=[on.id], kinds=["files_changed"])) == 1
+    assert list_signals(ledger.conn, project_ids=[off.id], kinds=["files_changed"]) == []
 
 
 def test_folders_due(conn):
@@ -110,5 +139,5 @@ def test_malformed_gitignore_is_reported_and_pass_continues(ledger, human, setti
     upsert_resource(ledger, human, ResourceIn(project_id=p.id, kind="folder", locator=str(bad)))
     upsert_resource(ledger, human, ResourceIn(project_id=p.id, kind="folder", locator=str(good)))
     resources = list_resources(ledger.conn, kinds=["folder"])
-    c = collect_folders(settings, resources, read_folder_states(ledger.conn, resources), now=NOW, since_days=30)
+    c = collect_folders(settings, resources, read_folder_states(ledger.conn, resources), now=NOW, starts=start_30d(resources))
     assert len(c.errors) == 1 and c.errors[0].startswith(str(bad)) and len(c.signals) == 1

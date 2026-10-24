@@ -28,6 +28,10 @@ UTC = timezone.utc
 NOW = datetime(2026, 10, 22, 12, tzinfo=UTC)
 
 
+def start_30d(resources):
+    return {r.id: datetime(2026, 9, 22, tzinfo=UTC) for r in resources}
+
+
 def client_for(handler):
     return httpx.Client(transport=httpx.MockTransport(handler))
 
@@ -170,7 +174,7 @@ def test_collect_remote_isolates_failures(ledger, human, settings):
 
     resources = list_resources(ledger.conn, kinds=["git_remote", "git_local"])
     states = read_remote_states(ledger.conn, resources)
-    col = collect_remote(settings, resources, states, now=NOW, since_days=30, client=client_for(handler))
+    col = collect_remote(settings, resources, states, now=NOW, starts=start_30d(resources), client=client_for(handler))
     assert len(col.errors) == 4
     joined = "\n".join(col.errors)
     assert "https://github.com/o/a: 401" in joined and "https://github.com/o/b: 403" in joined
@@ -202,15 +206,32 @@ def test_collect_remote_sends_gitlab_token_only_to_the_configured_host(ledger, h
 
     resources = list_resources(ledger.conn, kinds=["git_remote"])
     configured = settings.model_copy(update={"gitlab_host": "gitlab.uni.edu"})
-    col = collect_remote(configured, resources, {}, now=NOW, since_days=30, client=client_for(handler))
+    col = collect_remote(configured, resources, {}, now=NOW, starts=start_30d(resources), client=client_for(handler))
     assert set(hosts) == {"gitlab.uni.edu"} and len(hosts) == 3
     assert col.errors == ["https://evil.example/o/r.git: unknown host, not polled"]
     assert col.polled == [lab.id] and evil.id not in col.polled
     # with no GitLab host configured, nothing at all is requested
     hosts.clear()
-    col = collect_remote(settings, resources, {}, now=NOW, since_days=30, client=client_for(handler))
+    col = collect_remote(settings, resources, {}, now=NOW, starts=start_30d(resources), client=client_for(handler))
     assert hosts == [] and col.polled == [] and len(col.errors) == 2
     assert all(e.endswith(": unknown host, not polled") for e in col.errors)
+
+
+def test_first_poll_uses_git_start(ledger, human, settings):
+    p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    r = mk_remote(ledger, human, p, "https://github.com/o/a")
+    sinces = []
+
+    def handler(request):
+        if request.url.path.endswith("/issues"):
+            sinces.append(parse_qs(request.url.query.decode())["since"][0])
+        return httpx.Response(200, json=[])
+
+    resources = list_resources(ledger.conn, kinds=["git_remote"])
+    start = datetime(2024, 3, 1, 6, tzinfo=UTC)
+    collect_remote(settings, resources, {}, now=NOW, starts={r.id: start}, client=client_for(handler))
+    collect_remote(settings, resources, {}, now=NOW, starts={}, client=client_for(handler))
+    assert sinces == ["2024-03-01T06:00:00+00:00", "1970-01-01T00:00:00+00:00"]
 
 
 def test_collect_remote_since_uses_cursor_and_caps(ledger, human, settings):
@@ -227,10 +248,10 @@ def test_collect_remote_since_uses_cursor_and_caps(ledger, human, settings):
         return httpx.Response(200, json=[])
 
     resources = list_resources(ledger.conn, kinds=["git_remote"])
-    col = collect_remote(settings, resources, {r.id: None}, now=NOW, since_days=30, client=client_for(handler))
+    col = collect_remote(settings, resources, {r.id: None}, now=NOW, starts=start_30d(resources), client=client_for(handler))
     assert sinces == ["2026-09-22T00:00:00+00:00"]
     assert col.signals[0].payload["count"] == 25 and len(col.signals[0].payload["issues"]) == 20
-    collect_remote(settings, resources, {r.id: {"last_poll": "2026-10-20T12:00:00+00:00"}}, now=NOW, since_days=30, client=client_for(handler))
+    collect_remote(settings, resources, {r.id: {"last_poll": "2026-10-20T12:00:00+00:00"}}, now=NOW, starts=start_30d(resources), client=client_for(handler))
     assert sinces[1] == "2026-10-19T00:00:00+00:00"
 
 
@@ -259,7 +280,7 @@ def test_write_remote_upserts_signals(ledger, human, settings):
         return httpx.Response(200, json=[])
 
     resources = list_resources(ledger.conn, kinds=["git_remote"])
-    col = collect_remote(settings, resources, {}, now=NOW, since_days=30, client=client_for(handler))
+    col = collect_remote(settings, resources, {}, now=NOW, starts=start_30d(resources), client=client_for(handler))
     assert write_remote(ledger, col, now=NOW) == (1, 0)
     assert len(list_signals(ledger.conn, project_ids=[p.id], kinds=["remote"])) == 1
 

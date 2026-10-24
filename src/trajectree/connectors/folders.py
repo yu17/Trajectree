@@ -8,6 +8,7 @@ and does not descend into a directory whose own files are very large.
 """
 
 import os
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -141,15 +142,15 @@ def _state_key(resource_id: str) -> str:
     return f"folders:{resource_id}"
 
 
-def _since(state: Any, now: datetime, since_days: int) -> datetime:
+def _since(state: Any, start: datetime | None) -> datetime:
+    """The cursor minus a day when the resource was polled; otherwise `start` (None: the epoch)."""
     if isinstance(state, dict) and isinstance(state.get("last_scan"), str):
         try:
             back = from_db(state["last_scan"]) - timedelta(days=1)
             return back.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         except ValueError:
             pass
-    first = (now - timedelta(days=since_days)).astimezone(timezone.utc)
-    return first.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start or datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
 def read_folder_states(conn: apsw.Connection, resources: list[Resource]) -> dict[str, dict | None]:
@@ -163,7 +164,7 @@ def collect_folders(
     states: dict[str, dict | None],
     *,
     now: datetime,
-    since_days: int,
+    starts: Mapping[str, datetime | None],
 ) -> FolderCollection:
     """Walk each folder resource and build its per-day `files_changed` signals; no DB access.
 
@@ -182,7 +183,7 @@ def collect_folders(
                 continue
             days = scan_folder(
                 local,
-                since=_since(states.get(resource.id), now, since_days),
+                since=_since(states.get(resource.id), starts.get(resource.id)),
                 big_dir_mb=settings.folders_big_dir_mb,
             )
         except (OSError, ValueError) as exc:  # ValueError: malformed .gitignore pattern

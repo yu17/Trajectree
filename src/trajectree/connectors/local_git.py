@@ -10,6 +10,7 @@ held: read the resources and their cursors (`read_git_states`), run git with no 
 
 import os
 import subprocess
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -41,15 +42,15 @@ def _state_key(resource_id: str) -> str:
     return f"git:{resource_id}"
 
 
-def _since(state: Any, now: datetime, since_days: int) -> datetime:
+def _since(state: Any, start: datetime | None) -> datetime:
+    """The cursor minus a day when the resource was polled; otherwise `start` (None: the epoch)."""
     if isinstance(state, dict) and isinstance(state.get("last_poll"), str):
         try:
             back = from_db(state["last_poll"]) - timedelta(days=1)
             return back.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         except ValueError:
             pass
-    first = (now - timedelta(days=since_days)).astimezone(timezone.utc)
-    return first.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start or datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
 def _parse(stdout: str) -> dict[str, list[tuple[datetime, str, str, str]]]:
@@ -78,7 +79,7 @@ def collect_git(
     states: dict[str, dict | None],
     *,
     now: datetime,
-    since_days: int,
+    starts: Mapping[str, datetime | None],
 ) -> GitCollection:
     """Run `git log` for each resource and build its per-day `commits` signals; no DB access.
 
@@ -94,7 +95,7 @@ def collect_git(
             if not (local / ".git").exists():
                 errors.append(f"{resource.locator}: not a git repository")
                 continue
-            since = _since(states.get(resource.id), now, since_days)
+            since = _since(states.get(resource.id), starts.get(resource.id))
             cmd = [
                 "git", "-c", "safe.directory=*", "-C", str(local), "log", "--all",
                 f"--since={since.isoformat()}", "--date=iso-strict",
@@ -192,6 +193,9 @@ def poll_git(
     """
     resources = list_resources(conn, kinds=["git_local"])
     states = read_git_states(conn, resources)
-    collection = collect_git(settings, resources, states, now=now, since_days=since_days)
+    first = (now - timedelta(days=since_days)).astimezone(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    collection = collect_git(settings, resources, states, now=now, starts=dict.fromkeys((r.id for r in resources), first))
     written = write_git(conn, collection, now=now)
     return GitReport(repos=len(resources), signals_written=written, errors=collection.errors)

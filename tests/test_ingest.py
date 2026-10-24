@@ -199,7 +199,7 @@ def test_ingest_remote_phase_runs_when_due(ledger, human, settings, monkeypatch)
     upsert_resource(ledger, human, ResourceIn(project_id=p.id, kind="git_remote", locator="https://github.com/o/r"))
     calls = []
 
-    def fake_collect(settings, resources, states, *, now, since_days, client=None):
+    def fake_collect(settings, resources, states, *, now, starts, client=None):
         calls.append([r.locator for r in resources])
         return remote.RemoteCollection(signals=[], releases=[], polled=[resources[0].id], errors=["boom"])
 

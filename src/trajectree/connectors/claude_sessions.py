@@ -16,7 +16,9 @@ import apsw
 from pydantic import AwareDatetime, BaseModel, ValidationError
 
 from trajectree.config import Settings
+from trajectree.importing import SESSION_SOURCE_OF_BACKEND, source_picked, source_start
 from trajectree.models import Project, SignalIn
+from trajectree.repo.projects import list_projects
 from trajectree.repo.resources import project_for_path
 from trajectree.repo.signals import upsert_signals
 from trajectree.repo.state import get_state, set_state
@@ -281,11 +283,30 @@ def _read_from(path: Path, offset: int, acc: SessionSummary) -> tuple[SessionSum
     return summary, consumed
 
 
+def _transcript_cutoff(conn: apsw.Connection, settings: Settings, now: datetime) -> float | None:
+    """Skip transcript files last written before this (POSIX seconds); `None` reads them all.
+
+    The earliest claude start among the projects that picked claude, so a project that asked
+    for more history than the default gets it; with no such project, the default.
+    """
+    default = (now - timedelta(days=settings.scan_since_days)).timestamp()
+    starts = [
+        source_start(p, "claude", now=now, default_days=settings.scan_since_days, tz=settings.tz)
+        for p in list_projects(conn)
+        if source_picked(p, "claude")
+    ]
+    if not starts:
+        return default
+    if None in starts:
+        return None
+    return min(s.timestamp() for s in starts if s is not None)
+
+
 def _refresh_summaries(
     conn: apsw.Connection, settings: Settings, now: datetime
 ) -> tuple[int, int, list[tuple[SessionSummary, float]]]:
     """Update each recent transcript's stored summary; returns (seen, read, summaries)."""
-    cutoff = (now - timedelta(days=settings.scan_since_days)).timestamp()
+    cutoff = _transcript_cutoff(conn, settings, now)
     files_seen = files_read = 0
     summaries: list[tuple[SessionSummary, float]] = []
     for backend, root in transcript_roots(settings):
@@ -294,7 +315,7 @@ def _refresh_summaries(
                 st = path.stat()
             except OSError:
                 continue
-            if st.st_mtime < cutoff:
+            if cutoff is not None and st.st_mtime < cutoff:
                 continue
             files_seen += 1
             abs_path = str(path.absolute())
@@ -347,7 +368,15 @@ def _session_signals(
         project = projects[summary.cwd]
         if project is None:
             continue
+        source = SESSION_SOURCE_OF_BACKEND[summary.backend]
+        if not source_picked(project, source):
+            continue
         seen = datetime.fromtimestamp(mtime, timezone.utc)
+        start = source_start(
+            project, source, now=now, default_days=settings.scan_since_days, tz=settings.tz
+        )
+        if start is not None and (summary.t_end or seen) < start:
+            continue
         running = (now - seen).total_seconds() < settings.live_window_s
         signals.append(
             SignalIn(
