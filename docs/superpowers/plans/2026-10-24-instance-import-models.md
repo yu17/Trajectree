@@ -110,7 +110,7 @@ git commit -m "feat(deploy): instance compose template built from git; dev compo
   - `landlock_abi() -> int` (raises `LandlockUnavailable`)
   - `system_ro_paths() -> list[Path]`: `/usr /lib /lib64 /bin /sbin /etc /opt /app /proc /sys` plus `Path(sys.prefix).resolve()` and `Path(sys.base_prefix).resolve()`
   - `restrict(ro: Sequence[Path], rw: Sequence[Path]) -> int`: restricts the calling process, returns the ABI
-  - `confine_argv(ro: Sequence[Path], rw: Sequence[Path], argv: Sequence[str], *, python: str = sys.executable) -> list[str]`, returning `[python, "-m", "trajectree.runner.confine", "--ro", *ro, "--rw", *rw, "--", *argv]`
+  - `confine_argv(ro: Sequence[Path], rw: Sequence[Path], argv: Sequence[str], *, python: str = sys.executable) -> list[str]`, returning `[python, "-I", "-m", "trajectree.runner.confine", "--ro", *ro, "--rw", *rw, "--", *argv]` (`-I`: isolated mode, so nothing in the run's working directory or `PYTHON*` environment is imported before the restriction)
   - `main(argv: list[str]) -> NoReturn`
 
 - [ ] **Step 1: Write the failing tests** (a module-level fixture skips every real-kernel test when `landlock_abi()` raises; each test runs the module in a subprocess with `--ro` = `system_ro_paths()` plus its own tmp dirs):
@@ -179,7 +179,7 @@ git commit -m "feat(runner): stdlib Landlock wrapper for runner processes"
     - `test_never_whole_data_or_cfg`: neither `settings.data_dir` nor `settings.cfg_root` nor anything under `settings.claude_home`/`settings.backends_root` appears in `ro` or `rw`.
   - `tests/test_runner_argv.py`: `test_codex_argv_uses_danger_full_access`: `codex_argv(...)` contains `"--sandbox", "danger-full-access"` and not `"read-only"`.
   - `tests/test_run_service.py`:
-    - `test_launch_argv_is_confined`: the argv passed to `launch` starts with `[sys.executable, "-m", "trajectree.runner.confine"]` and its part after `--` is the runner argv.
+    - `test_launch_argv_is_confined`: the argv passed to `launch` starts with `[sys.executable, "-I", "-m", "trajectree.runner.confine"]` and its part after `--` is the runner argv.
     - `test_env_has_private_tmp_and_home`: `env["TMPDIR"]` is a fresh directory, removed after the run; `env["HOME"] == str(run_dir / "home")`.
     - `test_landlock_unavailable_fails_closed`: with `landlock_abi` raising, the run ends `failed`, `props.failure == "infra"`, error starts with `landlock unavailable`, and `launch` is never called.
     - `test_wrapper_exit_97_is_infra`: an outcome with `exit_code == 97` and stderr `trajectree-confine: landlock unavailable: x` → `failed`, infra.
