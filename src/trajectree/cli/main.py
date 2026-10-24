@@ -105,9 +105,8 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_parser("mcp", help="run the stdio MCP shim that forwards to the daemon")
 
     def run_opts(sp: argparse.ArgumentParser) -> None:
-        # Every command that starts a run has `args.model`; `_run` refuses it when empty.
         sp.add_argument("--runner", help="needed only when the model name alone is ambiguous")
-        sp.add_argument("--model", help="required: the model to run on (see: trajectree models)")
+        sp.add_argument("--model", help="the model to run on (see: trajectree models)")
         sp.add_argument("--no-wait", action="store_true")
 
     summ = sub.add_parser("summarize", help="summarize a project, or one session, with the runner")
@@ -433,13 +432,15 @@ def _cmd_caps(args: argparse.Namespace, api: _Api) -> None:
 
 
 ROUTINE_ALIASES = {"review": "cross-project-review", "prep": "meeting-prep"}
+MODEL_REQUIRED = ("summarize", "ask", "add")  # and `report draft`; routine runs may use the stored model
 
 
 def _cmd_routines(args: argparse.Namespace, api: _Api) -> None:
     for r in api.get("/api/routines"):
         last = api.get(f"/api/runs/{r['last_run_id']}")["run"]["status"] if r["last_run_id"] else "-"
         enabled = "on" if r["enabled"] else "off"
-        print(f"{r['name']}  {enabled}  {r['trigger']}  {r['tz']}  {r['next_fire'] or '-'}  {last}")
+        model = f"{r['runner']}/{r['model']}" if r["runner"] and r["model"] else r["model"] or "no model"
+        print(f"{r['name']}  {enabled}  {model}  {r['trigger']}  {r['tz']}  {r['next_fire'] or '-'}  {last}")
 
 
 def _cmd_routine(args: argparse.Namespace, api: _Api) -> None:
@@ -546,8 +547,10 @@ def _run(
     interactive: bool | None = None,
 ) -> None:
     cmd = args.cmd
-    if hasattr(args, "model") and not args.model:  # every run command has --model; checked before any request
-        raise _Fail(f"{NO_MODEL_CHOSEN}; pass --model (see: trajectree models)", 2)
+    # Checked before any request; a routine run without --model uses the routine's stored model.
+    if cmd in MODEL_REQUIRED or (cmd == "report" and args.sub == "draft"):
+        if not args.model:
+            raise _Fail(f"{NO_MODEL_CHOSEN}; pass --model (see: trajectree models)", 2)
     simple: dict[str, Callable[[argparse.Namespace, _Api], None]] = {
         "summarize": _cmd_summarize, "ask": _cmd_ask, "add": _cmd_add, "accept": _cmd_accept,
         "runs": _cmd_runs, "usage": _cmd_usage, "caps": _cmd_caps,

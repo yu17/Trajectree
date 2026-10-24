@@ -316,13 +316,13 @@ first start, both disabled and without a model:
 | `meeting-prep` | `0 7 * * 1-5` (weekdays 07:00) | Prepares the day's meeting agenda from the last 7 days of activity |
 
 ```bash
-trajectree routines                          # name, on/off, trigger, tz, next fire, last run
+trajectree routines                          # name, on/off, model, trigger, tz, next fire, last run
 trajectree routine set cross-project-review --model <model> [--runner <runner>]
 trajectree routine enable cross-project-review
 trajectree routine disable cross-project-review
-trajectree review --model <model> [--projects a,b] [--no-wait]   # run cross-project-review now
-trajectree prep --model <model> [--projects a,b] [--no-wait]     # run meeting-prep now
-trajectree run <routine> --model <model> [--projects a,b] [--no-wait]
+trajectree review [--model <model>] [--projects a,b] [--no-wait]   # run cross-project-review now
+trajectree prep [--model <model>] [--projects a,b] [--no-wait]     # run meeting-prep now
+trajectree run <routine> [--model <model>] [--projects a,b] [--no-wait]
 trajectree scheduler [tick]                  # show the scheduler, or tick it now
 ```
 
@@ -332,8 +332,11 @@ trajectree scheduler [tick]                  # show the scheduler, or tick it no
   that as the routine's last error). At startup, a routine still enabled
   without a model (from an older version) is disabled, with the last error
   `disabled: no model was chosen`.
-- `review`, `prep` and `run` require `--model` like every run command; it
-  applies to that run only.
+- `review`, `prep` and `run` use the routine's stored runner and model, and
+  fail with `no model was chosen` when it has none. `--model` (and `--runner`)
+  override them for that one run; the stored model is unchanged.
+  `trajectree routines` shows each routine's model (`runner/model` when a
+  runner is set), or `no model`.
 
 - The seeds take their time zone from `TRAJECTREE_TZ` when they are created;
   compose passes `TZ` from your shell or `.env` (default `UTC`). Changing it

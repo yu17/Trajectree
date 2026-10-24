@@ -88,18 +88,30 @@ def test_cli_routines_review_and_prep(app, client, anon, capsys):
     env = env_for(app)
     assert cli.main(["routines"], client=anon, env=env) == 0
     rows = [line.split("  ") for line in capsys.readouterr().out.splitlines()]
-    assert rows == [["cross-project-review", "off", "0 7 * * 1", "UTC", "-", "-"],
-                    ["meeting-prep", "off", "0 7 * * 1-5", "UTC", "-", "-"]]
-    assert cli.main(["review", "--no-wait", "--model", MODEL], client=anon, env=env) == 0
+    assert rows == [["cross-project-review", "off", "no model", "0 7 * * 1", "UTC", "-", "-"],
+                    ["meeting-prep", "off", "no model", "0 7 * * 1-5", "UTC", "-", "-"]]
+    # No --model: the request is sent and the daemon refuses a routine that stores none.
+    assert cli.main(["review", "--no-wait"], client=anon, env=env) == 1
+    assert capsys.readouterr().err.strip() == "no model was chosen"
+    assert client.get("/api/routines/cross-project-review/runs").json() == []
+    client.patch("/api/routines/cross-project-review", json={"model": MODEL, "runner": "claude"})
+    client.patch("/api/routines/meeting-prep", json={"model": "k2"})
+    assert cli.main(["routines"], client=anon, env=env) == 0
+    assert [line.split("  ")[2] for line in capsys.readouterr().out.splitlines()] == [f"claude/{MODEL}", "k2"]
+    assert cli.main(["review", "--no-wait"], client=anon, env=env) == 0   # the stored model
     assert capsys.readouterr().out.endswith(" queued\n")
-    assert len(client.get("/api/routines/cross-project-review/runs").json()) == 1
+    [review] = client.get("/api/routines/cross-project-review/runs").json()
+    assert (review["runner"], review["model"]) == ("claude", MODEL)
     client.post("/api/projects", json={"slug": "clmi", "title": "CLMI", "kind": "research"})
+    # --model overrides meeting-prep's stored k2 for this run only
     assert cli.main(["prep", "--projects", "clmi", "--model", MODEL], client=anon, env=env) == 0   # waits for the run
     out = capsys.readouterr().out
     assert " ok " in out and "Parsed" in out
     [prep] = client.get("/api/routines/meeting-prep/runs").json()
     assert prep["props"]["request"]["projects"] == ["clmi"] and prep["status"] == "ok"
-    assert cli.main(["run", "nope", "--no-wait", "--model", MODEL], client=anon, env=env) == 1
+    assert (prep["runner"], prep["model"]) == ("claude", MODEL)
+    assert client.get("/api/routines/meeting-prep").json()["model"] == "k2"
+    assert cli.main(["run", "nope", "--no-wait"], client=anon, env=env) == 1
 
 
 def test_cli_routine_enable_disable_and_scheduler(app, client, anon, capsys):
@@ -146,8 +158,7 @@ def test_cli_requires_model(capsys):
             raise AssertionError(f"HTTP {name} sent")
 
     for argv in (["summarize", "clmi"], ["summarize", "--session", "s1"], ["ask", "q"], ["ask", "q", "--runner", "claude"],
-                 ["add", "t"], ["report", "draft", "--kind", "memo", "--title", "T", "--projects", "clmi"],
-                 ["run", "x"], ["review"], ["prep", "--no-wait"]):
+                 ["add", "t"], ["report", "draft", "--kind", "memo", "--title", "T", "--projects", "clmi"]):
         assert cli.main(argv, client=NoHttp(), env={"TRAJECTREE_TOKEN": "t"}) == 2, argv
         assert capsys.readouterr().err.strip() == NO_MODEL, argv
 
