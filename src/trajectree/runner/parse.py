@@ -91,8 +91,14 @@ def parse_claude_json(stdout: str) -> ParsedResult:
 
 def parse_codex(stdout: str, last_message: str | None) -> ParsedResult:
     tokens_in = tokens_out = 0
+    failed = errored = None
     for line in stdout.splitlines():
         obj = _json_object(line)
+        if obj and obj.get("type") == "turn.failed":
+            err = obj.get("error")
+            failed = err.get("message") if isinstance(err, dict) else None
+        elif obj and obj.get("type") == "error":
+            errored = obj.get("message")
         usage = obj.get("usage") if obj else None
         if isinstance(usage, dict):
             tokens_in += _int(usage.get("input_tokens"))
@@ -105,5 +111,16 @@ def parse_codex(stdout: str, last_message: str | None) -> ParsedResult:
         result_text=last_message or "",
         structured=structured,
         usage=Usage(tokens_in=tokens_in, tokens_out=tokens_out),
-        error=None if ok else "no last message",
+        error=None if ok else _codex_error(failed) or _codex_error(errored) or "no last message",
     )
+
+
+def _codex_error(message: object) -> str | None:
+    """Codex's own failure text, truncated; an API error arrives as a JSON string, so unwrap `error.message`."""
+    if not isinstance(message, str) or not message.strip():
+        return None
+    inner = _json_object(message)
+    err = inner.get("error") if inner else None
+    if isinstance(err, dict) and isinstance(err.get("message"), str) and err["message"].strip():
+        message = err["message"]
+    return message[:500]

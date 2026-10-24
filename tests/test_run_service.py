@@ -899,3 +899,12 @@ def test_codex_regular_last_message_is_the_result(ledger, settings):
                    version=lambda b: None, base_env={"PATH": os.environ["PATH"]})
     run = s.execute(s.enqueue(AskRequest(question="q", model="gpt-6.1-sol")).id)
     assert run.status == "ok" and run.result_md == "A"
+
+
+def test_null_optional_fields_take_defaults():
+    from trajectree.runner.parse import ParsedResult
+    from trajectree.runner.service import _proposals
+    item = {"kind": "todo", "project": "a", "title": "T", "reason": "r",
+            "event_kind": None, "when": None, "due": None, "body_md": None, "status": None}
+    (p,) = _proposals(ParsedResult(ok=True, subtype="success", structured={"answer": "", "proposals": [item]}))
+    assert (p.event_kind, p.body_md, p.status, p.when, p.due) == ("note", "", "happened", None, None)

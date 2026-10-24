@@ -307,3 +307,35 @@ def test_starting_point_plan_without_history_raises(ledger, human, settings):
     request = StartingPointRequest(project="a", starts={"git": date(2025, 1, 1)})
     with pytest.raises(NotFound, match="no history before the chosen start"):
         plan_run(ledger.conn, settings, run=run, request=request, now=NOW, prelocked={"history": HistoryInput()})
+
+
+def strict_ok(schema, path="schema"):
+    """Violations of OpenAI strict mode: objects must forbid extras and require every property."""
+    out = []
+    if isinstance(schema, dict):
+        props = schema.get("properties")
+        if schema.get("type") == "object" or props is not None:
+            if schema.get("additionalProperties") is not False:
+                out.append(f"{path}: additionalProperties is not false")
+            if sorted(schema.get("required", [])) != sorted(props or {}):
+                out.append(f"{path}: required != properties")
+        for key, value in schema.items():
+            out += strict_ok(value, f"{path}.{key}")
+    elif isinstance(schema, list):
+        for i, value in enumerate(schema):
+            out += strict_ok(value, f"{path}[{i}]")
+    return out
+
+
+def test_every_plan_schema_is_strict(ledger, human, settings):
+    ensure_prompts(settings)
+    create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    run = create_run(ledger.conn, kind="ask", runner="codex", backend="codex", model=None, project_id=None)
+    plan = plan_run(ledger.conn, settings, run=run, request=AskRequest(question="q"), now=NOW)
+    assert plan.json_schema is not None and strict_ok(plan.json_schema) == []
+    assert strict_ok(PROPOSAL_SCHEMA) == []
+    # Every kind shares the one constant; catch a plan that passes a different schema.
+    import inspect
+    import trajectree.runner.kinds as kinds
+    source = inspect.getsource(kinds)
+    assert source.count("json_schema=") == source.count("json_schema=PROPOSAL_SCHEMA")

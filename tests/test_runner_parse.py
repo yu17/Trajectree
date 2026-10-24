@@ -53,3 +53,23 @@ def test_non_finite_usage_is_zero():
     out = parse_claude_json(json.dumps({"type": "result", "subtype": "success", "is_error": False,
         "result": "x", "total_cost_usd": float("nan"), "usage": {"input_tokens": float("inf")}, "num_turns": 1}))
     assert out.est_usd == 0 and out.usage.tokens_in == 0
+
+
+def test_parse_codex_reports_turn_failure():
+    msg = ("{\"type\":\"error\",\"error\":{\"message\":\"Invalid schema for response_format 'codex_output_schema': "
+           "'schema.properties.proposals.items.required' is required to include every key in properties. Missing "
+           "'event_kind'.\",\"type\":\"invalid_request_error\",\"param\":\"text.format.schema\","
+           "\"code\":\"invalid_json_schema\"},\"status\":400}")
+    stdout = "\n".join([
+        '{"type":"thread.started","thread_id":"01a16fc5-982d-7ad3-9adc-3f975ce7247e"}',
+        '{"type":"turn.started"}',
+        json.dumps({"type": "error", "message": msg}),
+        json.dumps({"type": "turn.failed", "error": {"message": msg}}),
+    ]) + "\n"
+    r = parse_codex(stdout, None)
+    assert not r.ok and "Invalid schema for response_format" in r.error and len(r.error) <= 500
+
+
+def test_parse_codex_error_event_without_turn_failed_and_default():
+    assert parse_codex(json.dumps({"type": "error", "message": "boom"}) + "\n", None).error == "boom"
+    assert parse_codex('{"type":"turn.started"}\n', None).error == "no last message"

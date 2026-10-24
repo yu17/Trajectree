@@ -586,6 +586,9 @@ def _proposals(parsed: ParsedResult) -> list[Proposal]:
     out: list[Proposal] = []
     for item in items if isinstance(items, list) else []:
         try:
+            # The schema makes optional fields nullable; null means "use the default".
+            if isinstance(item, dict):
+                item = {k: v for k, v in item.items() if v is not None}
             proposal = Proposal.model_validate(item)
             # Normalise agent-written dates now; a date that cannot be read drops the proposal.
             dates = {
