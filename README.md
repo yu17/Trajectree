@@ -177,7 +177,10 @@ starts can touch.
   `/bin`, `/sbin`, `/etc`, `/opt`, `/app`), `/proc`, `/sys`, and the folder of
   every registered project (all projects, not only the run's, through the path
   map). The set is computed when the run starts; folders under `/projects`
-  that no project registers stay unreadable.
+  that no project registers stay unreadable, and so does a folder an agent
+  proposed until you accept it. A folder (or symlink) that equals, lies inside
+  or contains `data/`, `cfg/` or a host Claude home is never granted; the
+  daemon logs a warning instead.
 - **Read and write:** `/dev`; a private temp directory (the run's `TMPDIR`,
   created 0700 under `/tmp` and removed when the run ends); the run's own
   directory `data/runs/<run_id>/`, which holds its `HOME` (`home/`), MCP config

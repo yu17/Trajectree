@@ -45,6 +45,16 @@ def test_plan_summarize(ledger, human, settings, tmp_path):
     assert plan.tools.disallowed == [f"Read(//{cfg}/**)", f"Read(//{data}/**)"]
     assert all(rule.startswith("Read(//") and not rule.startswith("Read(///") for rule in plan.tools.disallowed)
 
+def test_summarize_cwd_ignores_pending_folder(ledger, human, agent, settings, tmp_path):
+    ensure_prompts(settings)
+    p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    proposed = tmp_path / "proposed"
+    proposed.mkdir()
+    upsert_resource(ledger, agent, ResourceIn(project_id=p.id, kind="folder", locator=str(proposed)))
+    run = create_run(ledger.conn, kind="summarize", runner="claude", backend="claude", model=None, project_id=p.id)
+    plan = plan_run(ledger.conn, settings, run=run, request=SummarizeRequest(project="a"), now=NOW)
+    assert plan.cwd == settings.runs_dir / run.id
+
 def test_summarize_denies_backend_profiles(ledger, human, settings, tmp_path):
     ensure_prompts(settings)
     s = settings.model_copy(update={"backends_root": tmp_path / "backends"})

@@ -58,7 +58,7 @@ from trajectree.runner.kinds import (
 from trajectree.runner.launch import launch
 from trajectree.runner.parse import ParsedResult, parse_claude_json, parse_codex
 from trajectree.runner.routines import after_routine, finish_routine_run, retry_props, routine_cap
-from trajectree.runner.sandbox import run_paths, runner_cfg_dir
+from trajectree.runner.sandbox import registered_folders, run_paths, runner_cfg_dir
 from trajectree.runner.spec import (
     AlreadyApplied,
     MissingCredentials,
@@ -192,12 +192,13 @@ class RunService:
                 home.mkdir(mode=0o700, exist_ok=True)
                 env = {**env, "TMPDIR": str(tmp_dir), "HOME": str(home)}
                 with self.ledger.locked() as conn:
-                    paths = run_paths(
-                        conn, self.settings, runner=run.runner, backend=run.backend,
-                        run_dir=run_dir, tmp_dir=tmp_dir, cwd=plan.cwd,
-                    )
+                    folders = registered_folders(conn)
                     current = get_run(conn, run_id) or run
                     update_run(conn, run_id, props={**current.props, "landlock_abi": abi})
+                paths = run_paths(  # resolves and stats paths, so it runs unlocked
+                    self.settings, folders=folders, runner=run.runner, backend=run.backend,
+                    run_dir=run_dir, tmp_dir=tmp_dir, cwd=plan.cwd,
+                )
                 last_path = run_dir / "last.md"
                 stdin_text: str | None = None
                 if run.runner == "codex":

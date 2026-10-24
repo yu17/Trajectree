@@ -24,6 +24,7 @@ from trajectree.models import RUNNER_PATTERN, Delivery, Project, ReportKind, Run
 from trajectree.repo import NotFound
 from trajectree.repo.projects import get_project_by_slug, list_projects, resolve_project_ref
 from trajectree.repo.resources import list_resources
+from trajectree.repo.review import pending_txns
 from trajectree.repo.routines import resolve_routine_ref
 from trajectree.repo.signals import get_signal_by_key
 from trajectree.runner.spec import ToolPolicy
@@ -244,8 +245,11 @@ def _plan_summarize(
 
 
 def _folder_cwd(conn: apsw.Connection, settings: Settings, project_id: str) -> Path | None:
-    """The project's first `folder` resource that exists locally, if any."""
+    """The project's first accepted `folder` resource that exists locally, if any."""
+    unreviewed = pending_txns(conn, "resource")  # an agent-proposed folder is not trusted yet
     for resource in list_resources(conn, project_ids=[project_id], kinds=["folder"]):
+        if resource.id in unreviewed:
+            continue
         local = to_local(settings, resource.locator)
         if local.is_dir():
             return local

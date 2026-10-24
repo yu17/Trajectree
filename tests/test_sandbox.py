@@ -6,18 +6,25 @@ from trajectree.models import ProjectIn, ResourceIn
 from trajectree.repo.projects import create_project
 from trajectree.repo.resources import upsert_resource
 from trajectree.runner.confine import system_ro_paths
-from trajectree.runner.sandbox import run_paths
+from trajectree.runner.sandbox import registered_folders, run_paths
 
 
-def _folder(ledger, human, slug, path):
-    p = create_project(ledger, human, ProjectIn(slug=slug, title=slug.upper(), kind="research"))
-    upsert_resource(ledger, human, ResourceIn(project_id=p.id, kind="folder", locator=str(path)))
+def _folder(ledger, actor, slug, path):
+    p = create_project(ledger, actor, ProjectIn(slug=slug, title=slug.upper(), kind="research"))
+    upsert_resource(ledger, actor, ResourceIn(project_id=p.id, kind="folder", locator=str(path)))
     return p
 
 
 def _paths(ledger, settings, tmp_path, runner="claude", backend="claude", **kw):
-    return run_paths(ledger.conn, settings, runner=runner, backend=backend,
+    return run_paths(settings, folders=registered_folders(ledger.conn), runner=runner, backend=backend,
                      run_dir=settings.runs_dir / "r1", tmp_dir=tmp_path / "tmp-r1", **kw)
+
+
+def _granted(paths):
+    """The read grants beyond the system dirs."""
+    n = len(system_ro_paths())
+    assert paths.ro[:n] == system_ro_paths()
+    return paths.ro[n:]
 
 
 def test_ro_has_every_registered_folder(ledger, human, settings, tmp_path):
@@ -26,10 +33,18 @@ def test_ro_has_every_registered_folder(ledger, human, settings, tmp_path):
     b.mkdir()
     _folder(ledger, human, "a", a)
     _folder(ledger, human, "b", b)
-    paths = _paths(ledger, settings, tmp_path)
-    assert a in paths.ro and b in paths.ro
-    assert paths.ro[:len(system_ro_paths())] == system_ro_paths()
-    assert all(p in paths.ro for p in settings.confine_extra_ro)
+    granted = _granted(_paths(ledger, settings, tmp_path))
+    assert a.resolve() in granted and b.resolve() in granted
+    assert all(p.resolve() in granted for p in settings.confine_extra_ro)
+
+
+def test_accepted_folder_is_granted_resolved(ledger, human, settings, tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    (tmp_path / "alias").symlink_to(real)
+    _folder(ledger, human, "a", tmp_path / "alias")
+    granted = _granted(_paths(ledger, settings, tmp_path))
+    assert real.resolve() in granted and tmp_path / "alias" not in granted
 
 
 def test_folder_goes_through_path_map(ledger, human, settings, tmp_path):
@@ -37,22 +52,60 @@ def test_folder_goes_through_path_map(ledger, human, settings, tmp_path):
     local.mkdir(parents=True)
     _folder(ledger, human, "x", "/home/me/x")
     s = settings.model_copy(update={"path_map": [("/home/me", str(tmp_path / "projects"))]})
-    assert local in _paths(ledger, s, tmp_path).ro
+    assert local.resolve() in _paths(ledger, s, tmp_path).ro
 
 
 def test_missing_folder_is_skipped(ledger, human, settings, tmp_path):
     _folder(ledger, human, "gone", tmp_path / "gone")
     paths = _paths(ledger, settings, tmp_path)
-    assert tmp_path / "gone" not in paths.ro
+    assert (tmp_path / "gone").resolve() not in paths.ro
 
 
-def test_uncovered_cwd_is_readable(ledger, human, settings, tmp_path):
+def test_pending_folder_is_not_granted(ledger, human, agent, settings, tmp_path):
+    proposed = tmp_path / "proposed"
+    proposed.mkdir()
+    p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    upsert_resource(ledger, agent, ResourceIn(project_id=p.id, kind="folder", locator=str(proposed)))
+    assert ledger.list_txns()[0].review == "pending"
+    assert proposed.resolve() not in _paths(ledger, settings, tmp_path).ro
+
+
+@pytest.mark.parametrize("where", ["root", "data_parent", "inside_cfg", "symlink_into_data"])
+def test_folder_overlapping_protected_roots_is_dropped(ledger, human, settings, tmp_path, where, caplog):
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    settings.cfg_root.mkdir(parents=True, exist_ok=True)
+    (settings.cfg_root / "claude").mkdir(exist_ok=True)
+    if where == "root":
+        bad = Path("/")
+    elif where == "data_parent":
+        bad = settings.data_dir.parent
+    elif where == "inside_cfg":
+        bad = settings.cfg_root / "claude"
+    else:
+        bad = tmp_path / "link"
+        bad.symlink_to(settings.data_dir)
+    good = tmp_path / "good"
+    good.mkdir()
+    _folder(ledger, human, "bad", bad)
+    _folder(ledger, human, "good", good)
+    granted = _granted(_paths(ledger, settings, tmp_path))
+    assert granted == [*(p.resolve() for p in settings.confine_extra_ro), good.resolve()]   # the rest still granted
+    assert "not granting" in caplog.text
+
+
+def test_cwd_overlapping_protected_roots_is_dropped(ledger, settings, tmp_path):
+    paths = _paths(ledger, settings, tmp_path, cwd=settings.data_dir.parent)
+    assert _granted(paths) == [p.resolve() for p in settings.confine_extra_ro]
+    assert paths.rw[2] == settings.runs_dir / "r1"   # the run is still confined with its own dirs
+
+
+def test_uncovered_cwd_is_readable(ledger, settings, tmp_path):
     cwd = tmp_path / "elsewhere"
     cwd.mkdir()
-    assert cwd in _paths(ledger, settings, tmp_path, cwd=cwd).ro
+    assert cwd.resolve() in _paths(ledger, settings, tmp_path, cwd=cwd).ro
     run_cwd = settings.runs_dir / "r1"
     run_cwd.mkdir(parents=True)
-    assert run_cwd not in _paths(ledger, settings, tmp_path, cwd=run_cwd).ro  # already writable
+    assert run_cwd.resolve() not in _paths(ledger, settings, tmp_path, cwd=run_cwd).ro  # already writable
 
 
 @pytest.mark.parametrize("runner,backend,cfg", [
@@ -71,10 +124,11 @@ def test_never_whole_data_or_cfg(ledger, human, settings, tmp_path, runner, back
     claude_home.mkdir()
     backends_root.mkdir()
     s = settings.model_copy(update={"claude_home": claude_home, "backends_root": backends_root})
-    folder = tmp_path / "proj"
-    folder.mkdir()
-    _folder(ledger, human, "a", folder)
+    for slug, folder in [("a", tmp_path / "proj"), ("b", claude_home), ("c", backends_root / "kimi")]:
+        folder.mkdir(exist_ok=True)
+        _folder(ledger, human, slug, folder)
     paths = _paths(ledger, s, tmp_path, runner=runner, backend=backend)
+    assert (tmp_path / "proj").resolve() in paths.ro
     for p in [*paths.ro, *paths.rw]:
         assert p not in (s.data_dir, s.cfg_root)
         assert not p.is_relative_to(claude_home) and not p.is_relative_to(backends_root)
