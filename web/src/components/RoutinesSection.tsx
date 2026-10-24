@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
-import type { Routine } from "../api/types";
+import type { ModelChoice, Routine } from "../api/types";
 import { ActionNotice } from "../views/ActionNotice";
 import { errorText } from "./errorText";
+import { ModelPicker } from "./ModelPicker";
 import { useRun } from "./useRun";
 
 const ACTIVE = ["queued", "running"];
@@ -26,7 +27,15 @@ function RoutineRow({ routine, onNotice }: { routine: Routine; onNotice: (text: 
     onError: err => onNotice(errorText(err)),
     onSettled: () => void qc.invalidateQueries({ queryKey: ["routines"] }),
   });
+  // The routine's stored model is a setting, not a default: the picker shows it and saves changes.
+  const setModel = useMutation({
+    mutationFn: (c: ModelChoice) => api.patchRoutine(routine.name, c),
+    onError: err => onNotice(errorText(err)),
+    onSettled: () => void qc.invalidateQueries({ queryKey: ["routines"] }),
+  });
+  const stored = routine.runner && routine.model ? { runner: routine.runner, model: routine.model } : null;
   const runNow = useMutation({
+    // Run now uses the stored model.
     mutationFn: () => api.runRoutine(routine.name),
     onSuccess: r => {
       setQueued(r.id);
@@ -43,12 +52,15 @@ function RoutineRow({ routine, onNotice }: { routine: Routine; onNotice: (text: 
       <td>{routine.next_fire ? new Date(routine.next_fire).toLocaleString() : "—"}</td>
       <td>{status ? <span className={`badge run-${status}`}>{status}</span> : <span className="muted">—</span>}</td>
       <td>
+        <ModelPicker value={setModel.isPending ? setModel.variables : stored} onChange={c => setModel.mutate(c)} />
+      </td>
+      <td>
         <button disabled={toggle.isPending} onClick={() => toggle.mutate()}>
           {routine.enabled ? "Disable" : "Enable"}
         </button>
       </td>
       <td>
-        <button disabled={runNow.isPending || busy} onClick={() => runNow.mutate()}>Run now</button>
+        <button disabled={!stored || runNow.isPending || busy} onClick={() => runNow.mutate()}>Run now</button>
       </td>
     </tr>
   );
@@ -72,7 +84,7 @@ export function RoutinesSection() {
       {rows.length > 0 && (
         <table>
           <thead>
-            <tr><th>name</th><th>trigger</th><th>next fire</th><th>last run</th><th /><th /></tr>
+            <tr><th>name</th><th>trigger</th><th>next fire</th><th>last run</th><th>model</th><th /><th /></tr>
           </thead>
           <tbody>
             {rows.map(r => <RoutineRow key={r.id} routine={r} onNotice={setNotice} />)}

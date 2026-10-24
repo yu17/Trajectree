@@ -3,9 +3,10 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ReportsView } from "./ReportsView";
+import { FABLE, pickFable, testCatalog } from "../components/testCatalog";
 import type { ReportIn, ReportOut, ReportPatch } from "../api/types";
 
-const mocks = vi.hoisted(() => ({ reports: vi.fn(), createReport: vi.fn(), updateReport: vi.fn(), draftReport: vi.fn(), run: vi.fn(), projects: vi.fn() }));
+const mocks = vi.hoisted(() => ({ reports: vi.fn(), createReport: vi.fn(), updateReport: vi.fn(), draftReport: vi.fn(), run: vi.fn(), projects: vi.fn(), models: vi.fn() }));
 vi.mock("../api/client", async importOriginal => {
   const real = await importOriginal<typeof import("../api/client")>();
   return { ...real, api: { ...real.api, ...mocks } };
@@ -30,6 +31,7 @@ describe("ReportsView", () => {
     store = [];
     mocks.reports.mockImplementation(async () => store.map(r => ({ ...r })));
     mocks.projects.mockResolvedValue(projects);
+    mocks.models.mockResolvedValue(testCatalog);
     mocks.createReport.mockImplementation(async (body: ReportIn) => {
       const r = report("r1", { title: body.title, kind: body.kind, source_md: "# Memo" });
       store = [r, ...store];
@@ -80,8 +82,10 @@ describe("ReportsView", () => {
     expect(screen.queryByRole("option", { name: "Old" })).toBeNull();
     await user.type(screen.getByLabelText("Title"), "Weekly");
     await user.selectOptions(await screen.findByLabelText("Projects"), ["clmi"]);
+    expect(screen.getByRole("button", { name: "Draft" })).toBeDisabled();
+    await pickFable();
     await user.click(screen.getByRole("button", { name: "Draft" }));
-    await waitFor(() => expect(api.draftReport).toHaveBeenCalledWith(expect.objectContaining({ kind: "deck", title: "Weekly", projects: ["clmi"] })));
+    await waitFor(() => expect(api.draftReport).toHaveBeenCalledWith(expect.objectContaining({ kind: "deck", title: "Weekly", projects: ["clmi"], ...FABLE })));
     await waitFor(() => expect((screen.getByLabelText("Source") as HTMLTextAreaElement).value).toBe("# Agent deck"), { timeout: 4000 });
     expect(container.querySelector(".badge.run-ok")).not.toBeNull();
     expect(container.querySelector(".badge.review-pending")).not.toBeNull();

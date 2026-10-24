@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
-import type { Project, ReportFormat, ReportKind, ReportOut } from "../api/types";
+import type { ModelChoice, Project, ReportFormat, ReportKind, ReportOut } from "../api/types";
 import { errorText } from "../components/errorText";
+import { ModelPicker } from "../components/ModelPicker";
 import { MarkdownEditor } from "../components/MarkdownEditor";
 import { MarpPreview } from "../components/MarpPreview";
 import { useRun } from "../components/useRun";
@@ -61,14 +62,15 @@ function DraftForm({ projects, busy, onStarted }: { projects: Project[]; busy: b
   const [slugs, setSlugs] = useState<string[]>([]);
   const [from, setFrom] = useState(() => isoDay(Date.now() - 30 * DAY));
   const [to, setTo] = useState(() => isoDay(Date.now()));
+  const [choice, setChoice] = useState<ModelChoice | null>(null);
 
   const active = projects.filter(p => p.status === "active");
   const startMs = dayStart(from).getTime();
   const endMs = dayStart(to).getTime() + DAY; // To is inclusive: end at the start of the next day
   const validDates = Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs;
   const draft = useMutation({
-    mutationFn: () =>
-      api.draftReport({ kind, title: title.trim(), projects: slugs, start: new Date(startMs).toISOString(), end: new Date(endMs).toISOString() }),
+    mutationFn: (c: ModelChoice) =>
+      api.draftReport({ kind, title: title.trim(), projects: slugs, start: new Date(startMs).toISOString(), end: new Date(endMs).toISOString(), ...c }),
     onSuccess: r => onStarted(r.id),
   });
 
@@ -77,7 +79,7 @@ function DraftForm({ projects, busy, onStarted }: { projects: Project[]; busy: b
       className="panel-form"
       onSubmit={e => {
         e.preventDefault();
-        draft.mutate();
+        if (choice) draft.mutate(choice);
       }}
     >
       <label htmlFor="draft-title">Title</label>
@@ -95,7 +97,8 @@ function DraftForm({ projects, busy, onStarted }: { projects: Project[]; busy: b
       <input id="draft-from" type="date" value={from} onChange={e => setFrom(e.target.value)} />
       <label htmlFor="draft-to">To</label>
       <input id="draft-to" type="date" value={to} onChange={e => setTo(e.target.value)} />
-      <button type="submit" disabled={!title.trim() || slugs.length === 0 || !validDates || busy || draft.isPending}>
+      <ModelPicker value={choice} onChange={setChoice} />
+      <button type="submit" disabled={!choice || !title.trim() || slugs.length === 0 || !validDates || busy || draft.isPending}>
         Draft
       </button>
       {draft.isError && <p className="form-error">{errorText(draft.error)}</p>}

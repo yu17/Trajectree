@@ -1,8 +1,9 @@
 import { useState, type FormEvent } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { api } from "../api/client";
-import type { EventStatus, Project } from "../api/types";
+import type { EventStatus, ModelChoice, Project } from "../api/types";
 import { errorText } from "./errorText";
+import { ModelPicker } from "./ModelPicker";
 import { Proposals } from "./Proposals";
 import { useRun } from "./useRun";
 
@@ -39,8 +40,9 @@ export function QuickCapture({ projects, onCreated }: { projects: Project[]; onC
 
   const [text, setText] = useState("");
   const [runId, setRunId] = useState<string | null>(null);
+  const [choice, setChoice] = useState<ModelChoice | null>(null);
   const parse = useMutation({
-    mutationFn: () => api.quickAdd({ text }),
+    mutationFn: (c: ModelChoice) => api.quickAdd({ text, ...c }),
     onSuccess: r => setRunId(r.id),
   });
   const detail = useRun(runId);
@@ -105,7 +107,8 @@ export function QuickCapture({ projects, onCreated }: { projects: Project[]; onC
         <h2>Quick capture</h2>
         <label htmlFor="qc-text">Describe it</label>
         <textarea id="qc-text" rows={3} value={text} onChange={e => setText(e.target.value)} />
-        <button disabled={!text.trim() || parseInFlight} onClick={() => parse.mutate()}>Parse</button>
+        <ModelPicker value={choice} onChange={setChoice} />
+        <button disabled={!choice || !text.trim() || parseInFlight} onClick={() => choice && parse.mutate(choice)}>Parse</button>
         {parse.isError && <p className="form-error">{errorText(parse.error)}</p>}
         {parseInFlight && <p className="muted">running…</p>}
         {parsed && !parseInFlight && (

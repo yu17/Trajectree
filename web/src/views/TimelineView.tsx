@@ -2,7 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { DetailsPanel } from "../components/DetailsPanel";
+import type { ModelChoice } from "../api/types";
 import { errorText } from "../components/errorText";
+import { ModelPicker } from "../components/ModelPicker";
 import { Timeline, type Selection } from "../timeline/Timeline";
 import { ActionNotice } from "./ActionNotice";
 import { useTxnActions } from "./useTxnActions";
@@ -28,17 +30,23 @@ export function TimelineView({ onOpenProject }: { onOpenProject?: (id: string) =
   // while a click on another lane still fires.
   const regeneratingRef = useRef<Set<string>>(new Set());
   const { mutate: regenerate } = useMutation({
-    mutationFn: (projectId: string) => api.summarize(projectId),
+    mutationFn: ({ projectId, choice }: { projectId: string; choice: ModelChoice }) => api.summarize(projectId, choice),
     onSuccess: run => setNotice(`Summary regeneration queued (run ${run.id})`),
     onError: err => setNotice(errorText(err)),
-    onSettled: (_run, _err, projectId) => { regeneratingRef.current.delete(projectId); },
+    onSettled: (_run, _err, { projectId }) => { regeneratingRef.current.delete(projectId); },
   });
+  // A stale chip is not a button, so the model for its regeneration is picked in the toolbar.
+  const [choice, setChoice] = useState<ModelChoice | null>(null);
   const onChip = useCallback((projectId: string, kind: "running" | "stale") => {
     if (kind !== "stale" || regeneratingRef.current.has(projectId)) return;
+    if (!choice) {
+      setNotice("Choose a model in the toolbar to regenerate a summary");
+      return;
+    }
     // Added before mutate: the mutation function starts a tick later.
     regeneratingRef.current.add(projectId);
-    regenerate(projectId);
-  }, [regenerate]);
+    regenerate({ projectId, choice });
+  }, [regenerate, choice]);
 
   const [from, to] = range;
   const q = useQuery({
@@ -62,6 +70,7 @@ export function TimelineView({ onOpenProject }: { onOpenProject?: (id: string) =
           <input type="checkbox" checked={showAllWires} onChange={e => setShowAllWires(e.target.checked)} />
           Show all wires
         </label>
+        <ModelPicker value={choice} onChange={setChoice} label="Summary model" />
       </div>
       <ActionNotice conflicts={actions.conflicts} error={actions.error ?? notice}
         onDismiss={() => { actions.dismiss(); setNotice(null); }} />

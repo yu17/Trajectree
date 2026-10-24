@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { DetailsPanel } from "./DetailsPanel";
+import { FABLE, pickFable, testCatalog } from "./testCatalog";
 import { api } from "../api/client";
 import type { Run, Signal, TimelineResponse } from "../api/types";
 
@@ -18,6 +19,7 @@ vi.mock("../api/client", () => ({ api: {
     dedupe_key: "session:abcd1234", updated_at: "2026-01-05T11:00:00Z",
   }]),
   summarizeSession: vi.fn(),
+  models: vi.fn(async () => testCatalog),
   run: vi.fn(),
   acceptProposal: vi.fn(),
   dismissProposal: vi.fn(),
@@ -149,8 +151,10 @@ describe("DetailsPanel", () => {
     expect(screen.getByText("Crash on start")).toBeTruthy();
     expect(screen.getByText("First release")).toBeTruthy();
     expect(screen.getByText("slack: Bob asked about the deadline")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Summarize session" }) as HTMLButtonElement).disabled).toBe(true);
+    await pickFable();
     await user.click(screen.getByRole("button", { name: "Summarize session" }));
-    expect(api.summarizeSession).toHaveBeenCalledWith("sess-1", {});
+    expect(api.summarizeSession).toHaveBeenCalledWith("sess-1", FABLE);
     expect(await screen.findByText("Fixed the build.")).toBeTruthy();
     expect(container.querySelector(".answer")!.textContent).toBe("Fixed the build.");
     expect(container.querySelector("span.badge.run-ok")).not.toBeNull();
@@ -162,6 +166,7 @@ describe("DetailsPanel", () => {
     vi.mocked(api.summarizeSession).mockRejectedValue(new Error("runs are paused"));
     const start = Date.UTC(2026, 0, 5);
     wrap(<DetailsPanel data={data} selected={{ type: "bin", projectId: "p1", start, end: start + 86_400_000 }} onReview={() => {}} onRevert={() => {}} />);
+    await pickFable();
     await user.click(await screen.findByRole("button", { name: "Summarize session" }));
     expect(await screen.findByText("runs are paused")).toBeTruthy();
   });

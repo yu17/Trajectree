@@ -3,9 +3,10 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { RoutinesSection } from "./RoutinesSection";
+import { FABLE, pickFable, testCatalog } from "./testCatalog";
 import type { Routine, Run } from "../api/types";
 
-const api = vi.hoisted(() => ({ routines: vi.fn(), scheduler: vi.fn(), patchRoutine: vi.fn(), runRoutine: vi.fn(), run: vi.fn(), acceptProposal: vi.fn(), dismissProposal: vi.fn() }));
+const api = vi.hoisted(() => ({ routines: vi.fn(), scheduler: vi.fn(), patchRoutine: vi.fn(), runRoutine: vi.fn(), run: vi.fn(), acceptProposal: vi.fn(), dismissProposal: vi.fn(), models: vi.fn() }));
 vi.mock("../api/client", () => ({ api, ApiError: class extends Error {} }));
 
 const wrap = (ui: React.ReactElement) => render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>{ui}</QueryClientProvider>);
@@ -16,11 +17,12 @@ describe("RoutinesSection", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     api.scheduler.mockResolvedValue({ last_tick: null, interval_s: 60, next_fires: [] });
+    api.models.mockResolvedValue(testCatalog);
   });
 
   it("lists routines, toggles enable and runs now", async () => {
     const user = userEvent.setup();
-    api.routines.mockResolvedValue([routine("rev", { enabled: false, next_fire: null }), routine("weekly", { last_run_id: "run-old" })]);
+    api.routines.mockResolvedValue([routine("rev", { enabled: false, next_fire: null, ...FABLE }), routine("weekly", { last_run_id: "run-old" })]);
     api.run.mockImplementation(async (id: string) => ({ run: run(id, id === "run-old" ? "ok" : "queued"), txn_ids: [] }));
     api.patchRoutine.mockImplementation(async (name: string, patch: Partial<Routine>) => routine(name, patch));
     api.runRoutine.mockResolvedValue(run("run-new", "queued"));
@@ -48,13 +50,38 @@ describe("RoutinesSection", () => {
 
   it("refreshes routines once a queued run settles", async () => {
     const user = userEvent.setup();
-    api.routines.mockResolvedValue([routine("rev")]);
+    api.routines.mockResolvedValue([routine("rev", FABLE)]);
     api.runRoutine.mockResolvedValue(run("run-new", "queued"));
     api.run.mockResolvedValue({ run: run("run-new", "failed"), txn_ids: [] });
     const { container } = wrap(<RoutinesSection />);
     await user.click(await screen.findByRole("button", { name: "Run now" }));
     await waitFor(() => expect(container.querySelector("tr span.badge.run-failed")).not.toBeNull());
     await waitFor(() => expect(api.routines).toHaveBeenCalledTimes(2));
+  });
+
+  it("shows the stored model, saves a new choice and keeps Run now off without a model", async () => {
+    api.routines.mockResolvedValue([routine("bare"), routine("set", { runner: "claude", model: "claude-sonnet-5-5" })]);
+    api.patchRoutine.mockImplementation(async (name: string, patch: Partial<Routine>) => routine(name, patch));
+    wrap(<RoutinesSection />);
+    const bare = (await screen.findByText("bare")).closest("tr")!;
+    const set = screen.getByText("set").closest("tr")!;
+    const barePicker = within(bare).getByRole("combobox", { name: "Model" }) as HTMLSelectElement;
+    expect(barePicker.value).toBe("");
+    expect((within(bare).getByRole("button", { name: "Run now" }) as HTMLButtonElement).disabled).toBe(true);
+    await waitFor(() => expect((within(set).getByRole("combobox", { name: "Model" }) as HTMLSelectElement).value).toBe("claude|claude-sonnet-5-5"));
+    expect((within(set).getByRole("button", { name: "Run now" }) as HTMLButtonElement).disabled).toBe(false);
+    await pickFable(barePicker);
+    await waitFor(() => expect(api.patchRoutine).toHaveBeenCalledWith("bare", FABLE));
+    await waitFor(() => expect(api.routines).toHaveBeenCalledTimes(2));
+  });
+
+  it("shows the API's refusal when a routine without a model is enabled", async () => {
+    const user = userEvent.setup();
+    api.routines.mockResolvedValue([routine("bare", { enabled: false })]);
+    api.patchRoutine.mockRejectedValue(new Error("no model was chosen"));
+    wrap(<RoutinesSection />);
+    await user.click(await screen.findByRole("button", { name: "Enable" }));
+    expect(await screen.findByText("no model was chosen")).toBeTruthy();
   });
 
   it("shows the empty state", async () => {

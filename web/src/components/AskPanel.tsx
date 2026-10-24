@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { api } from "../api/client";
-import type { Project } from "../api/types";
+import type { ModelChoice, Project } from "../api/types";
 import { errorText } from "./errorText";
+import { ModelPicker } from "./ModelPicker";
 import { Proposals } from "./Proposals";
 import { useRun } from "./useRun";
 
@@ -16,6 +17,7 @@ export function AskPanel({ projects }: { projects: Project[] }) {
   const [to, setTo] = useState(() => isoDay(Date.now() + 30 * DAY));
   const [question, setQuestion] = useState("");
   const [runId, setRunId] = useState<string | null>(null);
+  const [choice, setChoice] = useState<ModelChoice | null>(null);
 
   const active = projects.filter(p => p.status === "active");
   const slugs = active.filter(p => !unchecked.has(p.id)).map(p => p.slug);
@@ -28,8 +30,8 @@ export function AskPanel({ projects }: { projects: Project[] }) {
     enabled: slugs.length > 0 && validDates,
   });
   const ask = useMutation({
-    mutationFn: () =>
-      api.ask({ question, projects: slugs, start: new Date(startMs).toISOString(), end: new Date(endMs).toISOString() }),
+    mutationFn: (c: ModelChoice) =>
+      api.ask({ question, projects: slugs, start: new Date(startMs).toISOString(), end: new Date(endMs).toISOString(), ...c }),
     onSuccess: r => setRunId(r.id),
   });
   const detail = useRun(runId);
@@ -61,7 +63,8 @@ export function AskPanel({ projects }: { projects: Project[] }) {
       <textarea id="ask-q" rows={3} value={question} onChange={e => setQuestion(e.target.value)} />
       {pack.data && <p className="muted">pack ≈ {pack.data.tokens_est} tokens</p>}
       {pack.isError && <p className="form-error">{errorText(pack.error)}</p>}
-      <button disabled={!question.trim() || inFlight || slugs.length === 0 || !validDates} onClick={() => ask.mutate()}>Ask</button>
+      <ModelPicker value={choice} onChange={setChoice} />
+      <button disabled={!choice || !question.trim() || inFlight || slugs.length === 0 || !validDates} onClick={() => choice && ask.mutate(choice)}>Ask</button>
       {ask.isError && <p className="form-error">{errorText(ask.error)}</p>}
       {detail.isError && <p className="form-error">{errorText(detail.error)}</p>}
       {inFlight && <p className="muted">running…</p>}

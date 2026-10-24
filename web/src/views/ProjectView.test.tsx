@@ -3,9 +3,10 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ProjectView } from "./ProjectView";
+import { FABLE, pickFable, testCatalog } from "../components/testCatalog";
 import type { Event, Project, Routine, Run, TimelineResponse } from "../api/types";
 
-const api = vi.hoisted(() => ({ projects: vi.fn(), timeline: vi.fn(), resources: vi.fn(), signals: vi.fn(), routines: vi.fn(), summarize: vi.fn(), run: vi.fn() }));
+const api = vi.hoisted(() => ({ projects: vi.fn(), timeline: vi.fn(), resources: vi.fn(), signals: vi.fn(), routines: vi.fn(), summarize: vi.fn(), run: vi.fn(), models: vi.fn() }));
 vi.mock("../api/client", () => ({ api, ApiError: class extends Error {} }));
 
 const wrap = (ui: React.ReactElement) => render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>{ui}</QueryClientProvider>);
@@ -42,6 +43,7 @@ describe("ProjectView", () => {
       { id: "sg3", project_id: "p1", resource_id: null, kind: "session", t_start: "2026-10-21T09:00:00Z", t_end: null, payload: { session_id: "x" }, dedupe_key: "c", updated_at: "2026-10-21T13:00:00Z" },
     ]);
     api.routines.mockResolvedValue([routine("everyone", null), routine("mine", ["clmi"]), routine("byid", ["p1"]), routine("theirs", ["ccx"])]);
+    api.models.mockResolvedValue(testCatalog);
     api.summarize.mockResolvedValue(run("run9", "queued"));
     api.run.mockResolvedValue({ run: run("run9", "queued"), txn_ids: [] });
   });
@@ -100,8 +102,10 @@ describe("ProjectView", () => {
     const user = userEvent.setup();
     wrap(<ProjectView projectId="p1" onClose={() => {}} />);
     const button = await screen.findByRole("button", { name: "Regenerate summary" });
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+    await pickFable();
     await user.click(button);
-    expect(api.summarize).toHaveBeenCalledWith("p1");
+    expect(api.summarize).toHaveBeenCalledWith("p1", FABLE);
     expect(await screen.findByText("Summary regeneration queued (run run9)")).toBeTruthy();
     await waitFor(() => expect(api.run).toHaveBeenCalledWith("run9"));
   });

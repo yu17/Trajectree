@@ -3,8 +3,9 @@ import { render as rtlRender, screen, fireEvent, waitFor } from "@testing-librar
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, it, expect, vi } from "vitest";
 import { QuickCapture } from "./QuickCapture";
+import { FABLE, pickFable, testCatalog } from "./testCatalog";
 
-vi.mock("../api/client", () => ({ api: { createEvent: vi.fn(async (b) => ({ id: "e", ...b })), createTodo: vi.fn(), quickAdd: vi.fn(), run: vi.fn(), acceptProposal: vi.fn() } }));
+vi.mock("../api/client", () => ({ api: { createEvent: vi.fn(async (b) => ({ id: "e", ...b })), createTodo: vi.fn(), quickAdd: vi.fn(), run: vi.fn(), acceptProposal: vi.fn(), models: vi.fn(async () => testCatalog) } }));
 import { api } from "../api/client";
 
 const render = (ui: ReactElement) =>
@@ -18,8 +19,11 @@ describe("QuickCapture", () => {
     (api.run as any).mockResolvedValue({ run: { ...base, proposals: [proposal] }, txn_ids: [] });
     render(<QuickCapture projects={[{ id: "p1", slug: "clmi", title: "CLMI" } as any]} onCreated={vi.fn()} />);
     fireEvent.change(screen.getByLabelText("Describe it"), { target: { value: "email bob tomorrow" } });
-    fireEvent.click(screen.getByRole("button", { name: "Parse" }));
-    await waitFor(() => expect(api.quickAdd).toHaveBeenCalledWith({ text: "email bob tomorrow" }));
+    const parse = screen.getByRole("button", { name: "Parse" }) as HTMLButtonElement;
+    expect(parse.disabled).toBe(true);
+    await pickFable();
+    fireEvent.click(parse);
+    await waitFor(() => expect(api.quickAdd).toHaveBeenCalledWith({ text: "email bob tomorrow", ...FABLE }));
     expect(await screen.findByText("Email Bob")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Accept" })).toBeTruthy();
   });

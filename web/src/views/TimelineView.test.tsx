@@ -2,9 +2,10 @@ import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { TimelineView } from "./TimelineView";
+import { FABLE, pickFable, testCatalog } from "../components/testCatalog";
 import type { Project, Run, TimelineResponse } from "../api/types";
 
-const api = vi.hoisted(() => ({ timeline: vi.fn(), summarize: vi.fn(), txn: vi.fn(), review: vi.fn(), revert: vi.fn() }));
+const api = vi.hoisted(() => ({ timeline: vi.fn(), summarize: vi.fn(), models: vi.fn(), txn: vi.fn(), review: vi.fn(), revert: vi.fn() }));
 vi.mock("../api/client", () => ({ api, ApiError: class extends Error {} }));
 
 const wrap = (ui: React.ReactElement) => render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>{ui}</QueryClientProvider>);
@@ -20,6 +21,7 @@ describe("TimelineView", () => {
     vi.clearAllMocks();
     resolvers = [];
     api.timeline.mockResolvedValue(data);
+    api.models.mockResolvedValue(testCatalog);
     api.summarize.mockImplementation(() => new Promise<Run>(res => resolvers.push(res)));
   });
 
@@ -31,6 +33,7 @@ describe("TimelineView", () => {
   it("allows a stale click on a second project while the first regenerates", async () => {
     const { container } = wrap(<TimelineView />);
     const chips = await staleChips(container);
+    await pickFable(await screen.findByRole("combobox", { name: "Summary model" }));
     // A second click on the same project while its run is pending is ignored.
     fireEvent.click(chips[0]);
     fireEvent.click(chips[0]);
@@ -38,8 +41,8 @@ describe("TimelineView", () => {
     fireEvent.click(chips[0]);
     fireEvent.click(chips[1]);
     await waitFor(() => expect(api.summarize).toHaveBeenCalledTimes(2));
-    expect(api.summarize).toHaveBeenNthCalledWith(1, "p1");
-    expect(api.summarize).toHaveBeenNthCalledWith(2, "p2");
+    expect(api.summarize).toHaveBeenNthCalledWith(1, "p1", FABLE);
+    expect(api.summarize).toHaveBeenNthCalledWith(2, "p2", FABLE);
     resolvers[0]({ id: "run1" } as Run);
     expect(await screen.findByText("Summary regeneration queued (run run1)")).toBeTruthy();
     // Settled: the project may be regenerated again.
@@ -47,7 +50,15 @@ describe("TimelineView", () => {
       fireEvent.click(container.querySelectorAll("g.chip.stale")[0]);
       expect(api.summarize).toHaveBeenCalledTimes(3);
     });
-    expect(api.summarize).toHaveBeenLastCalledWith("p1");
+    expect(api.summarize).toHaveBeenLastCalledWith("p1", FABLE);
+  });
+
+  it("asks for a model instead of regenerating when none is picked", async () => {
+    const { container } = wrap(<TimelineView />);
+    const chips = await staleChips(container);
+    fireEvent.click(chips[0]);
+    expect(await screen.findByText("Choose a model in the toolbar to regenerate a summary")).toBeTruthy();
+    expect(api.summarize).not.toHaveBeenCalled();
   });
 
   it("opens a project from its lane label", async () => {

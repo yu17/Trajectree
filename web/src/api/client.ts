@@ -1,7 +1,9 @@
 import type {
   AskRequest,
   Caps,
+  Catalog,
   ConnectorStatus,
+  ModelChoice,
   ContextPack,
   Mounts,
   QuickAddRequest,
@@ -134,10 +136,12 @@ export const api = {
     return request<Run[]>("GET", `/api/runs${q.size ? `?${q}` : ""}`);
   },
   run: (id: string) => request<RunDetail>("GET", `/api/runs/${encodeURIComponent(id)}`),
-  summarize: (projectId: string, body: { runner?: string; model?: string } = {}) =>
-    request<Run>("POST", `/api/projects/${encodeURIComponent(projectId)}/summarize`, body),
-  summarizeSession: (sessionId: string, body: { runner?: string; model?: string } = {}) =>
-    request<Run>("POST", `/api/sessions/${encodeURIComponent(sessionId)}/summarize`, body),
+  models: () => request<Catalog>("GET", "/api/models"),
+  refreshModels: () => request<Catalog>("POST", "/api/models/refresh"),
+  summarize: (projectId: string, choice: ModelChoice) =>
+    request<Run>("POST", `/api/projects/${encodeURIComponent(projectId)}/summarize`, choice),
+  summarizeSession: (sessionId: string, choice: ModelChoice) =>
+    request<Run>("POST", `/api/sessions/${encodeURIComponent(sessionId)}/summarize`, choice),
   ask: (body: AskRequest) => request<Run>("POST", "/api/ask", body),
   quickAdd: (body: QuickAddRequest) => request<Run>("POST", "/api/quick-add", body),
   acceptProposal: (runId: string, index: number) =>
@@ -152,8 +156,12 @@ export const api = {
   createRoutine: (body: RoutineIn) => request<Routine>("POST", "/api/routines", body),
   patchRoutine: (ref: string, patch: RoutinePatch) =>
     request<Routine>("PATCH", `/api/routines/${encodeURIComponent(ref)}`, patch),
-  runRoutine: (ref: string, projects?: string[]) =>
-    request<Run>("POST", `/api/routines/${encodeURIComponent(ref)}/run`, projects ? { projects } : {}),
+  // Without a choice the routine runs on its stored model.
+  runRoutine: (ref: string, opts: { choice?: ModelChoice | null; projects?: string[] } = {}) =>
+    request<Run>("POST", `/api/routines/${encodeURIComponent(ref)}/run`, {
+      ...(opts.choice ?? {}),
+      ...(opts.projects ? { projects: opts.projects } : {}),
+    }),
   routineRuns: (ref: string, limit = 20) =>
     request<Run[]>("GET", `/api/routines/${encodeURIComponent(ref)}/runs?limit=${limit}`),
   scheduler: () => request<SchedulerStatus>("GET", "/api/scheduler"),

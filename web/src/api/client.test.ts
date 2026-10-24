@@ -31,7 +31,8 @@ describe("api client", () => {
     await api.routines();
     await api.createRoutine({ name: "rev", trigger: "@daily", prompt_ref: "cross_project_review.md" });
     await api.patchRoutine("rev", { enabled: true, model: null });
-    await api.runRoutine("meeting-prep", ["clmi"]);
+    await api.runRoutine("meeting-prep", { projects: ["clmi"] });
+    await api.runRoutine("rev", { choice: { runner: "claude", model: "claude-fable-5-1" } });
     await api.runRoutine("rev");
     await api.routineRuns("rev", 5);
     await api.scheduler();
@@ -39,9 +40,10 @@ describe("api client", () => {
     expect(call(1)).toEqual(["/api/routines", "POST", JSON.stringify({ name: "rev", trigger: "@daily", prompt_ref: "cross_project_review.md" })]);
     expect(call(2)).toEqual(["/api/routines/rev", "PATCH", JSON.stringify({ enabled: true, model: null })]);
     expect(call(3)).toEqual(["/api/routines/meeting-prep/run", "POST", JSON.stringify({ projects: ["clmi"] })]);
-    expect(call(4)).toEqual(["/api/routines/rev/run", "POST", "{}"]);
-    expect(call(5)).toEqual(["/api/routines/rev/runs?limit=5", "GET", undefined]);
-    expect(call(6)).toEqual(["/api/scheduler", "GET", undefined]);
+    expect(call(4)).toEqual(["/api/routines/rev/run", "POST", JSON.stringify({ runner: "claude", model: "claude-fable-5-1" })]);
+    expect(call(5)).toEqual(["/api/routines/rev/run", "POST", "{}"]);
+    expect(call(6)).toEqual(["/api/routines/rev/runs?limit=5", "GET", undefined]);
+    expect(call(7)).toEqual(["/api/scheduler", "GET", undefined]);
   });
   it("calls the report endpoints and builds export URLs", async () => {
     const f = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({})));
@@ -78,9 +80,11 @@ describe("api client", () => {
   it("posts a session summary request with the id encoded", async () => {
     const f = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({})));
     vi.stubGlobal("fetch", f);
-    await api.summarizeSession("a/b c", { runner: "codex" });
-    await api.summarizeSession("s1");
-    expect([String(f.mock.calls[0][0]), f.mock.calls[0][1]?.method, f.mock.calls[0][1]?.body]).toEqual(["/api/sessions/a%2Fb%20c/summarize", "POST", JSON.stringify({ runner: "codex" })]);
-    expect([String(f.mock.calls[1][0]), f.mock.calls[1][1]?.body]).toEqual(["/api/sessions/s1/summarize", "{}"]);
+    await api.summarizeSession("a/b c", { runner: "codex", model: "gpt-5" });
+    await api.models();
+    await api.refreshModels();
+    expect([String(f.mock.calls[0][0]), f.mock.calls[0][1]?.method, f.mock.calls[0][1]?.body]).toEqual(["/api/sessions/a%2Fb%20c/summarize", "POST", JSON.stringify({ runner: "codex", model: "gpt-5" })]);
+    expect([String(f.mock.calls[1][0]), f.mock.calls[1][1]?.method]).toEqual(["/api/models", "GET"]);
+    expect([String(f.mock.calls[2][0]), f.mock.calls[2][1]?.method]).toEqual(["/api/models/refresh", "POST"]);
   });
 });

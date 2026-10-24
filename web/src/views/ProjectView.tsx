@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
-import type { Resource, Signal } from "../api/types";
+import type { ModelChoice, Resource, Signal } from "../api/types";
 import { errorText } from "../components/errorText";
+import { ModelPicker } from "../components/ModelPicker";
 import { useRun } from "../components/useRun";
 import { glyph } from "../timeline/render";
 import { ActionNotice } from "./ActionNotice";
@@ -45,8 +46,9 @@ export function ProjectView({ projectId, onClose }: { projectId: string; onClose
   const routines = useQuery({ queryKey: ["routines"], queryFn: api.routines });
 
   const [notice, setNotice] = useState<string | null>(null);
+  const [choice, setChoice] = useState<ModelChoice | null>(null);
   const summarize = useMutation({
-    mutationFn: () => api.summarize(projectId),
+    mutationFn: (c: ModelChoice) => api.summarize(projectId, c),
     onSuccess: run => setNotice(`Summary regeneration queued (run ${run.id})`),
     onError: err => setNotice(errorText(err)),
   });
@@ -89,7 +91,8 @@ export function ProjectView({ projectId, onClose }: { projectId: string; onClose
       <h2>Summary</h2>
       <div className="row-actions">
         {stale && <span className="badge stale">stale</span>}
-        <button disabled={summarize.isPending} onClick={() => summarize.mutate()}>Regenerate summary</button>
+        <ModelPicker value={choice} onChange={setChoice} />
+        <button disabled={!choice || summarize.isPending} onClick={() => choice && summarize.mutate(choice)}>Regenerate summary</button>
       </div>
       {project && (project.summary_md
         ? <pre className="answer">{project.summary_md}</pre>

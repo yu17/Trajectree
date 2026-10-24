@@ -171,6 +171,39 @@ function RunnerSection() {
   );
 }
 
+function ModelsSection() {
+  const qc = useQueryClient();
+  const catalog = useQuery({ queryKey: ["models"], queryFn: api.models });
+  const refresh = useMutation({
+    mutationFn: api.refreshModels,
+    onSuccess: c => qc.setQueryData(["models"], c),
+  });
+  return (
+    <section>
+      <h2>Models</h2>
+      <button disabled={refresh.isPending} onClick={() => refresh.mutate()}>Refresh models</button>
+      {catalog.isError && <p className="form-error">{errorText(catalog.error)}</p>}
+      {refresh.isError && <p className="form-error">{errorText(refresh.error)}</p>}
+      {(catalog.data?.runners ?? []).map(r => (
+        <div key={r.runner}>
+          <h3>{r.runner}</h3>
+          <p className="muted">{`${r.available ? "available" : "unavailable"} · refreshed ${local(r.refreshed_at)}`}</p>
+          {r.error && <p className="form-error">{r.error}</p>}
+          {r.models.length > 0 && (
+            <ul className="models-list" aria-label={`${r.runner} models`}>
+              {r.models.map(m => (
+                <li key={m.model}>
+                  {m.display ?? m.model} <span className="badge">{m.source}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ))}
+    </section>
+  );
+}
+
 function MountsSection() {
   const mounts = useQuery({ queryKey: ["mounts"], queryFn: api.mounts });
   const m = mounts.data;
@@ -224,6 +257,7 @@ export function SettingsView() {
       <TokensSection />
       <ConnectorsSection />
       <RunnerSection />
+      <ModelsSection />
       <MountsSection />
       <SchedulerSection />
     </div>

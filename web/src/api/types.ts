@@ -574,5 +574,27 @@ export interface Mounts {
   exports_dir: string;
 }
 
+/** What the owner picked in a model picker: the runner it runs on and the model name. */
+export type ModelChoice = { runner: string; model: string };
+
+export interface CatalogModel {
+  runner: string;
+  model: string;
+  display: string | null;
+  source: "api" | "cache" | "profile" | "builtin";
+}
+
+export interface RunnerCatalog {
+  runner: string;
+  available: boolean;
+  models: CatalogModel[];
+  refreshed_at: string | null;
+  error: string | null;
+}
+
+export interface Catalog {
+  runners: RunnerCatalog[];
+}
+
 export type EventPatch = Partial<EventIn>;
 export type TodoPatch = Partial<TodoIn>;

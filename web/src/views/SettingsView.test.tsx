@@ -3,9 +3,10 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { SettingsView } from "./SettingsView";
+import { testCatalog } from "../components/testCatalog";
 import type { ConnectorStatus, TokenCreate, TokenOut } from "../api/types";
 
-const mocks = vi.hoisted(() => ({ tokens: vi.fn(), createToken: vi.fn(), revokeToken: vi.fn(), connectors: vi.fn(), mounts: vi.fn(), runnerStatus: vi.fn(), scheduler: vi.fn() }));
+const mocks = vi.hoisted(() => ({ tokens: vi.fn(), createToken: vi.fn(), revokeToken: vi.fn(), connectors: vi.fn(), mounts: vi.fn(), runnerStatus: vi.fn(), scheduler: vi.fn(), models: vi.fn(), refreshModels: vi.fn() }));
 vi.mock("../api/client", async importOriginal => {
   const real = await importOriginal<typeof import("../api/client")>();
   return { ...real, api: { ...real.api, ...mocks } };
@@ -29,6 +30,7 @@ describe("SettingsView", () => {
     });
     mocks.revokeToken.mockImplementation(async (id: string) => { store = store.filter(t => t.id !== id); });
     mocks.connectors.mockResolvedValue([]);
+    mocks.models.mockResolvedValue(testCatalog);
     mocks.mounts.mockResolvedValue({ claude_home: "/claude", backends_root: null, path_map: [["/home/u", "/mnt/u"]], data_dir: "/data", cfg_dir: "/data/cfg", exports_dir: "/data/exports" });
     mocks.runnerStatus.mockResolvedValue({ claude: { available: true, version: "2.1.309", authenticated: true }, codex: { available: false, version: null, authenticated: false }, backends: [] });
     mocks.scheduler.mockResolvedValue({ last_tick: null, interval_s: 30, next_fires: [{ routine: "weekly-review", at: "2026-10-26T08:00:00Z" }] });
@@ -90,6 +92,29 @@ describe("SettingsView", () => {
     mocks.connectors.mockResolvedValue([conn("slurm")]);
     wrap(<SettingsView />);
     expect(await screen.findByText("No connectors configured")).toBeTruthy();
+  });
+
+  it("lists the model catalog and refreshes it", async () => {
+    const user = userEvent.setup();
+    const refreshed = {
+      runners: [
+        { ...testCatalog.runners[0], models: [{ runner: "claude", model: "claude-opus-5-5", display: null, source: "api" as const }] },
+        testCatalog.runners[1],
+      ],
+    };
+    mocks.refreshModels.mockResolvedValue(refreshed);
+    wrap(<SettingsView />);
+    expect(await screen.findByRole("heading", { name: "Models" })).toBeTruthy();
+    const claude = await screen.findByRole("list", { name: "claude models" });
+    expect(within(claude).getByText("claude-fable-5-1")).toBeTruthy();
+    expect(within(claude).getByText("Sonnet 5.5")).toBeTruthy();
+    expect(screen.getByText(`available · refreshed ${new Date("2026-10-24T09:00:00Z").toLocaleString()}`)).toBeTruthy();
+    expect(screen.getByText("unavailable · refreshed never")).toBeTruthy();
+    expect(screen.getByText("codex is not installed")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Refresh models" }));
+    expect(mocks.refreshModels).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("claude-opus-5-5")).toBeTruthy();
+    expect(screen.queryByText("claude-fable-5-1")).toBeNull();
   });
 
   it("shows the runner, mounts and scheduler", async () => {
