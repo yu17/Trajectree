@@ -113,7 +113,9 @@ def _add_rule(libc: ctypes.CDLL, ruleset: int, path: str, access: int, handled: 
 def confine_argv(ro: Sequence[Path], rw: Sequence[Path], argv: Sequence[str], *,
                  python: str = sys.executable) -> list[str]:
     """The command line that runs argv under this wrapper."""
-    return [python, "-m", "trajectree.runner.confine",
+    # -I: no cwd on sys.path and no PYTHON* env, so untrusted project files cannot shadow
+    # stdlib modules and run before restrict().
+    return [python, "-I", "-m", "trajectree.runner.confine",
             "--ro", *map(str, ro), "--rw", *map(str, rw), "--", *argv]
 
 

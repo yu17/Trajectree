@@ -96,10 +96,23 @@ def test_unavailable_exits_97(monkeypatch, capsys):
     )
 
 
+def test_cwd_shadow_modules_do_not_run_before_restriction(kernel, tmp_path):
+    cwd = tmp_path / "untrusted"
+    out = tmp_path / "out"
+    cwd.mkdir()
+    out.mkdir()
+    marker = out / "ran"
+    (cwd / "struct.py").write_text(f"open({str(marker)!r}, 'w').write('x')\n")
+    cmd = confine_argv(system_ro_paths(), [], ["true"], python=sys.executable)
+    r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    assert not marker.exists()
+
+
 def test_confine_argv_shape():
     assert confine_argv(
         [Path("/a")], [Path("/b")], ["x", "--y"], python="/py"
     ) == [
-        "/py", "-m", "trajectree.runner.confine",
+        "/py", "-I", "-m", "trajectree.runner.confine",
         "--ro", "/a", "--rw", "/b", "--", "x", "--y",
     ]
