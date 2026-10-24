@@ -80,6 +80,20 @@ def scan_folder(
 
     Raises OSError when `root` itself cannot be listed; unreadable subdirectories are skipped.
     """
+    return scan_folder_capped(
+        root, since=since, excludes=excludes, big_dir_mb=big_dir_mb, max_entries=max_entries
+    )[0]
+
+
+def scan_folder_capped(
+    root: Path,
+    *,
+    since: datetime,
+    excludes: tuple[str, ...] | list[str] = DEFAULT_EXCLUDES,
+    big_dir_mb: int = 500,
+    max_entries: int = 200_000,
+) -> tuple[dict[str, DayChange], bool]:
+    """`scan_folder`, plus whether the walk stopped at `max_entries` with entries left unseen."""
     spec = load_gitignore(root)
     cutoff = since.timestamp()
     big_bytes = big_dir_mb * 1024 * 1024
@@ -135,7 +149,7 @@ def scan_folder(
             t_min=items[0][0] if items else 0.0,
             t_max=items[-1][0] if items else 0.0,
         )
-    return result
+    return result, seen > max_entries or bool(stack)
 
 
 def _state_key(resource_id: str) -> str:
