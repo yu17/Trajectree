@@ -11,6 +11,7 @@ from trajectree.connectors import probe as probe_mod
 from trajectree.connectors.claude_sessions import SessionSummary
 from trajectree.connectors.codex_sessions import (
     digest_codex,
+    is_own_session,
     parse_codex_lines,
     project_codex_sessions,
     scan_codex,
@@ -81,10 +82,10 @@ def test_session_from_meta():
     assert (out.prompts, out.assistant_msgs, out.tokens_in, out.tokens_out) == (1, 1, 150, 25)
 
 
-def test_session_id_falls_back_to_file_name():
+def test_no_session_id_until_session_meta_is_read():
     acc = SessionSummary(transcript_path=str(BASIC), backend="codex")
     out = parse_codex_lines([b'{"type": "turn_context", "payload": {"cwd": "/x"}}\n'], acc)
-    assert out.session_id == SID and out.cwd == "/x"
+    assert out.session_id is None and out.cwd == "/x" and not is_own_session(out)
 
 
 def test_title_is_first_prompt_shortened():
@@ -257,3 +258,65 @@ def test_cap_counts_only_this_folders_rollouts(settings, tmp_path, monkeypatch):
     bad = s.codex_sessions_root / "2026" / "01" / "05" / "rollout-bad.jsonl"
     bad.write_text('{"type": "turn_context", "payload": {"cwd": "/home/u/proj"}}\n')
     assert [x.session_id for x in project_codex_sessions(s, CWD, registered=[CWD]).sessions] == [SID]
+
+
+# -- child (subagent) rollouts ------------------------------------------------------------------
+
+PARENT = "019eeeee-0000-7000-8000-00000000000a"
+CHILD = "019eeeee-0000-7000-8000-00000000000b"
+
+
+def parent_and_child(root: Path) -> tuple[Path, Path]:
+    """Shaped like Codex 0.163's files: the child's name ends `<parent>_<child>` and its
+    session_meta carries the parent's id. Content invented."""
+    parent = rollout(root, PARENT, CWD, "2026-01-03T09:00:00.000Z", "parent prompt")
+    child = rollout(root, CHILD, CWD, "2026-01-04T09:00:00.000Z", "subagent prompt")
+    named = child.with_name(f"rollout-2026-01-04T09-00-00-{PARENT}_{CHILD}.jsonl")
+    child.rename(named)
+    lines = named.read_text().splitlines()
+    meta = json.loads(lines[0])
+    meta["payload"]["id"] = PARENT
+    named.write_text("\n".join([json.dumps(meta), *lines[1:]]) + "\n")
+    return parent, named
+
+
+def test_child_rollouts_are_not_sessions(ledger, human, settings, tmp_path):
+    root = tmp_path / "codex-sessions"
+    s = settings.model_copy(update={"codex_sessions_root": root, "scan_since_days": 20000})
+    parent_and_child(root)
+    p = project(ledger, human)
+    now = datetime(2026, 10, 24, 12, tzinfo=UTC)
+    codex = {x.source: x for x in probe_folder(nothing, s, CWD, now=now).sources}["codex"]
+    assert codex.count == 1 and codex.oldest == datetime(2026, 1, 3, 9, tzinfo=UTC)
+    report = scan_codex(ledger.conn, s, now=now)
+    (sig,) = list_signals(ledger.conn, project_ids=[p.id])
+    assert report.signals_written == 1 and sig.dedupe_key == f"codex_session:{PARENT}"
+    assert sig.t_start == sig.t_end == datetime(2026, 1, 3, 9, tzinfo=UTC)   # the parent's own dates
+    text = session_history(s, [CWD], [CWD], starts={"codex": date(2026, 3, 1)}, budget_chars=5000)
+    assert "parent prompt" in text and "subagent prompt" not in text
+    assert [x.session_id for x in project_codex_sessions(s, CWD, registered=[CWD]).sessions] == [PARENT]
+
+
+def test_first_line_parse_failures_skip_the_file(settings, tmp_path):
+    root = tmp_path / "codex-sessions"
+    s = settings.model_copy(update={"codex_sessions_root": root})
+    rollout(root, SID, CWD, "2026-01-05T10:00:00.000Z", "fine")
+    day = root / "2026" / "01" / "06"
+    day.mkdir(parents=True)
+    deep = day / "rollout-2026-01-06T10-00-00-019bbbbb-0000-7000-8000-000000000002.jsonl"
+    deep.write_bytes(b"[" * 200_000 + b"\n")   # RecursionError from json.loads
+    assert [x.session_id for x in project_codex_sessions(s, CWD, registered=[CWD]).sessions] == [SID]
+
+
+def test_long_session_meta_line_is_read_up_to_one_mib(settings, tmp_path):
+    root = tmp_path / "codex-sessions"
+    s = settings.model_copy(update={"codex_sessions_root": root})
+    path = rollout(root, SID, CWD, "2026-01-05T10:00:00.000Z", "long meta")
+    lines = path.read_text().splitlines()
+    meta = json.loads(lines[0])
+    meta["payload"]["base_instructions"] = {"text": "x" * 200_000}   # beyond 64 KiB, within 1 MiB
+    path.write_text("\n".join([json.dumps(meta), *lines[1:]]) + "\n")
+    assert [x.session_id for x in project_codex_sessions(s, CWD, registered=[CWD]).sessions] == [SID]
+    meta["payload"]["base_instructions"] = {"text": "x" * (1024 * 1024)}   # beyond 1 MiB: given up
+    path.write_text("\n".join([json.dumps(meta), *lines[1:]]) + "\n")
+    assert project_codex_sessions(s, CWD, registered=[CWD]).sessions == []

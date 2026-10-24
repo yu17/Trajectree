@@ -1,6 +1,9 @@
 """Codex session scanner: one `session` signal per rollout file, read incrementally like Claude's.
 
-Rollouts live at `<root>/YYYY/MM/DD/rollout-<timestamp>-<session-id>.jsonl`. Each line is
+Rollouts live at `<root>/YYYY/MM/DD/rollout-<timestamp>-<session-id>.jsonl`. A subagent's rollout
+is named `rollout-<timestamp>-<parent-id>_<child-id>.jsonl` but its `session_meta` carries the
+parent's id, so a rollout is a session only when the last id in its name is its `session_meta`
+id; child rollouts are skipped everywhere, as the Claude scanner skips subagent transcripts. Each line is
 `{timestamp, type, payload}`: `session_meta` (first; `id`, `cwd`), `turn_context` (`model`, `cwd`),
 `event_msg` (a `UserMessage` item is a prompt), `response_item` (assistant messages and tool calls)
 and `token_usage_record` (per-response `usage`). The format is Codex-internal and changes between
@@ -52,11 +55,15 @@ def codex_files(settings: Settings) -> list[Path]:
         return []
 
 
-def _file_id(path: str) -> str:
-    """The session id in a rollout's file name, else the whole stem."""
-    stem = Path(path).stem
-    found = _ID_IN_NAME.findall(stem)
-    return found[-1] if found else stem
+def _name_id(path: str | Path) -> str | None:
+    """The last session id in a rollout's file name (a child rollout's own id), if any."""
+    found = _ID_IN_NAME.findall(Path(path).stem)
+    return found[-1] if found else None
+
+
+def is_own_session(summary: SessionSummary) -> bool:
+    """Whether the rollout is a session of its own: its `session_meta` id is the id in its name."""
+    return summary.session_id is not None and summary.session_id == _name_id(summary.transcript_path)
 
 
 def _shorten(text: str) -> str:
@@ -118,9 +125,7 @@ def parse_codex_lines(lines: Iterable[bytes], acc: SessionSummary) -> SessionSum
             continue
         if isinstance(rec, dict):
             _apply(out, rec)
-    # A rollout whose meta record is missing or not yet read is still named after its session.
-    out.session_id = out.session_id or _file_id(out.transcript_path)
-    return out
+    return out  # no session_id until the session_meta record is read: not a session (yet)
 
 
 def digest_codex(path: Path, *, max_chars: int = 12000) -> str:
@@ -176,19 +181,31 @@ def session_signal(conn: apsw.Connection, session_id: str) -> Signal | None:
 
 
 _FIRST_LINE_BYTES = 64 * 1024
+_FIRST_LINE_MAX_BYTES = 1024 * 1024  # a session_meta carrying long instructions
 
 
-def _first_cwd(path: Path) -> str | None:
-    """The `cwd` of the file's first record when that is a `session_meta`; one bounded read."""
+def _own_session_cwd(path: Path) -> str | None:
+    """The `cwd` of the file's first record when that is the `session_meta` of the rollout's own
+    session (not a child rollout's); a bounded read: 64 KiB, extended to 1 MiB for a longer line."""
     try:
         with path.open("rb") as f:
             line = f.readline(_FIRST_LINE_BYTES)
+            if len(line) == _FIRST_LINE_BYTES and not line.endswith(b"\n"):
+                line += f.readline(_FIRST_LINE_MAX_BYTES - _FIRST_LINE_BYTES)
+                if len(line) == _FIRST_LINE_MAX_BYTES and not line.endswith(b"\n"):
+                    return None
+    except OSError:
+        return None
+    try:
         rec = json.loads(line)
-    except (OSError, ValueError):
+    except Exception:  # anything a hostile first line can raise (RecursionError included)
         return None
     if not isinstance(rec, dict) or rec.get("type") != "session_meta":
         return None
-    return _str(_dict(rec.get("payload")).get("cwd"))
+    payload = _dict(rec.get("payload"))
+    if _str(payload.get("id")) is None or _str(payload.get("id")) != _name_id(path):
+        return None
+    return _str(payload.get("cwd"))
 
 
 def project_codex_sessions(
@@ -204,8 +221,8 @@ def project_codex_sessions(
     `folder` (a host path) by the deepest-registered-folder rule, newest first. Same `before`,
     `before_by_source` (needs a `codex` entry, else nothing is read) and `max_files` meaning.
     Rollouts are not grouped by folder on disk, so candidates are first narrowed by the `cwd` in each
-    file's first record (`session_meta`, one bounded read); a file without a parsable one is skipped,
-    and a later `turn_context` cwd change is not seen by this pre-filter. The cap then counts only
+    file's first record (`session_meta`, one bounded read); a file without a parsable one, or a child
+    rollout, is skipped, and a later `turn_context` cwd change is not seen by this pre-filter. The cap then counts only
     the rollouts in this folder. No DB, no lock."""
     if before_by_source is not None and "codex" not in before_by_source:
         return ProjectTranscripts(sessions=[])
@@ -215,7 +232,7 @@ def project_codex_sessions(
             mtime = path.stat().st_mtime
         except OSError:
             continue
-        cwd = _first_cwd(path)
+        cwd = _own_session_cwd(path)
         if cwd is not None and cwd_in_folder(cwd, folder, registered):
             candidates.append((mtime, "codex", path))
     return select_in_folder(
@@ -250,6 +267,8 @@ def scan_codex(conn: apsw.Connection, settings: Settings, *, now: datetime) -> S
             if refreshed is None:
                 continue
             files_read += refreshed[1]
+            if not is_own_session(refreshed[0]):
+                continue  # a child rollout (or one whose session_meta is not written yet)
             summaries.append((refreshed[0], st.st_mtime))
         signals, live = session_signals(conn, settings, summaries, now)
         written = upsert_signals(conn, signals)
