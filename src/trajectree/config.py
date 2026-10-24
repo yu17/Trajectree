@@ -17,6 +17,7 @@ class Settings(BaseModel):
     port: int = 8742
     claude_home: Path | None = None
     backends_root: Path | None = None
+    codex_sessions_root: Path | None = None  # the host's ~/.codex/sessions
     path_map: list[tuple[str, str]] = []
     ingest_interval_s: int = 300
     live_window_s: int = 900
@@ -160,6 +161,7 @@ def load_settings() -> Settings:
     values["backends_root"] = _optional_dir(
         "TRAJECTREE_BACKENDS_ROOT", "~/.config/claude-backends"
     )
+    values["codex_sessions_root"] = _optional_dir("TRAJECTREE_CODEX_SESSIONS", "~/.codex/sessions")
     if "TRAJECTREE_PATH_MAP" in os.environ:
         values["path_map"] = _parse_path_map(os.environ["TRAJECTREE_PATH_MAP"])
     if os.environ.get("TRAJECTREE_CFG_DIR"):

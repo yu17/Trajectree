@@ -1,0 +1,234 @@
+"""Codex session scanner: one `session` signal per rollout file, read incrementally like Claude's.
+
+Rollouts live at `<root>/YYYY/MM/DD/rollout-<timestamp>-<session-id>.jsonl`. Each line is
+`{timestamp, type, payload}`: `session_meta` (first; `id`, `cwd`), `turn_context` (`model`, `cwd`),
+`event_msg` (a `UserMessage` item is a prompt), `response_item` (assistant messages and tool calls)
+and `token_usage_record` (per-response `usage`). The format is Codex-internal and changes between
+versions, so parsing is defensive: an unrecognized or malformed line is skipped. Files are only read.
+"""
+
+import json
+import re
+from collections import Counter, deque
+from collections.abc import Iterable, Mapping, Sequence
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import apsw
+from trajectree.config import Settings
+from trajectree.connectors.claude_sessions import (
+    MAX_TRANSCRIPT_FILES,
+    ProjectTranscripts,
+    ScanReport,
+    SessionSummary,
+    _dict,
+    _int,
+    _str,
+    _timestamp,
+    digest_transcript,
+    refresh_file,
+    render_digest,
+    select_in_folder,
+    session_signals,
+    transcript_cutoff,
+)
+from trajectree.models import Signal
+from trajectree.repo.signals import get_signal_by_key, upsert_signals
+
+TITLE_CHARS = 80
+_ID_IN_NAME = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def codex_files(settings: Settings) -> list[Path]:
+    """Every `rollout-*.jsonl` under the Codex sessions root (none when it is unset or missing)."""
+    root = settings.codex_sessions_root
+    if root is None or not root.is_dir():
+        return []
+    try:
+        return sorted(f for f in root.rglob("rollout-*.jsonl") if f.is_file())
+    except OSError:
+        return []
+
+
+def _file_id(path: str) -> str:
+    """The session id in a rollout's file name, else the whole stem."""
+    stem = Path(path).stem
+    found = _ID_IN_NAME.findall(stem)
+    return found[-1] if found else stem
+
+
+def _shorten(text: str) -> str:
+    one = " ".join(text.split())
+    return one if len(one) <= TITLE_CHARS else one[: TITLE_CHARS - 1] + "…"
+
+
+def _blocks(content: Any) -> list[str]:
+    """The non-empty `text` of each block in a message or item `content` list."""
+    blocks = content if isinstance(content, list) else []
+    texts = [_str(_dict(b).get("text")) for b in blocks]
+    return [t for t in texts if t is not None and t.strip()]
+
+
+def _user_prompts(rec: dict[str, Any]) -> list[str]:
+    """The prompt text of an `event_msg` user message; the `response_item` copies of the user's
+    turn also carry injected context (instructions, environment), so they are not used."""
+    payload = _dict(rec.get("payload"))
+    item = _dict(payload.get("item"))
+    if rec.get("type") == "event_msg" and payload.get("type") == "item_completed" and item.get("type") == "UserMessage":
+        return _blocks(item.get("content"))
+    return []
+
+
+def _apply(acc: SessionSummary, rec: dict[str, Any]) -> None:
+    kind = rec.get("type")
+    payload = _dict(rec.get("payload"))
+    if kind == "session_meta":
+        acc.session_id = _str(payload.get("id")) or acc.session_id
+        acc.cwd = _str(payload.get("cwd")) or acc.cwd
+        acc.version = _str(payload.get("cli_version")) or acc.version
+    elif kind == "turn_context":
+        acc.model = _str(payload.get("model")) or acc.model
+        acc.cwd = _str(payload.get("cwd")) or acc.cwd
+    elif kind == "response_item":
+        if payload.get("type") == "message" and payload.get("role") == "assistant" and _blocks(payload.get("content")):
+            acc.assistant_msgs += 1
+    elif kind == "token_usage_record":
+        usage = _dict(payload.get("usage"))
+        acc.tokens_in += _int(usage.get("input_tokens"))
+        acc.tokens_out += _int(usage.get("output_tokens"))
+    prompts = _user_prompts(rec)
+    if prompts:
+        acc.prompts += len(prompts)
+        acc.title = acc.title or _shorten(prompts[0])
+    ts = _timestamp(rec.get("timestamp"))
+    if ts is not None:
+        acc.t_start = ts if acc.t_start is None else min(acc.t_start, ts)
+        acc.t_end = ts if acc.t_end is None else max(acc.t_end, ts)
+
+
+def parse_codex_lines(lines: Iterable[bytes], acc: SessionSummary) -> SessionSummary:
+    """Fold rollout lines into a copy of `acc`; malformed or unrecognized lines are skipped."""
+    out = acc.model_copy(deep=True)
+    for line in lines:
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(rec, dict):
+            _apply(out, rec)
+    # A rollout whose meta record is missing or not yet read is still named after its session.
+    out.session_id = out.session_id or _file_id(out.transcript_path)
+    return out
+
+
+def digest_codex(path: Path, *, max_chars: int = 12000) -> str:
+    """A compact Markdown digest of a rollout: prompts, tool calls, assistant messages, final message.
+
+    Streams the file once and skips lines it cannot read; `OSError` from opening or reading
+    the file propagates. The raw JSONL never leaves this function.
+    """
+    prompts: list[str] = []
+    tools: Counter[str] = Counter()
+    head: list[str] = []
+    tail: deque[str] = deque(maxlen=10)
+    texts = 0
+    last = ""
+    final = ""
+    with path.open("rb") as f:
+        for line in f:
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(rec, dict):
+                continue
+            payload = _dict(rec.get("payload"))
+            prompts.extend(" ".join(t.split())[:300] for t in _user_prompts(rec))
+            if rec.get("type") == "response_item":
+                if payload.get("type") in ("function_call", "custom_tool_call"):
+                    tools[_str(payload.get("name")) or "unknown"] += 1
+                elif payload.get("type") == "message" and payload.get("role") == "assistant":
+                    for text in _blocks(payload.get("content")):
+                        texts += 1
+                        last = text.strip()
+                        short = " ".join(text.split())[:300]
+                        if len(head) < 10:
+                            head.append(short)
+                        else:
+                            tail.append(short)
+            elif rec.get("type") == "event_msg" and payload.get("type") == "task_complete":
+                final = (_str(payload.get("last_agent_message")) or "").strip() or final
+    return render_digest(prompts, tools, head, list(tail), texts, final or last, max_chars)
+
+
+def digest_session(backend: str, path: Path, *, max_chars: int) -> str:
+    """The digest for a session of `backend`: a rollout for codex, a Claude-format transcript otherwise."""
+    return (digest_codex if backend == "codex" else digest_transcript)(path, max_chars=max_chars)
+
+
+def session_signal(conn: apsw.Connection, session_id: str) -> Signal | None:
+    """The `session` signal for `session_id`: a Claude-format session first, then a Codex one."""
+    return get_signal_by_key(conn, f"claude_session:{session_id}") or get_signal_by_key(
+        conn, f"codex_session:{session_id}"
+    )
+
+
+def project_codex_sessions(
+    settings: Settings,
+    folder: str,
+    *,
+    registered: Sequence[str],
+    before: datetime | None = None,
+    before_by_source: Mapping[str, datetime] | None = None,
+    max_files: int = MAX_TRANSCRIPT_FILES,
+) -> ProjectTranscripts:
+    """Codex counterpart of `project_transcripts`: summaries of the rollouts whose cwd belongs to
+    `folder` (a host path) by the deepest-registered-folder rule, newest first. Same `before`,
+    `before_by_source` (needs a `codex` entry, else nothing is read) and `max_files` meaning.
+    Rollouts are not grouped by folder on disk, so the cap counts every rollout. No DB, no lock."""
+    if before_by_source is not None and "codex" not in before_by_source:
+        return ProjectTranscripts(sessions=[])
+    candidates: list[tuple[float, str, Path]] = []
+    for path in codex_files(settings):
+        try:
+            candidates.append((path.stat().st_mtime, "codex", path))
+        except OSError:
+            continue
+    return select_in_folder(
+        candidates,
+        folder,
+        registered,
+        before=before,
+        before_by_source=before_by_source,
+        max_files=max_files,
+        parse=parse_codex_lines,
+    )
+
+
+def scan_codex(conn: apsw.Connection, settings: Settings, *, now: datetime) -> ScanReport:
+    """Bring every recent rollout's summary up to date and upsert its session signal.
+
+    Like `scan_transcripts`: all DB work on `conn` in one transaction; callers take the ledger lock.
+    """
+    cutoff = transcript_cutoff(conn, settings, now, "codex")
+    files_seen = files_read = 0
+    summaries: list[tuple[SessionSummary, float]] = []
+    with conn:
+        for path in codex_files(settings):
+            try:
+                st = path.stat()
+            except OSError:
+                continue
+            if cutoff is not None and st.st_mtime < cutoff:
+                continue
+            files_seen += 1
+            refreshed = refresh_file(conn, path, st, "codex", parse_codex_lines)
+            if refreshed is None:
+                continue
+            files_read += refreshed[1]
+            summaries.append((refreshed[0], st.st_mtime))
+        signals, live = session_signals(conn, settings, summaries, now)
+        written = upsert_signals(conn, signals)
+    return ScanReport(files_seen=files_seen, files_read=files_read, signals_written=written, live=live)
+

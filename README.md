@@ -66,7 +66,8 @@ mkdir -p ~/.config/trajectree && cp data/token ~/.config/trajectree/token
 The container runs as a non-root user with a read-only root filesystem, and
 publishes its port on 127.0.0.1 only (8742 for an instance, 8743 for the
 development stack). It mounts `~/.claude/projects` (only the
-transcripts, not the rest of the Claude home), `~/.config/claude-backends` and
+transcripts, not the rest of the Claude home), `~/.config/claude-backends`,
+`~/.codex/sessions` (only the Codex rollouts, never `auth.json` or `config.toml`) and
 `$TRAJECTREE_PROJECTS_ROOT` read-only, `./data` read-write, and `./cfg`
 read-write at `/cfg` for the runner's Claude Code config and credentials.
 The image includes Claude Code (installed natively, auto-update disabled).
@@ -144,10 +145,14 @@ writes lands as pending in the Inbox tab, where the owner accepts or rejects it.
 ## Ingest
 
 A background loop reads Claude Code transcripts under `TRAJECTREE_CLAUDE_HOME`
-and `TRAJECTREE_BACKENDS_ROOT`, and the git history of each project's
+and `TRAJECTREE_BACKENDS_ROOT`, Codex sessions under `TRAJECTREE_CODEX_SESSIONS`
+(`rollout-*.jsonl` files; the title is the first prompt, shortened), and the git history of each project's
 `git_local` resources. A transcript is attached to the project whose
 registered folder equals the session's `cwd` (a host path) or is an ancestor
-of it; the deepest registered folder wins.
+of it; the deepest registered folder wins. Codex sessions are attached the same
+way, appear as the `codex` import source, and `summarize --session <id>` works
+for them. Codex has no live hooks: a session counts as live by file modification
+time.
 
 - `TRAJECTREE_INGEST_EVERY` sets the loop period in seconds (300; 0 disables).
 - The live marker is derived at scan time, so `TRAJECTREE_LIVE_WINDOW` must be
@@ -533,7 +538,10 @@ with `--model` (add `--runner codex` when another runner offers the same name).
 | Host, anything else | Nothing |
 
 The container mounts your Claude home read-only and only `~/.claude/projects`
-of it. The project folders mount read-only.
+of it, and only `~/.codex/sessions` of your Codex home. The project folders mount
+read-only. Docker creates a missing bind source as a root-owned directory, so
+make sure `~/.codex/sessions` exists (`mkdir -p ~/.codex/sessions`) before
+`docker compose up`, like the other host mounts.
 
 ## Environment variables
 
@@ -544,6 +552,7 @@ of it. The project folders mount read-only.
 | `TRAJECTREE_PORT` | `8742` | Port the daemon binds |
 | `TRAJECTREE_CLAUDE_HOME` | `~/.claude` if it exists (`/host/claude` in Docker) | Claude Code home to scan for transcripts; empty string disables |
 | `TRAJECTREE_BACKENDS_ROOT` | `~/.config/claude-backends` if it exists (`/host/claude-backends` in Docker) | Extra Claude homes to scan; empty string disables |
+| `TRAJECTREE_CODEX_SESSIONS` | `~/.codex/sessions` if it exists (`/host/codex/sessions` in Docker) | Codex sessions directory to scan; empty string disables |
 | `TRAJECTREE_PATH_MAP` | none | `host=container;host2=container2`: where host paths live in the container |
 | `TRAJECTREE_INGEST_EVERY` | `300` | Seconds between ingest passes; `0` disables the loop |
 | `TRAJECTREE_LIVE_WINDOW` | `900` | Seconds since the last transcript activity during which a session counts as live |

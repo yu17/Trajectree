@@ -23,6 +23,7 @@ from pydantic import ValidationError
 
 from trajectree.auth.tokens import mint_token, revoke_token
 from trajectree.config import Settings
+from trajectree.connectors.codex_sessions import session_signal
 from trajectree.context.history import collect_history, session_history
 from trajectree.db.ledger import Ledger
 from trajectree.models import SLOT_OF, Actor, EventIn, Proposal, Routine, Run, RunSlot, TodoIn
@@ -30,7 +31,6 @@ from trajectree.repo import NotFound, UnknownProject, UnknownSession, events, to
 from trajectree.repo.caps import get_caps
 from trajectree.repo.projects import get_project_by_slug, resolve_project_ref
 from trajectree.repo.routines import resolve_routine_ref
-from trajectree.repo.signals import get_signal_by_key
 from trajectree.repo.runs import (
     create_run,
     find_active_summarize,
@@ -145,7 +145,7 @@ class RunService:
                 if active is not None:
                     return active  # one summary per project in flight
             elif isinstance(request, SummarizeSessionRequest):
-                session = get_signal_by_key(conn, f"claude_session:{request.session_id}")
+                session = session_signal(conn, request.session_id)
                 if session is None:
                     raise UnknownSession(f"unknown session '{request.session_id}'")
                 project_id = session.project_id

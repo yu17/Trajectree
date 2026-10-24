@@ -16,7 +16,7 @@ from pydantic import AwareDatetime, BaseModel, Field, field_validator
 
 from trajectree.auth.scopes import Scope
 from trajectree.config import Settings
-from trajectree.connectors.claude_sessions import digest_transcript
+from trajectree.connectors.codex_sessions import digest_session, session_signal
 from trajectree.connectors.paths import to_local
 from trajectree.context.digest import activity_digest
 from trajectree.context.history import HistoryInput, block_date, local_midnight
@@ -28,7 +28,6 @@ from trajectree.repo.projects import get_project_by_slug, list_projects, resolve
 from trajectree.repo.resources import list_resources
 from trajectree.repo.review import pending_txns
 from trajectree.repo.routines import resolve_routine_ref
-from trajectree.repo.signals import get_signal_by_key
 from trajectree.runner.spec import ToolPolicy
 
 
@@ -355,14 +354,16 @@ def _read_only_plan(settings: Settings, run: Run, prompt: str) -> RunPlan:
 def _plan_summarize_session(
     conn: apsw.Connection, settings: Settings, run: Run, request: SummarizeSessionRequest, now: datetime
 ) -> RunPlan:
-    signal = get_signal_by_key(conn, f"claude_session:{request.session_id}")
+    signal = session_signal(conn, request.session_id)
     if signal is None:
         raise NotFound(f"unknown session {request.session_id}")
     transcript_path = signal.payload.get("transcript_path")
     if not isinstance(transcript_path, str) or not transcript_path:
         raise NotFound("transcript unreadable")
     try:
-        digest = digest_transcript(Path(transcript_path), max_chars=settings.digest_max_chars)
+        digest = digest_session(
+            str(signal.payload.get("backend") or "claude"), Path(transcript_path), max_chars=settings.digest_max_chars
+        )
     except OSError:
         raise NotFound("transcript unreadable") from None
     project = resolve_project_ref(conn, signal.project_id)

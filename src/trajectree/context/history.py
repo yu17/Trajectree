@@ -16,7 +16,8 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel
 
 from trajectree.config import Settings
-from trajectree.connectors.claude_sessions import SessionSummary, MAX_TRANSCRIPT_FILES, digest_transcript, project_transcripts
+from trajectree.connectors.claude_sessions import SessionSummary, MAX_TRANSCRIPT_FILES, project_transcripts
+from trajectree.connectors.codex_sessions import digest_session, project_codex_sessions
 from trajectree.connectors.folders import DEFAULT_EXCLUDES, load_gitignore
 from trajectree.importing import SESSION_SOURCE_OF_BACKEND, local_midnight
 
@@ -281,8 +282,9 @@ def session_history(
     capped = False
     for folder in folders:
         scan = project_transcripts(settings, folder, registered=registered, before_by_source=cutoffs)
-        capped = capped or scan.capped
-        for summary in scan.sessions:
+        codex = project_codex_sessions(settings, folder, registered=registered, before_by_source=cutoffs)
+        capped = capped or scan.capped or codex.capped
+        for summary in [*scan.sessions, *codex.sessions]:
             if summary.t_end is not None:
                 found[summary.transcript_path] = (summary.t_end, summary)
     zone = ZoneInfo(settings.tz)
@@ -295,7 +297,9 @@ def session_history(
         if room < 200:
             break
         try:
-            digest = digest_transcript(Path(summary.transcript_path), max_chars=min(settings.digest_max_chars, room))
+            digest = digest_session(
+                summary.backend, Path(summary.transcript_path), max_chars=min(settings.digest_max_chars, room)
+            )
         except OSError:
             digest = ""
         section = f"{head}\n{digest}" if digest else head

@@ -6,8 +6,9 @@ look as expected is skipped, never raised on. Files are only ever opened for rea
 """
 
 import json
+import os
 from collections import Counter, deque
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO
@@ -194,6 +195,19 @@ def digest_transcript(path: Path, *, max_chars: int = 12000) -> str:
                         head.append(short)
                     else:
                         tail.append(short)
+    return render_digest(prompts, tools, head, list(tail), texts, last, max_chars)
+
+
+def render_digest(
+    prompts: list[str],
+    tools: Counter[str],
+    head: list[str],
+    tail: list[str],
+    texts: int,
+    last: str,
+    max_chars: int,
+) -> str:
+    """The Markdown digest of a session: `head`/`tail` are the first and last assistant texts of `texts`."""
     sections: list[str] = []
     if prompts:
         sections.append("## Prompts\n" + "\n".join(f"{i}. {p}" for i, p in enumerate(prompts, 1)))
@@ -273,8 +287,6 @@ def project_transcripts(
     reading, the transcripts of any source it does not list. At most `max_files` transcripts are
     parsed (newest files first); `capped` says the rest were left out. Pure file I/O: no DB, no lock.
     """
-    root_path = PurePosixPath(folder)
-    deeper = [PurePosixPath(r) for r in registered if len(r) > len(folder)]
     prefix = encode_project_dir(folder)
     candidates: list[tuple[float, str, Path]] = []
     for backend, root in transcript_roots(settings):
@@ -291,13 +303,34 @@ def project_transcripts(
                         candidates.append((f.stat().st_mtime, backend, f))
             except OSError:
                 continue
-    candidates.sort(key=lambda c: c[0], reverse=True)
+    return select_in_folder(
+        candidates, folder, registered, before=before, before_by_source=before_by_source, max_files=max_files
+    )
+
+
+def select_in_folder(
+    candidates: list[tuple[float, str, Path]],
+    folder: str,
+    registered: Sequence[str],
+    *,
+    before: datetime | None,
+    before_by_source: Mapping[str, datetime] | None,
+    max_files: int,
+    parse: Callable[[Iterable[bytes], SessionSummary], SessionSummary] | None = None,
+) -> ProjectTranscripts:
+    """Parse the newest `max_files` of `candidates` (`(mtime, backend, path)`) and keep the sessions
+    whose cwd belongs to `folder` (the deepest-registered-folder rule), ended before their cutoff."""
+    root_path = PurePosixPath(folder)
+    deeper = [PurePosixPath(r) for r in registered if len(r) > len(folder)]
+    candidates = sorted(candidates, key=lambda c: c[0], reverse=True)
     capped = len(candidates) > max_files
     found: list[SessionSummary] = []
     for mtime, backend, path in candidates[:max_files]:
         cutoff = before_by_source[SESSION_SOURCE_OF_BACKEND[backend]] if before_by_source is not None else before
         try:
-            summary, _ = _read_from(path, 0, SessionSummary(transcript_path=str(path.absolute()), backend=backend))
+            summary, _ = _read_from(
+                path, 0, SessionSummary(transcript_path=str(path.absolute()), backend=backend), parse or parse_lines
+            )
         except OSError:
             continue
         if summary.cwd is None:
@@ -329,7 +362,12 @@ def _stored_summary(state: Any) -> SessionSummary | None:
         return None
 
 
-def _read_from(path: Path, offset: int, acc: SessionSummary) -> tuple[SessionSummary, int]:
+def _read_from(
+    path: Path,
+    offset: int,
+    acc: SessionSummary,
+    parse: Callable[[Iterable[bytes], SessionSummary], SessionSummary] = parse_lines,
+) -> tuple[SessionSummary, int]:
     """Fold the complete lines after `offset` into `acc`, streaming one line at a time.
 
     Returns the new summary and the byte length of the complete lines consumed. Only
@@ -348,21 +386,23 @@ def _read_from(path: Path, offset: int, acc: SessionSummary) -> tuple[SessionSum
 
     with path.open("rb") as f:
         f.seek(offset)
-        summary = parse_lines(complete_lines(f), acc)
+        summary = parse(complete_lines(f), acc)
     return summary, consumed
 
 
-def _transcript_cutoff(conn: apsw.Connection, settings: Settings, now: datetime) -> float | None:
+def transcript_cutoff(
+    conn: apsw.Connection, settings: Settings, now: datetime, source: str = "claude"
+) -> float | None:
     """Skip transcript files last written before this (POSIX seconds); `None` reads them all.
 
-    The earliest claude start among the projects that picked claude, so a project that asked
+    The earliest `source` start among the projects that picked it, so a project that asked
     for more history than the default gets it; with no such project, the default.
     """
     default = (now - timedelta(days=settings.scan_since_days)).timestamp()
     starts = [
-        source_start(p, "claude", now=now, default_days=settings.scan_since_days, tz=settings.tz)
+        source_start(p, source, now=now, default_days=settings.scan_since_days, tz=settings.tz)
         for p in list_projects(conn)
-        if source_picked(p, "claude")
+        if source_picked(p, source)
     ]
     if not starts:
         return default
@@ -371,11 +411,47 @@ def _transcript_cutoff(conn: apsw.Connection, settings: Settings, now: datetime)
     return min(s.timestamp() for s in starts if s is not None)
 
 
+def refresh_file(
+    conn: apsw.Connection,
+    path: Path,
+    st: os.stat_result,
+    backend: str,
+    parse: Callable[[Iterable[bytes], SessionSummary], SessionSummary] = parse_lines,
+) -> tuple[SessionSummary, bool] | None:
+    """The file's stored summary brought up to date, and whether any of it was read; `None` when
+    unreadable. Resumes from the stored byte offset; a new, unreadable-state or shrunk file starts over."""
+    abs_path = str(path.absolute())
+    key = f"scan:{abs_path}"
+    state = get_state(conn, key)
+    stored = _stored_summary(state)
+    if stored is not None and state["size"] == st.st_size and state["mtime"] == st.st_mtime:
+        return stored, False
+    if stored is not None and st.st_size >= state["offset"]:
+        offset, summary = state["offset"], stored
+    else:  # new file, unreadable state, or truncated below what was read: start over
+        offset, summary = 0, SessionSummary(transcript_path=abs_path, backend=backend)
+    try:
+        summary, consumed = _read_from(path, offset, summary, parse)
+    except OSError:
+        return None
+    set_state(
+        conn,
+        key,
+        {
+            "offset": offset + consumed,
+            "size": st.st_size,
+            "mtime": st.st_mtime,
+            "summary": summary.model_dump(mode="json"),
+        },
+    )
+    return summary, True
+
+
 def _refresh_summaries(
     conn: apsw.Connection, settings: Settings, now: datetime
 ) -> tuple[int, int, list[tuple[SessionSummary, float]]]:
     """Update each recent transcript's stored summary; returns (seen, read, summaries)."""
-    cutoff = _transcript_cutoff(conn, settings, now)
+    cutoff = transcript_cutoff(conn, settings, now)
     files_seen = files_read = 0
     summaries: list[tuple[SessionSummary, float]] = []
     for backend, root in transcript_roots(settings):
@@ -387,37 +463,15 @@ def _refresh_summaries(
             if cutoff is not None and st.st_mtime < cutoff:
                 continue
             files_seen += 1
-            abs_path = str(path.absolute())
-            key = f"scan:{abs_path}"
-            state = get_state(conn, key)
-            stored = _stored_summary(state)
-            if stored is not None and state["size"] == st.st_size and state["mtime"] == st.st_mtime:
-                summaries.append((stored, st.st_mtime))
+            refreshed = refresh_file(conn, path, st, backend)
+            if refreshed is None:
                 continue
-            if stored is not None and st.st_size >= state["offset"]:
-                offset, summary = state["offset"], stored
-            else:  # new file, unreadable state, or truncated below what was read: start over
-                offset, summary = 0, SessionSummary(transcript_path=abs_path, backend=backend)
-            try:
-                summary, consumed = _read_from(path, offset, summary)
-            except OSError:
-                continue
-            files_read += 1
-            set_state(
-                conn,
-                key,
-                {
-                    "offset": offset + consumed,
-                    "size": st.st_size,
-                    "mtime": st.st_mtime,
-                    "summary": summary.model_dump(mode="json"),
-                },
-            )
-            summaries.append((summary, st.st_mtime))
+            files_read += refreshed[1]
+            summaries.append((refreshed[0], st.st_mtime))
     return files_seen, files_read, summaries
 
 
-def _session_signals(
+def session_signals(
     conn: apsw.Connection,
     settings: Settings,
     summaries: list[tuple[SessionSummary, float]],
@@ -453,7 +507,7 @@ def _session_signals(
                 kind="session",
                 t_start=summary.t_start or seen,
                 t_end=summary.t_end or seen,
-                dedupe_key=f"claude_session:{session_id}",
+                dedupe_key=f"{source}_session:{session_id}",
                 payload={
                     "session_id": session_id,
                     "cwd": summary.cwd,
@@ -491,7 +545,7 @@ def scan_transcripts(conn: apsw.Connection, settings: Settings, *, now: datetime
     """
     with conn:
         files_seen, files_read, summaries = _refresh_summaries(conn, settings, now)
-        signals, live = _session_signals(conn, settings, summaries, now)
+        signals, live = session_signals(conn, settings, summaries, now)
         written = upsert_signals(conn, signals)
     return ScanReport(
         files_seen=files_seen, files_read=files_read, signals_written=written, live=live

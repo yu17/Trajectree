@@ -98,3 +98,16 @@ def test_ensure_cfg_dirs_creates_private_ssh_dir(settings):
     ensure_cfg_dirs(settings)
     ssh = settings.run_home / ".ssh"
     assert ssh.is_dir() and ssh.stat().st_mode & 0o777 == 0o700
+
+
+def test_codex_sessions_root_from_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("TRAJECTREE_DATA_DIR", str(tmp_path / "d"))
+    monkeypatch.setenv("TRAJECTREE_CODEX_SESSIONS", str(tmp_path / "sessions"))
+    assert load_settings().codex_sessions_root == tmp_path / "sessions"
+    monkeypatch.setenv("TRAJECTREE_CODEX_SESSIONS", "")  # empty disables
+    assert load_settings().codex_sessions_root is None
+    monkeypatch.delenv("TRAJECTREE_CODEX_SESSIONS")
+    monkeypatch.setenv("HOME", str(tmp_path))  # unset: the default only if it is a directory
+    assert load_settings().codex_sessions_root is None
+    (tmp_path / ".codex" / "sessions").mkdir(parents=True)
+    assert load_settings().codex_sessions_root == tmp_path / ".codex" / "sessions"

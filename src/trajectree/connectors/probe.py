@@ -15,6 +15,7 @@ from pydantic import AwareDatetime, BaseModel
 
 from trajectree.config import Settings
 from trajectree.connectors.claude_sessions import project_transcripts
+from trajectree.connectors.codex_sessions import project_codex_sessions
 from trajectree.connectors.folders import scan_folder_capped
 from trajectree.connectors.local_git import discover_remotes
 from trajectree.connectors.paths import to_local
@@ -127,6 +128,16 @@ def _probe_claude(settings: Settings, host_path: str, registered: list[str]) -> 
     return SourceProbe(source="claude", count=len(found.sessions), oldest=min(starts, default=None), detail=detail)
 
 
+def _probe_codex(settings: Settings, host_path: str, registered: list[str]) -> SourceProbe:
+    root = settings.codex_sessions_root
+    if root is None or not root.is_dir():
+        return SourceProbe(source="codex", count=0, oldest=None, detail="not connected")
+    found = project_codex_sessions(settings, host_path, registered=[*registered, host_path])
+    starts = [s.t_start for s in found.sessions if s.t_start is not None]
+    detail = f"at least {len(found.sessions)} sessions" if found.capped else ""
+    return SourceProbe(source="codex", count=len(found.sessions), oldest=min(starts, default=None), detail=detail)
+
+
 def _probe_folder(settings: Settings, host_path: str) -> SourceProbe:
     local = to_local(settings, host_path)
     if not local.is_dir():
@@ -152,7 +163,7 @@ def probe_folder(
     probes = {
         "git": _probe_git(settings, host_path),
         "claude": _probe_claude(settings, host_path, state.registered),
-        "codex": SourceProbe(source="codex", count=0, oldest=None, detail="not connected"),
+        "codex": _probe_codex(settings, host_path, state.registered),
         "folder": _probe_folder(settings, host_path),
     }
     record: ImportRecord | None = import_record(state.project) if state.project else None

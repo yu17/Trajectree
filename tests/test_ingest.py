@@ -256,3 +256,14 @@ def test_ingest_slurm_window_is_incremental(ledger, human, settings, tmp_path, m
     third = later + timedelta(minutes=20)
     run_ingest(ledger, s, now=third)
     assert since_arg() == (later - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def test_run_ingest_scans_codex_sessions(ledger, human, settings, tmp_path):
+    from tests.test_codex_sessions import BASIC, SID as CODEX_SID, install
+
+    s, _ = install(settings, tmp_path, BASIC)
+    p = create_project(ledger, human, ProjectIn(slug="proj", title="Proj", kind="research"))
+    upsert_resource(ledger, human, ResourceIn(project_id=p.id, kind="folder", locator="/home/u/proj"))
+    report = run_ingest(ledger, s, now=datetime.now(UTC))
+    assert report.scan.files_seen == 1 and report.scan.signals_written == 1
+    assert [x["session_id"] for x in get_state(ledger.conn, "live_sessions")] == [CODEX_SID]

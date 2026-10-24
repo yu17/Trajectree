@@ -13,6 +13,7 @@ from pydantic import AwareDatetime, BaseModel
 
 from trajectree.config import Settings
 from trajectree.connectors.claude_sessions import ScanReport, scan_transcripts, transcript_roots
+from trajectree.connectors.codex_sessions import scan_codex
 from trajectree.connectors.folders import (
     FoldersReport,
     collect_folders,
@@ -108,9 +109,16 @@ def run_ingest(ledger: Ledger, settings: Settings, *, now: datetime | None = Non
         exports_errors: list[str] = []
         failure: Exception | None = None
         try:
-            if transcript_roots(settings):
+            if transcript_roots(settings) or settings.codex_sessions_root is not None:
                 with ledger.locked() as conn:
                     scan = scan_transcripts(conn, settings, now=now)
+                    codex_scan = scan_codex(conn, settings, now=now)
+                scan = ScanReport(
+                    files_seen=scan.files_seen + codex_scan.files_seen,
+                    files_read=scan.files_read + codex_scan.files_read,
+                    signals_written=scan.signals_written + codex_scan.signals_written,
+                    live=[*scan.live, *codex_scan.live],
+                )
             # git runs between two locked phases, never while the lock is held
             with ledger.locked() as conn:
                 git_resources, git_starts = _chosen(

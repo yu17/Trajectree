@@ -41,7 +41,7 @@ def registered_folders(conn: apsw.Connection) -> list[str]:
 
 
 def _protected_roots(settings: Settings) -> list[Path]:
-    roots = [settings.data_dir, settings.cfg_root, settings.claude_home, settings.backends_root]
+    roots = [settings.data_dir, settings.cfg_root, settings.claude_home, settings.backends_root, settings.codex_sessions_root]
     return [root.resolve() for root in roots if root is not None]
 
 

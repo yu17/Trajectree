@@ -51,3 +51,12 @@ def test_env_example_names_every_template_variable():
     example = (ROOT / "deploy/env.example").read_text()
     missing = {n for n in names if not re.search(rf"^{n}=", example, re.MULTILINE)}
     assert not missing
+
+
+@pytest.mark.parametrize("path", ["compose.yaml", "deploy/compose.yaml"])
+def test_template_mounts_codex_sessions(path):
+    svc = _load(path)["services"]["trajectree"]
+    assert "${HOME}/.codex/sessions:/host/codex/sessions:ro" in svc["volumes"]
+    assert svc["environment"]["TRAJECTREE_CODEX_SESSIONS"] == "/host/codex/sessions"
+    # only the transcripts: never the Codex home with auth.json and config.toml
+    assert not any(v.startswith("${HOME}/.codex:") or v.startswith("${HOME}/.codex/auth") for v in svc["volumes"])

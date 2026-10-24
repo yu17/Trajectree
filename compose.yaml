@@ -11,10 +11,12 @@ services:
       - ./cfg:/cfg
       - ${HOME}/.claude/projects:/host/claude/projects:ro
       - ${HOME}/.config/claude-backends:/host/claude-backends:ro
+      - ${HOME}/.codex/sessions:/host/codex/sessions:ro
       - ${TRAJECTREE_PROJECTS_ROOT:?set TRAJECTREE_PROJECTS_ROOT to the folder that holds your project folders}:/projects:ro
     environment:
       TRAJECTREE_CLAUDE_HOME: /host/claude
       TRAJECTREE_BACKENDS_ROOT: /host/claude-backends
+      TRAJECTREE_CODEX_SESSIONS: /host/codex/sessions
       TRAJECTREE_PATH_MAP: ${TRAJECTREE_PROJECTS_ROOT}=/projects
       TRAJECTREE_CFG_DIR: /cfg
       HOME: /cfg/home

@@ -121,7 +121,7 @@ def test_transcript_file_cap_and_unpicked_backends(settings, tmp_path, monkeypat
     codex = settings.model_copy(update={"claude_home": home})
     reads = []
     real = cs._read_from
-    monkeypatch.setattr(cs, "_read_from", lambda path, off, acc: (reads.append(path.name), real(path, off, acc))[1])
+    monkeypatch.setattr(cs, "_read_from", lambda path, off, acc, *rest: (reads.append(path.name), real(path, off, acc, *rest))[1])
     cutoff = {"claude": datetime(2025, 1, 1, tzinfo=timezone.utc)}
     got = project_transcripts(codex, "/work/a", registered=["/work/a"], before_by_source=cutoff, max_files=2)
     assert got.capped is True and len(got.sessions) == 2 and sorted(reads) == ["s3.jsonl", "s4.jsonl"]  # newest files

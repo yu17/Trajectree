@@ -132,3 +132,19 @@ def test_never_whole_data_or_cfg(ledger, human, settings, tmp_path, runner, back
     for p in [*paths.ro, *paths.rw]:
         assert p not in (s.data_dir, s.cfg_root)
         assert not p.is_relative_to(claude_home) and not p.is_relative_to(backends_root)
+
+
+@pytest.mark.parametrize("where", ["at", "above", "below"])
+def test_codex_sessions_root_is_never_granted(ledger, human, settings, tmp_path, where):
+    codex_home = tmp_path / "codex-home"
+    sessions = codex_home / "sessions"
+    (sessions / "2026").mkdir(parents=True)
+    (tmp_path / "proj").mkdir()
+    s = settings.model_copy(update={"codex_sessions_root": sessions})
+    _folder(ledger, human, "a", {"at": sessions, "above": codex_home, "below": sessions / "2026"}[where])
+    _folder(ledger, human, "b", tmp_path / "proj")
+    paths = _paths(ledger, s, tmp_path)
+    granted = _granted(paths)
+    assert (tmp_path / "proj").resolve() in granted
+    for p in granted:
+        assert not p.is_relative_to(sessions) and not sessions.is_relative_to(p)
