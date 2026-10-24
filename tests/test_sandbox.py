@@ -148,3 +148,19 @@ def test_codex_sessions_root_is_never_granted(ledger, human, settings, tmp_path,
     assert (tmp_path / "proj").resolve() in granted
     for p in granted:
         assert not p.is_relative_to(sessions) and not sessions.is_relative_to(p)
+
+
+@pytest.mark.parametrize("runner,backend", [("claude", "claude"), ("codex", "codex"), ("ccx:kimi", "kimi")])
+def test_daemon_secrets_are_never_granted(ledger, human, settings, tmp_path, runner, backend):
+    from trajectree.runner.credentials import OAUTH_FILE, store_oauth_token
+
+    token = store_oauth_token(settings, "oat-secret")
+    assert token == settings.secrets_dir / OAUTH_FILE
+    # even a folder registered at, above or below the secrets dir
+    for slug, folder in [("a", settings.secrets_dir), ("b", settings.cfg_root), ("c", tmp_path / "proj")]:
+        folder.mkdir(exist_ok=True)
+        _folder(ledger, human, slug, folder)
+    paths = _paths(ledger, settings, tmp_path, runner=runner, backend=backend, cwd=settings.secrets_dir)
+    for p in [*paths.ro, *paths.rw]:
+        assert not token.resolve().is_relative_to(p.resolve()), p
+        assert not p.resolve().is_relative_to(settings.secrets_dir.resolve()), p

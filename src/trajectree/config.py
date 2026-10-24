@@ -62,6 +62,11 @@ class Settings(BaseModel):
         return self.data_dir / "prompts"
 
     @property
+    def secrets_dir(self) -> Path:
+        """Daemon-owned runner secrets; outside every directory a run may read or write."""
+        return self.cfg_root / "secrets"
+
+    @property
     def claude_config_dir(self) -> Path:
         return self.cfg_root / "claude"
 

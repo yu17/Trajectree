@@ -24,12 +24,14 @@ from trajectree.config import Settings
 from trajectree.db.ledger import Ledger
 from trajectree.models import NO_MODEL_CHOSEN
 from trajectree.repo.state import get_state, set_state
-from trajectree.runner.credentials import load_oauth_token, profile_has_credentials
+from trajectree.runner.credentials import load_oauth_token, profile_has_credentials, read_profile
+from trajectree.runner.safe_io import MiB, read_regular
 from trajectree.timeutil import utcnow
 
 STATE_KEY = "models:catalog"
 BUILTIN_CLAUDE_MODELS = ("claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5")
 ANTHROPIC_MODELS_URL = "https://api.anthropic.com/v1/models?limit=1000"
+MODELS_CACHE_MAX_BYTES = 8 * MiB
 _PROFILE_KEY = re.compile(r"^(ANTHROPIC_MODEL|ANTHROPIC_DEFAULT_[A-Z]+_MODEL|CLAUDE_CODE_SUBAGENT_MODEL)$")
 
 Source = Literal["api", "cache", "profile", "builtin"]
@@ -98,7 +100,11 @@ def _codex(settings: Settings, now: datetime, which) -> RunnerCatalog:
     if which(settings.codex_bin) is None:
         return result([], "codex binary not found", available=False)
     try:
-        entries = json.loads((settings.codex_home / "models_cache.json").read_text())["models"]
+        # Codex runs write the Codex home: never follow a symlink or block on a FIFO there.
+        raw = read_regular(settings.codex_home / "models_cache.json", max_bytes=MODELS_CACHE_MAX_BYTES)
+        if raw is None:
+            raise FileNotFoundError("models_cache.json")
+        entries = json.loads(raw)["models"]
         if not isinstance(entries, list):
             raise ValueError("models is not a list")
     except (OSError, ValueError, KeyError, TypeError):
@@ -112,10 +118,7 @@ def _codex(settings: Settings, now: datetime, which) -> RunnerCatalog:
 
 
 def _profile_env(settings: Settings, name: str) -> dict[str, str]:
-    try:
-        env = json.loads((settings.backends_cfg_dir / name / "settings.json").read_text()).get("env")
-    except (OSError, ValueError, AttributeError):
-        return {}
+    env = (read_profile(settings.backends_cfg_dir / name / "settings.json") or {}).get("env")
     return {k: v for k, v in env.items() if isinstance(v, str)} if isinstance(env, dict) else {}
 
 

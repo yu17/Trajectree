@@ -1,4 +1,5 @@
 import json
+import os
 import stat
 from types import SimpleNamespace
 
@@ -7,6 +8,7 @@ import pytest
 from trajectree.runner.credentials import (
     cli_version,
     load_oauth_token,
+    migrate_oauth_token,
     profile_has_credentials,
     reset_version_cache,
     runner_status,
@@ -17,6 +19,8 @@ from trajectree.runner.credentials import (
 
 def test_store_and_load_oauth_token(settings):
     path = store_oauth_token(settings, " sk-ant-oat01-abc \n")
+    assert path == settings.secrets_dir / "claude_oauth_token"
+    assert not (settings.claude_config_dir / "oauth_token").exists()   # never where Claude runs write
     assert load_oauth_token(settings) == "sk-ant-oat01-abc"
     assert stat.S_IMODE(path.stat().st_mode) == 0o600 and stat.S_IMODE(path.parent.stat().st_mode) == 0o700
     assert json.loads((settings.claude_config_dir / ".claude.json").read_text()) == {"hasCompletedOnboarding": True}
@@ -110,3 +114,73 @@ def test_connector_tokens_roundtrip_and_validation(settings):
         store_connector_token(settings, "github", "  ")
     with pytest.raises(ValueError):
         store_connector_token(settings, "../x", "t")
+
+
+def test_migrates_a_regular_legacy_token_file(settings):
+    settings.claude_config_dir.mkdir(parents=True)
+    old = settings.claude_config_dir / "oauth_token"
+    old.write_text("sk-ant-old\n")
+    migrate_oauth_token(settings)
+    assert load_oauth_token(settings) == "sk-ant-old" and not os.path.lexists(old)
+    new = settings.secrets_dir / "claude_oauth_token"
+    assert stat.S_IMODE(new.stat().st_mode) == 0o600 and stat.S_IMODE(settings.secrets_dir.stat().st_mode) == 0o700
+    migrate_oauth_token(settings)   # nothing left to move
+    assert load_oauth_token(settings) == "sk-ant-old"
+
+
+def test_symlink_at_the_legacy_path_is_never_taken(settings):
+    owner = settings.data_dir / "token"
+    owner.parent.mkdir(parents=True)
+    owner.write_text("owner-token")
+    settings.claude_config_dir.mkdir(parents=True)
+    old = settings.claude_config_dir / "oauth_token"
+    old.symlink_to(owner)   # planted by a Claude run before the upgrade
+    migrate_oauth_token(settings)
+    assert load_oauth_token(settings) is None and not os.path.lexists(old) and owner.read_text() == "owner-token"
+    store_oauth_token(settings, "sk-ant-real")
+    old.symlink_to(owner)   # planted after the migration
+    migrate_oauth_token(settings)
+    assert load_oauth_token(settings) == "sk-ant-real" and not os.path.lexists(old)
+
+
+def test_load_refuses_a_symlinked_token(settings):
+    store_oauth_token(settings, "sk-ant-real")
+    owner = settings.data_dir / "token"
+    owner.parent.mkdir(parents=True)
+    owner.write_text("owner-token")
+    path = settings.secrets_dir / "claude_oauth_token"
+    path.unlink()
+    path.symlink_to(owner)
+    assert load_oauth_token(settings) is None
+
+
+def test_app_start_migrates_the_legacy_token(settings, ledger):
+    from trajectree.api.app import create_app
+
+    settings.claude_config_dir.mkdir(parents=True)
+    (settings.claude_config_dir / "oauth_token").write_text("sk-ant-old")
+    create_app(settings, ledger=ledger)
+    assert load_oauth_token(settings) == "sk-ant-old"
+    assert not (settings.claude_config_dir / "oauth_token").exists()
+
+
+def test_store_oauth_token_does_not_write_through_planted_symlinks(settings, tmp_path):
+    target = tmp_path / "elsewhere"
+    settings.claude_config_dir.mkdir(parents=True)
+    (settings.claude_config_dir / "settings.json").symlink_to(target)   # dangling: exists() is False
+    store_oauth_token(settings, "sk-ant-x")
+    assert not target.exists()
+
+
+def test_sync_backends_replaces_a_planted_symlink(settings, tmp_path):
+    owner = tmp_path / "owner-token"
+    owner.write_text("owner-token")
+    root = tmp_path / "backends"
+    (root / "kimi").mkdir(parents=True)
+    (root / "kimi" / "settings.json").write_text(json.dumps({"env": {"ANTHROPIC_AUTH_TOKEN": "k"}}))
+    s = settings.model_copy(update={"backends_root": root})
+    dest = s.backends_cfg_dir / "kimi"
+    dest.mkdir(parents=True)
+    (dest / "settings.json").symlink_to(owner)   # a ccx:kimi run can write its profile dir
+    assert sync_backends(s) == ["kimi"]
+    assert owner.read_text() == "owner-token" and not (dest / "settings.json").is_symlink()

@@ -21,7 +21,7 @@ from trajectree.runner.catalog import (
     resolve_model,
     store_catalog,
 )
-from trajectree.runner.credentials import store_oauth_token
+from trajectree.runner.credentials import profile_has_credentials, store_oauth_token
 from trajectree.timeutil import utcnow
 
 FOUND = lambda name: "/usr/bin/" + name
@@ -64,6 +64,26 @@ def test_codex_from_cache_hides_hidden(settings):
 def test_codex_missing_cache_error(settings):
     r = runner(discover_with(settings), "codex")
     assert r.models == [] and "codex login --device-auth" in r.error
+
+
+def test_codex_cache_symlink_to_a_secret_lists_nothing_from_it(settings, tmp_path):
+    secret = tmp_path / "secret.json"
+    secret.write_text(json.dumps({"models": [{"slug": "leaked-secret-model", "visibility": "list"}]}))
+    settings.codex_home.mkdir(parents=True)
+    (settings.codex_home / "models_cache.json").symlink_to(secret)
+    r = runner(discover_with(settings), "codex")
+    assert r.models == [] and "leaked-secret-model" not in r.model_dump_json()
+
+
+def test_ccx_profile_symlink_reads_no_credentials(settings, tmp_path):
+    secret = tmp_path / "elsewhere.json"
+    secret.write_text(json.dumps({"env": {"ANTHROPIC_API_KEY": "sk-elsewhere", "ANTHROPIC_MODEL": "leaked-model"}}))
+    d = settings.backends_cfg_dir / "evil"
+    d.mkdir(parents=True)
+    (d / "settings.json").symlink_to(secret)
+    r = runner(discover_with(settings), "ccx:evil")
+    assert not r.available and r.models == [] and "leaked-model" not in r.model_dump_json()
+    assert not profile_has_credentials(d / "settings.json")
 
 
 def test_missing_binary_lists_nothing(settings):

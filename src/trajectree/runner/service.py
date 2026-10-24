@@ -7,6 +7,7 @@ delivery run with no lock held.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -65,6 +66,7 @@ from trajectree.runner.kinds import (
 from trajectree.runner.launch import launch
 from trajectree.runner.parse import ParsedResult, parse_claude_json, parse_codex
 from trajectree.runner.routines import after_routine, finish_routine_run, retry_props, routine_cap
+from trajectree.runner.safe_io import MiB, read_regular
 from trajectree.runner.sandbox import registered_folders, run_paths, runner_cfg_dir
 from trajectree.runner.spec import (
     AlreadyApplied,
@@ -77,6 +79,7 @@ from trajectree.timeutil import parse_when_lenient, to_db, utcnow
 log = logging.getLogger("trajectree.runner")
 
 _TOKEN_RE = re.compile(r"trj_[A-Za-z0-9_-]+")  # our run tokens, wherever an error message echoes one
+LAST_MESSAGE_MAX_BYTES = MiB  # a larger Codex final message is refused, not truncated
 
 
 class RunService:
@@ -260,7 +263,8 @@ class RunService:
                 finally:
                     revoke_token(conn, token_id)
         finally:
-            mcp_path.unlink(missing_ok=True)
+            with contextlib.suppress(OSError):  # the run may have left a directory in its place
+                mcp_path.unlink(missing_ok=True)
             if tmp_dir is not None:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
         if done.kind != "routine":
@@ -378,8 +382,7 @@ class RunService:
             return self._fail(conn, run.id, wrapper_error, infra=True)
         try:
             if run.runner == "codex":
-                last = last_path.read_text(encoding="utf-8") if last_path.exists() else None
-                parsed = parse_codex(outcome.stdout, last)
+                parsed = parse_codex(outcome.stdout, _last_message(last_path))
             else:
                 parsed = parse_claude_json(outcome.stdout)
         except ValueError:
@@ -557,6 +560,17 @@ def _confine_error(outcome) -> str | None:
     else:
         return None
     return next((line for line in outcome.stderr_tail.splitlines() if line.startswith(prefix)), None)
+
+
+def _last_message(path: Path) -> str | None:
+    """Codex's final message file, read without following a symlink or blocking on a special
+    file the run left in its place; a refused file counts as no message (the run fails)."""
+    try:
+        data = read_regular(path, max_bytes=LAST_MESSAGE_MAX_BYTES)
+    except OSError as exc:
+        log.warning("ignoring %s: %s", path.name, exc.strerror or type(exc).__name__)
+        return None
+    return None if data is None else data.decode("utf-8", errors="replace")
 
 
 def _write_private(path, text: str) -> None:

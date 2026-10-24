@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -9,12 +10,18 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from trajectree.config import Settings
+from trajectree.runner.safe_io import MiB, read_regular, write_private
 
-OAUTH_FILE = "oauth_token"
+OAUTH_FILE = "claude_oauth_token"  # in settings.secrets_dir
+LEGACY_OAUTH_FILE = "oauth_token"  # in settings.claude_config_dir, which Claude runs may write
 CONNECTOR_NAMES = ("github", "gitlab", "chatmaid")
 _BACKEND_KEYS = ("env", "model", "apiKeyHelper")
+_TOKEN_MAX_BYTES = 64 * 1024
+PROFILE_MAX_BYTES = MiB
 
 _versions: dict[str, str | None] = {}
+
+log = logging.getLogger("trajectree.runner")
 
 
 def _private_dir(path: Path) -> None:
@@ -22,16 +29,10 @@ def _private_dir(path: Path) -> None:
     path.chmod(0o700)
 
 
-def _write_secret(path: Path, data: bytes) -> None:
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as f:
-        f.write(data)
-    path.chmod(0o600)
-
-
 def ensure_cfg_dirs(settings: Settings) -> None:
     for d in (
         settings.cfg_root,
+        settings.secrets_dir,
         settings.claude_config_dir,
         settings.run_home,
         settings.backends_cfg_dir,
@@ -40,29 +41,56 @@ def ensure_cfg_dirs(settings: Settings) -> None:
         _private_dir(d)
 
 
+def _read_token(path: Path) -> str | None:
+    try:
+        data = read_regular(path, max_bytes=_TOKEN_MAX_BYTES)
+    except OSError:
+        return None
+    token = data.decode("utf-8", errors="replace").strip() if data is not None else ""
+    return token or None
+
+
 def store_oauth_token(settings: Settings, token: str) -> Path:
+    """Store the Claude OAuth token in the secrets dir, which no run may read or write."""
     token = token.strip()
     if not token:
         raise ValueError("empty token")
     ensure_cfg_dirs(settings)
-    path = settings.claude_config_dir / OAUTH_FILE
-    _write_secret(path, token.encode())
+    path = settings.secrets_dir / OAUTH_FILE
+    write_private(path, token.encode())
     for name, content in (
         ("settings.json", "{}"),
         (".claude.json", json.dumps({"hasCompletedOnboarding": True})),
     ):
         target = settings.claude_config_dir / name
-        if not target.exists():
-            _write_secret(target, content.encode())
+        if not os.path.lexists(target):
+            write_private(target, content.encode())
     return path
 
 
-def load_oauth_token(settings: Settings) -> str | None:
+def migrate_oauth_token(settings: Settings) -> None:
+    """Move a token stored by an earlier version inside the Claude config dir (which Claude runs
+    may write) to the secrets dir. Only a regular file is taken: a run may have planted a
+    symlink there. The old entry is removed either way; a token already in the secrets dir wins."""
+    old = settings.claude_config_dir / LEGACY_OAUTH_FILE
+    if not os.path.lexists(old):
+        return
+    new = settings.secrets_dir / OAUTH_FILE
+    token = _read_token(old)
+    if token is None:
+        log.warning("ignoring %s: not a regular token file", old)
+    elif not new.exists():
+        _private_dir(settings.cfg_root)
+        _private_dir(settings.secrets_dir)
+        write_private(new, token.encode())
     try:
-        token = (settings.claude_config_dir / OAUTH_FILE).read_text().strip()
-    except OSError:
-        return None
-    return token or None
+        old.unlink()
+    except OSError as exc:
+        log.warning("could not remove %s: %s", old, exc.strerror or type(exc).__name__)
+
+
+def load_oauth_token(settings: Settings) -> str | None:
+    return _read_token(settings.secrets_dir / OAUTH_FILE)
 
 
 def store_connector_token(settings: Settings, name: str, token: str) -> Path:
@@ -75,7 +103,7 @@ def store_connector_token(settings: Settings, name: str, token: str) -> Path:
     _private_dir(settings.cfg_root)
     _private_dir(settings.connectors_dir)
     path = settings.connectors_dir / f"{name}_token"
-    _write_secret(path, token.encode())
+    write_private(path, token.encode())
     return path
 
 
@@ -89,12 +117,19 @@ def load_connector_token(settings: Settings, name: str) -> str | None:
     return token or None
 
 
-def profile_has_credentials(settings_json: Path) -> bool:
+def read_profile(settings_json: Path) -> dict | None:
+    """A synced backend profile's settings, read safely: ccx runs may write their profile dir."""
     try:
-        data = json.loads(settings_json.read_text())
+        raw = read_regular(settings_json, max_bytes=PROFILE_MAX_BYTES)
+        data = json.loads(raw) if raw is not None else None
     except (OSError, ValueError):
-        return False
-    if not isinstance(data, dict):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def profile_has_credentials(settings_json: Path) -> bool:
+    data = read_profile(settings_json)
+    if data is None:
         return False
     env = data.get("env")
     if isinstance(env, dict) and (env.get("ANTHROPIC_AUTH_TOKEN") or env.get("ANTHROPIC_API_KEY")):
@@ -125,9 +160,9 @@ def sync_backends(settings: Settings) -> list[str]:
             onboarding_bytes = onboarding.read_bytes() if onboarding.is_file() else None
             _private_dir(settings.backends_cfg_dir)
             _private_dir(dest)
-            _write_secret(dest / "settings.json", settings_bytes)
+            write_private(dest / "settings.json", settings_bytes)
             if onboarding_bytes is not None:
-                _write_secret(dest / ".claude.json", onboarding_bytes)
+                write_private(dest / ".claude.json", onboarding_bytes)
         except (OSError, ValueError):
             continue
         names.append(profile.name)

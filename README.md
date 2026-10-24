@@ -261,8 +261,9 @@ trajectree login          # paste the token when asked
 trajectree runner status  # shows whether the runner is ready
 ```
 
-The token is stored in `./cfg` (`/cfg/claude/oauth_token` in the container),
-never in `./data`. To run through your ccx backends (`CLAUDE_CONFIG_DIR=<profile>
+The token is stored in `./cfg` (`/cfg/secrets/claude_oauth_token` in the
+container, a 0700 directory no run may read or write), never in `./data`. A token
+an earlier version kept at `/cfg/claude/oauth_token` is moved there on start. To run through your ccx backends (`CLAUDE_CONFIG_DIR=<profile>
 claude ...`), run `trajectree backends sync`: it copies each backend's
 `.claude.json` and the `env`, `model` and `apiKeyHelper` keys of its
 `settings.json` (nothing else, so no hooks, permissions or status line) from
@@ -528,7 +529,7 @@ with `--model` (add `--runner codex` when another runner offers the same name).
 | Where | What |
 | --- | --- |
 | Container, `./data` | `trajectree.db`, `token`, `exports/` (project summaries), `runs/*.log` and `runs/<run_id>/` (run logs and working files, with the run's `HOME` in `runs/<run_id>/home/`; `runs/<run_id>/mcp.json` holds the run's MCP token, 0600, only while the run is running), `prompts/*.md` (editable prompts) |
-| Container, `./cfg` (`/cfg`) | Claude Code config for the runner, `claude/oauth_token`, `claude/settings.json`, `claude/.claude.json`, backend profile copies in `backends/<name>/`, `home/` (the daemon's home, for ssh and Chromium), `codex/` |
+| Container, `./cfg` (`/cfg`) | `secrets/claude_oauth_token` (0600 in a 0700 directory that no run is granted), Claude Code config for the runner in `claude/` (`settings.json`, `.claude.json`; Claude runs may write here), backend profile copies in `backends/<name>/`, `home/` (the daemon's home, for ssh and Chromium), `codex/` |
 | Container, `./cfg/connectors/` | `<name>_token` for `github`, `gitlab` and `chatmaid` (0600), written by `trajectree connectors login` |
 | Container, `./data/exports/reports/` | `<id>.md`, `<id>.html`, `<id>.pdf`, `<id>.pptx`, written on export |
 | Container, `./cfg/home/.ssh/` | `known_hosts`: the Slurm login node's host key, accepted on first connect |

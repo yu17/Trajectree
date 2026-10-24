@@ -860,3 +860,42 @@ def test_model_with_suffix_passes_verbatim(ledger, settings):
     s.execute(run.id)
     argv = seen["argv"]
     assert argv[argv.index("--model") + 1] == "deepseek-flash[1m]"
+
+
+# -- files a confined run may replace (S1) ----------------------------------------------------
+
+
+def _codex_planting(plant):
+    """A launch that, like a Codex run with a shell, leaves `plant(last_md)` in its run dir."""
+    def fake(argv, *, log_path, **kw):
+        plant(Path(argv[argv.index("-o") + 1]))
+        log_path.write_text("")
+        return RunOutcome(exit_code=0, timed_out=False, stdout="", stderr_tail="", log_path=str(log_path), duration_ms=1)
+    return fake
+
+
+def test_codex_last_message_symlink_to_a_secret_is_not_read(ledger, settings):
+    secret = settings.data_dir / "token"
+    secret.parent.mkdir(parents=True, exist_ok=True)
+    secret.write_text("owner-secret-token")
+    s = RunService(ledger, settings, launch=_codex_planting(lambda p: p.symlink_to(secret)),
+                   version=lambda b: None, base_env={"PATH": os.environ["PATH"]})
+    run = s.execute(s.enqueue(AskRequest(question="q", model="gpt-6.1-sol")).id)
+    assert run.status == "failed" and run.error == "no last message"
+    assert "owner-secret-token" not in json.dumps(run.model_dump(mode="json"))
+
+
+def test_codex_last_message_fifo_returns_promptly(ledger, settings):
+    import time
+    s = RunService(ledger, settings, launch=_codex_planting(os.mkfifo),
+                   version=lambda b: None, base_env={"PATH": os.environ["PATH"]})
+    t0 = time.monotonic()
+    run = s.execute(s.enqueue(AskRequest(question="q", model="gpt-6.1-sol")).id)
+    assert run.status == "failed" and time.monotonic() - t0 < 5
+
+
+def test_codex_regular_last_message_is_the_result(ledger, settings):
+    s = RunService(ledger, settings, launch=_codex_planting(lambda p: p.write_text('{"answer": "A", "proposals": []}')),
+                   version=lambda b: None, base_env={"PATH": os.environ["PATH"]})
+    run = s.execute(s.enqueue(AskRequest(question="q", model="gpt-6.1-sol")).id)
+    assert run.status == "ok" and run.result_md == "A"

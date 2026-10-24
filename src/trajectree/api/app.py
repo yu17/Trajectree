@@ -39,6 +39,7 @@ from trajectree.mcpserver.server import build_mcp
 from trajectree.repo import DuplicateEdge, DuplicateRoutine, DuplicateSlug, InvalidRange, NotFound, UnknownProject, UnknownSession
 from trajectree.repo.routines import disable_modelless_routines
 from trajectree.runner.catalog import ModelChoiceError, load_catalog
+from trajectree.runner.credentials import migrate_oauth_token
 from trajectree.runner.seeds import ensure_inbox_project, ensure_seed_routines
 from trajectree.runner.service import RunService
 from trajectree.runner.spec import AlreadyApplied, RunsPaused
@@ -91,6 +92,7 @@ def _error_handler(status: int):
 
 def create_app(settings: Settings, *, ledger: Ledger | None = None) -> FastAPI:
     token = ensure_token(settings)
+    migrate_oauth_token(settings)  # out of the Claude config dir, which Claude runs may write
     if ledger is None:
         ledger = Ledger(open_db(settings.db_path))
 
