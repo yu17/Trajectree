@@ -22,9 +22,9 @@ trap cleanup EXIT
 echo "smoke: building $image (app target, INSTALL_CODEX=1)"
 docker build --quiet --target app --build-arg INSTALL_CODEX=1 -t "$image" "$repo" >/dev/null
 
-mkdir -p "$work/data" "$work/cfg/claude" "$work/cfg/codex" "$work/projects/demo"
+mkdir -p "$work/data" "$work/cfg/secrets" "$work/cfg/codex" "$work/projects/demo"
 echo "fake-owner-token-5f1c" > "$work/data/token"
-echo "fake-oauth-token-9a2e" > "$work/cfg/claude/oauth_token"
+echo "fake-oauth-token-9a2e" > "$work/cfg/secrets/claude_oauth_token"
 echo "readable project file 7d3b" > "$work/projects/demo/readme"
 cat > "$work/cfg/codex/config.toml" <<'EOF'
 model_provider = "mock"
@@ -67,7 +67,7 @@ out=$(docker run --rm \
     -v "$repo/tests/bin:/opt/smoke:ro" \
     -e CODEX_HOME=/cfg/codex -e HOME=/cfg/codex \
     -e MOCK_WORKDIR=/projects/demo \
-    -e MOCK_CMD="cat /projects/demo/readme; cat /data/token; cat /cfg/claude/oauth_token; cat /proc/1/root/data/token; echo end" \
+    -e MOCK_CMD="cat /projects/demo/readme; cat /data/token; cat /cfg/secrets/claude_oauth_token; cat /proc/1/root/data/token; echo end" \
     --entrypoint sh "$image" -c "$inside") || true
 
 if [ -n "${SMOKE_VERBOSE:-}" ]; then echo "$out"; fi
@@ -78,7 +78,7 @@ fail() {
 }
 grep -q "readable project file 7d3b" <<<"$out" || fail "project file not readable"
 grep -q "cat: /data/token: Permission denied" <<<"$out" || fail "owner token not denied"
-grep -q "/cfg/claude/oauth_token: Permission denied" <<<"$out" || fail "Claude OAuth token not denied"
+grep -q "/cfg/secrets/claude_oauth_token: Permission denied" <<<"$out" || fail "Claude OAuth token not denied"
 grep -q "/proc/1/root/data/token: Permission denied" <<<"$out" || fail "/proc/1/root escape not denied"
 if grep -q -e "fake-owner-token-5f1c" -e "fake-oauth-token-9a2e" <<<"$out"; then
     fail "a secret leaked"
