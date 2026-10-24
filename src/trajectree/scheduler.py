@@ -174,7 +174,9 @@ class Scheduler:
                         self._abandon(run.id, "routine disabled")
                         continue
                 try:
-                    # Same projects, runner and model as the failed attempt.
+                    # The failed attempt's request again. A cron fire names no model, so its retry
+                    # resolves the routine's current stored runner and model, not the failed run's;
+                    # a model named in the request (a manual run) is kept.
                     request = RoutineRequest.model_validate(
                         {**run.props.get("request", {}), "routine": run.routine_id,
                          "attempt": run.attempt + 1, "reason": "retry"}

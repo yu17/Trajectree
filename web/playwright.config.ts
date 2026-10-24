@@ -30,6 +30,7 @@ export default defineConfig({
       TRAJECTREE_INGEST_EVERY: "0",
       TRAJECTREE_CLAUDE_HOME: "",
       TRAJECTREE_BACKENDS_ROOT: "",
+      TRAJECTREE_CODEX_SESSIONS: "", // never the developer's real Codex rollouts
       TRAJECTREE_CLAUDE_BIN: path.resolve(import.meta.dirname,"../tests/bin/fake-claude"),
       // Runs are confined: fake-claude and the repo's interpreter live outside the system dirs.
       TRAJECTREE_CONFINE_EXTRA_RO: [

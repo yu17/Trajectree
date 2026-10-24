@@ -16,7 +16,9 @@ curl -fsSL https://raw.githubusercontent.com/yu17/Trajectree/main/deploy/env.exa
 
 # 2. Create data and cfg yourself (Docker would make them root-owned), keep cfg
 #    private, then fill in .env (at least TRAJECTREE_PROJECTS_ROOT, UID and GID).
+#    Create the host folders the container mounts too, for the same reason.
 mkdir -p data cfg && chmod 700 cfg
+mkdir -p ~/.claude/projects ~/.config/claude-backends ~/.codex/sessions
 
 # 3. Build and start, then give the host CLI the token.
 docker compose up -d --build
@@ -31,7 +33,9 @@ trajectree login
 docker compose exec -e CODEX_HOME=/cfg/codex trajectree codex login --device-auth
 trajectree backends sync
 
-# 6. Refresh the model catalog, then connect a project folder.
+# 6. Refresh the model catalog, then connect a project folder. If Codex lists
+#    no models yet, start one run with --runner codex --model <slug>, then
+#    refresh again (see Codex below).
 trajectree models --refresh
 trajectree init-project <folder>
 ```
@@ -44,12 +48,21 @@ The `compose.yaml` at the repository root is the development stack. It is named
 `trajectree-dev`, publishes port 8743 on 127.0.0.1 and builds from the working
 tree, so it cannot replace a running instance.
 
+Its state lives outside the checkout, in `$TRAJECTREE_DEV_STATE` (default
+`~/.local/share/trajectree-dev`), as `data/` and `cfg/`. Never keep state inside
+the checkout: the checkout usually sits under `TRAJECTREE_PROJECTS_ROOT`, and if
+the Trajectree repository is registered as a project, an instance's runs could
+read the development stack's tokens there.
+
 ```bash
-# Create the data and cfg dirs yourself first: if Docker creates them, they are
-# root-owned and the non-root container cannot write to them. cfg holds the
-# runner's credentials, so keep it private to you. UID/GID are not exported by
-# bash by default, so `export UID GID=$(id -g)` or put them in a .env file.
-mkdir -p data cfg && chmod 700 cfg
+# Create the state dirs and the mounted host folders yourself first: if Docker
+# creates them, they are root-owned and the non-root container cannot write to
+# them. cfg holds the runner's credentials, so keep it private to you. UID/GID
+# are not exported by bash by default, so `export UID GID=$(id -g)` or put them
+# in a .env file.
+export TRAJECTREE_DEV_STATE=$HOME/.local/share/trajectree-dev
+mkdir -p "$TRAJECTREE_DEV_STATE/data" "$TRAJECTREE_DEV_STATE/cfg" && chmod 700 "$TRAJECTREE_DEV_STATE/cfg"
+mkdir -p ~/.claude/projects ~/.config/claude-backends ~/.codex/sessions
 
 # Folder that holds your project folders; mounted read-only at /projects.
 # docker compose refuses to start while this is unset.
@@ -59,8 +72,10 @@ docker compose up -d --build
 # Login URL (open it in a browser; replace 0.0.0.0 with 127.0.0.1)
 docker compose logs trajectree | grep ready
 
-# Host CLI and MCP shim token
-mkdir -p ~/.config/trajectree && cp data/token ~/.config/trajectree/token
+# Point the host CLI at the dev stack for this shell only. Never copy the dev
+# token over ~/.config/trajectree/token: that file is the instance's.
+export TRAJECTREE_URL=http://127.0.0.1:8743
+export TRAJECTREE_TOKEN=$(cat "$TRAJECTREE_DEV_STATE/data/token")
 ```
 
 The container runs as a non-root user with a read-only root filesystem, and
@@ -68,13 +83,17 @@ publishes its port on 127.0.0.1 only (8742 for an instance, 8743 for the
 development stack). It mounts `~/.claude/projects` (only the
 transcripts, not the rest of the Claude home), `~/.config/claude-backends`,
 `~/.codex/sessions` (only the Codex rollouts, never `auth.json` or `config.toml`) and
-`$TRAJECTREE_PROJECTS_ROOT` read-only, `./data` read-write, and `./cfg`
-read-write at `/cfg` for the runner's Claude Code config and credentials.
+`$TRAJECTREE_PROJECTS_ROOT` read-only, the data dir read-write at `/data`, and
+the cfg dir read-write at `/cfg` for the runners' config and credentials
+(`./data` and `./cfg` in an instance directory; `$TRAJECTREE_DEV_STATE/data`
+and `/cfg` for the development stack).
 The image includes Claude Code (installed natively, auto-update disabled).
 
 The `trajectree` CLI and the `trajectree mcp` shim run on the host. Install
-them with `uv tool install .` (or `uv sync` and `uv run trajectree`). They talk
-to `http://127.0.0.1:8742` and read the token from `~/.config/trajectree/token`.
+them with `uv tool install .` (or `uv sync` and `uv run trajectree`). By default
+they talk to the instance at `http://127.0.0.1:8742` and read the token from
+`~/.config/trajectree/token`; `TRAJECTREE_URL` and `TRAJECTREE_TOKEN` override
+both (the development stack is `http://127.0.0.1:8743`, see above).
 
 ## Connect a project folder
 
@@ -524,19 +543,24 @@ The Settings tab shows:
 
 ## Codex
 
-The image does not include Codex unless you ask for it:
+The instance template builds the image with Codex (`INSTALL_CODEX: "1"` in
+`deploy/compose.yaml`): the pinned release (`CODEX_VERSION`, 0.163.0, checked
+against `CODEX_SHA256`) at `/opt/codex/bin/codex`, where `TRAJECTREE_CODEX_BIN`
+points. Log Codex in inside the container, so its credentials live only in
+`cfg/codex/` (never copy or share the host's `~/.codex/auth.json`):
 
 ```bash
-docker compose build --build-arg INSTALL_CODEX=1
-docker compose up -d
+docker compose exec -e CODEX_HOME=/cfg/codex trajectree codex login --device-auth
+trajectree models --refresh
 ```
 
-This installs the pinned Codex release (`CODEX_VERSION`, 0.163.0, checked
-against `CODEX_SHA256`; override both together with `--build-arg`) at
-`/opt/codex/bin/codex`. `TRAJECTREE_CODEX_BIN` points there in every image,
-which is harmless without Codex: it is only used when a run picks codex. Copy
-your Codex `auth.json` to `cfg/codex/auth.json`, then pick one of its models
-with `--model` (add `--runner codex` when another runner offers the same name).
+Codex lists its models from the model cache it writes in `cfg/codex/`. If
+`trajectree models` shows none for codex yet (`no model cache yet`), start one
+run with `--runner codex --model <slug>`: a logged-in Codex is available even
+without the cache, so the run goes ahead (with a warning that the model is not
+in the catalog) and Codex writes its cache. Then refresh again. Pick a Codex
+model with `--model`, adding `--runner codex` when another runner offers the
+same name.
 
 ## What gets written where
 

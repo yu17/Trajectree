@@ -7,8 +7,8 @@ services:
       target: ${TRAJECTREE_IMAGE_TARGET:-app}
     ports: ["127.0.0.1:8743:8742"]
     volumes:
-      - ./data:/data
-      - ./cfg:/cfg
+      - ${TRAJECTREE_DEV_STATE:-${HOME}/.local/share/trajectree-dev}/data:/data
+      - ${TRAJECTREE_DEV_STATE:-${HOME}/.local/share/trajectree-dev}/cfg:/cfg
       - ${HOME}/.claude/projects:/host/claude/projects:ro
       - ${HOME}/.config/claude-backends:/host/claude-backends:ro
       - ${HOME}/.codex/sessions:/host/codex/sessions:ro

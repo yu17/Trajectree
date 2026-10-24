@@ -123,6 +123,18 @@ def test_retry_backoff_stops_after_three(ledger, settings, logged_in):
     assert [r.attempt for r in list_runs(ledger.conn, routine_id=rid)] == [3, 2, 1]
 
 
+def test_cron_retry_resolves_the_routines_current_model(ledger, settings, logged_in):
+    rid = _routine(ledger, trigger="@daily").id
+    svc = _svc(ledger, settings)
+    first = svc.enqueue(RoutineRequest(routine="rev", reason="cron"))
+    assert first.model == MODEL
+    _fail_infra(svc, ledger, first.id)
+    ledger.conn.execute("UPDATE routine SET runner = 'codex', model = 'gpt-6.1-sol' WHERE id = ?", (rid,))
+    Scheduler(ledger, settings, svc, now=lambda: T0 + timedelta(hours=1)).tick()
+    retry = list_runs(ledger.conn, routine_id=rid)[0]
+    assert retry.attempt == 2 and (retry.runner, retry.model) == ("codex", "gpt-6.1-sol")
+
+
 def test_retry_keeps_the_original_projects(ledger, human, settings, logged_in):
     create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
     rid = _routine(ledger, trigger="@daily").id

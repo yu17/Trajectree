@@ -44,6 +44,14 @@ def test_dev_compose_cannot_replace_instance():
     assert doc["services"]["trajectree"]["ports"] == ["127.0.0.1:8743:8742"]
 
 
+def test_dev_state_lives_outside_the_checkout():
+    # The checkout sits under the projects root: dev tokens there would be readable by instance runs.
+    volumes = _load("compose.yaml")["services"]["trajectree"]["volumes"]
+    state = "${TRAJECTREE_DEV_STATE:-${HOME}/.local/share/trajectree-dev}"
+    assert f"{state}/data:/data" in volumes and f"{state}/cfg:/cfg" in volumes
+    assert not any(v.startswith(".") for v in volumes)
+
+
 def test_env_example_names_every_template_variable():
     template = (ROOT / "deploy/compose.yaml").read_text()
     # ${VAR}, ${VAR:-default} and ${VAR:?msg} all name VAR up to the first ':' or '}'.
