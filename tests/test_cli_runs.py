@@ -32,7 +32,7 @@ def test_cli_summarize_no_wait_and_runs_listing(app, client, anon, capsys):
     assert capsys.readouterr().out.endswith(" queued\n")
     assert cli.main(["runs", "--limit", "5"], client=anon, env=env_for(app)) == 0
     line = capsys.readouterr().out.splitlines()[0]
-    assert "summarize" in line and line.endswith("clmi")
+    assert "summarize" in line and " claude  " in line and line.endswith("  -")
 
 def test_cli_summarize_session_posts_and_validates_args(app, client, anon, capsys):
     assert cli.main(["summarize", "--session", "nope", "--no-wait", "--model", MODEL], client=anon, env=env_for(app)) == 1   # 422 unknown session
@@ -254,3 +254,42 @@ def test_cli_routine_set_runner_only(app, client, anon, capsys):
     assert "codex/default" in capsys.readouterr().out
     assert cli.main(["ask", "q"], client=anon, env=env) == 2
     assert capsys.readouterr().err.strip() == NO_MODEL
+
+
+def _failed_codex_run(ledger):
+    from trajectree.repo.runs import create_run, update_run
+    with ledger.locked() as conn:
+        run = create_run(conn, kind="ask", runner="codex", backend="codex", model=None, project_id=None,
+                         props={"model_warning": "model not in catalog"})
+        update_run(conn, run.id, status="failed", error="codex: " + "unexpected status 401 " * 10,
+                   result_md="partial output", log_path="/data/runs/x.log")
+    return run.id
+
+def test_runs_list_shows_runner_model_error(app, ledger, anon, capsys):
+    run_id = _failed_codex_run(ledger)
+    assert cli.main(["runs"], client=anon, env=env_for(app)) == 0
+    line = next(l for l in capsys.readouterr().out.splitlines() if l.startswith(run_id))
+    assert " codex  default  " in line and "failed" in line
+    assert line.endswith("codex: " + ("unexpected status 401 " * 10)[:53])
+
+def test_runs_detail(app, ledger, anon, capsys):
+    run_id = _failed_codex_run(ledger)
+    assert cli.main(["runs", run_id], client=anon, env=env_for(app)) == 0
+    out = capsys.readouterr().out
+    for want in ("status: failed", "kind: ask", "runner: codex", "model: default", "model warning: model not in catalog",
+                 "finished:", "cost: $0.0000", "log: /data/runs/x.log"):
+        assert want in out
+    assert "error: codex: " + "unexpected status 401 " * 10 in out
+    assert out.endswith("\n\npartial output\n")
+
+def test_runs_detail_404(app, anon, capsys):
+    assert cli.main(["runs", "X"], client=anon, env=env_for(app)) == 1
+    assert capsys.readouterr().err.strip() == "no run X"
+
+def test_run_empty_routine_refused(app, anon, capsys):
+    class Boom:
+        def __getattr__(self, name):
+            raise AssertionError("no HTTP call expected")
+    for name in ("", "  "):
+        assert cli.main(["run", name], client=Boom(), env=env_for(app)) == 2
+        assert capsys.readouterr().err.strip() == "routine name required"

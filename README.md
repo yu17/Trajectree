@@ -228,6 +228,10 @@ token-budgeted context pack built from the tracker.
   answers over project context and returns proposals.
 - `trajectree add "<free text>" [--project slug]` (quick-add) turns text into
   proposals.
+- `trajectree runs [--limit N]` lists recent runs with their runner, model
+  (`default` when the runner chose) and the first 60 characters of any error.
+  `trajectree runs <id>` shows one run: status, runner, model, any model
+  warning, times, cost, the full error, the log path and the result.
 - `ask` and `add` apply nothing by themselves. The owner accepts a proposal in
   the web UI (Quick capture, Ask panel, Inbox) or with
   `trajectree accept <run_id> <n>` (n is 1-based).

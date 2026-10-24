@@ -147,8 +147,9 @@ def _parser() -> argparse.ArgumentParser:
     acc.add_argument("run_id")
     acc.add_argument("n", type=int)
 
-    runs = sub.add_parser("runs", help="list recent runs")
+    runs = sub.add_parser("runs", help="list recent runs, or show one run")
     runs.add_argument("--limit", type=int, default=20)
+    runs.add_argument("id", nargs="?", help="show this run in full: error, log path and result")
 
     usage = sub.add_parser("usage", help="show runner spend")
     usage.add_argument("--days", type=int, default=30)
@@ -418,10 +419,32 @@ def _cmd_accept(args: argparse.Namespace, api: _Api) -> None:
 
 
 def _cmd_runs(args: argparse.Namespace, api: _Api) -> None:
-    slugs = {p["id"]: p["slug"] for p in api.get("/api/projects")}
+    if args.id:
+        _show_run(args.id, api)
+        return
     for r in api.get(f"/api/runs?limit={args.limit}"):
-        slug = slugs.get(r["project_id"], "-") if r["project_id"] else "-"
-        print(f"{r['id']}  {r['created_at']}  {r['kind']}  {r['status']}  ${r['est_usd']:.4f}  {slug}")
+        error = (r.get("error") or "-")[:60]  # a Codex failure carries Codex's own, possibly long, text
+        print(f"{r['id']}  {r['created_at']}  {r['kind']}  {r['status']}  {r['runner']}  {r['model'] or 'default'}  ${r['est_usd']:.4f}  {error}")
+
+
+def _show_run(run_id: str, api: _Api) -> None:
+    resp = api.client.get(f"{api.base}/api/runs/{quote(run_id, safe='')}", headers=api.headers)
+    if resp.status_code == 404:
+        raise _Fail(f"no run {run_id}")
+    run = api._handle(resp)["run"]
+    warning = (run.get("props") or {}).get("model_warning") or "-"
+    print(f"status: {run['status']}")
+    print(f"kind: {run['kind']}")
+    print(f"runner: {run['runner']}")
+    print(f"model: {run['model'] or 'default'}")
+    print(f"model warning: {warning}")
+    print(f"created: {run['created_at']}")
+    print(f"finished: {run.get('finished') or '-'}")
+    print(f"cost: ${run['est_usd']:.4f}")
+    print(f"error: {run.get('error') or '-'}")
+    print(f"log: {run.get('log_path') or '-'}")
+    print()
+    print(run["result_md"])
 
 
 def _cmd_usage(args: argparse.Namespace, api: _Api) -> None:
@@ -490,7 +513,9 @@ def _cmd_routine(args: argparse.Namespace, api: _Api) -> None:
 
 
 def _cmd_run_routine(args: argparse.Namespace, api: _Api) -> None:
-    name = ROUTINE_ALIASES.get(args.cmd) or args.routine
+    name = ROUTINE_ALIASES.get(args.cmd) or args.routine.strip()
+    if not name:
+        raise _Fail("routine name required", 2)
     body: dict[str, Any] = {}
     if args.projects:
         body["projects"] = [s for s in args.projects.split(",") if s]
