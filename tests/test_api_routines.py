@@ -82,6 +82,12 @@ def test_routine_run_uses_stored_model(client):
     assert (run["runner"], run["model"]) == ("ccx:kimi", "k2")
 
 
+def test_routine_run_naming_a_runner_replaces_the_stored_choice(client):
+    client.post("/api/routines", json={"name": "x", "trigger": "@daily", "prompt_ref": "a.md", "model": "gpt-6.1-sol"})
+    run = client.post("/api/routines/x/run", json={"runner": "claude"}).json()
+    assert (run["runner"], run["model"]) == ("claude", None)   # the routine's model is not carried over
+
+
 def test_enable_routine_without_model_is_422(client):
     client.post("/api/routines", json={"name": "x", "trigger": "@daily", "prompt_ref": "a.md"})
     r = client.patch("/api/routines/x", json={"enabled": True})

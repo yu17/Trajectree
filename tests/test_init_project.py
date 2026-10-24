@@ -316,7 +316,7 @@ def test_non_tty_missing_choices_errors(tmp_path, capsys):
     code, _, err, _ = dialogue(tmp_path, capsys, api, interactive=False)
     assert code == 2 and api.imports() == []
     assert err.strip() == ("missing choices: --sources, --since git=<YYYY-MM-DD|all|default>, "
-                           "--start-model or --no-start-block")
+                           "--start-runner, --start-model or --no-start-block")
     code, _, err, _ = dialogue(tmp_path, capsys, api, interactive=False, sources="claude,folder")
     assert code == 0 and api.imports()[0]["sources"].keys() == {"claude", "folder"}
     code, _, err, _ = dialogue(tmp_path, capsys, FakeApi(make_probe()), interactive=False, sources="git",
@@ -455,9 +455,10 @@ def test_eof_at_the_model_prompt_imports_nothing(tmp_path, capsys):
 
 def test_init_project_start_model_from_catalog(tmp_path, capsys):
     api = FakeApi(make_probe())
-    code, out, _, ask = dialogue(tmp_path, capsys, api, "1", "default", "", "9", "x", "gpt-hidden", "2", "y")
+    code, out, _, ask = dialogue(tmp_path, capsys, api, "1", "default", "", "9", "x", "gpt-hidden", "3", "y")
     assert code == 0
-    assert "  1. claude/claude-opus-5-5\n  2. claude/claude-sonnet-5-5\n  3. ccx:a/x\n  4. ccx:b/x\n" in out
+    assert ("  1. claude/default\n  2. claude/claude-opus-5-5\n  3. claude/claude-sonnet-5-5\n"
+            "  4. ccx:a/default\n  5. ccx:a/x\n  6. ccx:b/default\n  7. ccx:b/x\n") in out
     assert "codex/" not in out  # an unavailable runner offers nothing
     for reason in ("give a number or a model name, or none to skip", "no model with number 9",
                    "model x is offered by ccx:a, ccx:b; answer with its number",
@@ -465,7 +466,9 @@ def test_init_project_start_model_from_catalog(tmp_path, capsys):
         assert reason in out
     assert sum(p.startswith("Model") for p in ask.prompts) == 5
     assert api.imports()[0]["start_block"] == {"runner": "claude", "model": "claude-sonnet-5-5"}
-    for answer, block in (("ccx:b/x", {"runner": "ccx:b", "model": "x"}), ("3", {"runner": "ccx:a", "model": "x"}),
+    for answer, block in (("ccx:b/x", {"runner": "ccx:b", "model": "x"}), ("5", {"runner": "ccx:a", "model": "x"}),
+                          ("claude/default", {"runner": "claude", "model": None}),
+                          ("4", {"runner": "ccx:a", "model": None}),
                           ("claude-opus-5-5", {"runner": "claude", "model": "claude-opus-5-5"})):
         api = FakeApi(make_probe())
         dialogue(tmp_path, capsys, api, "1", "default", answer, "y")
@@ -598,11 +601,31 @@ def test_start_block_only_asks_for_the_model_and_queues(tmp_path, capsys):
 def test_start_block_only_non_interactive_needs_a_model(tmp_path, capsys):
     api = WithStarts({"git": "2025-01-01"})
     code, _, err, _ = dialogue(tmp_path, capsys, api, interactive=False, start_block_only=True)
-    assert code == 2 and err.strip() == "missing choices: --start-model" and api.calls == []
+    assert code == 2 and err.strip() == "missing choices: --start-runner or --start-model" and api.calls == []
     code, _, _, ask = dialogue(tmp_path, capsys, api, interactive=False, start_block_only=True,
                                start_model="m1", start_runner="ccx:a")
     assert code == 0 and ask.prompts == []
     assert api.calls == [("/api/projects/prj_1/import/start-block", {"runner": "ccx:a", "model": "m1"})]
+
+
+def test_start_block_only_accepts_a_runner_alone(tmp_path, capsys):
+    api = WithStarts({"git": "2025-01-01"})
+    code, _, _, ask = dialogue(tmp_path, capsys, api, interactive=False, start_block_only=True,
+                               start_runner="codex")
+    assert code == 0 and ask.prompts == []
+    assert api.calls == [("/api/projects/prj_1/import/start-block", {"runner": "codex", "model": None})]
+    # the interactive pick of <runner>/default sends the runner with no model
+    api = WithStarts({"git": "2025-01-01"})
+    code, _, _, _ = dialogue(tmp_path, capsys, api, "ccx:a/default", start_block_only=True)
+    assert code == 0 and api.calls == [("/api/projects/prj_1/import/start-block", {"runner": "ccx:a", "model": None})]
+
+
+def test_import_with_a_runner_alone_prints_default(tmp_path, capsys):
+    api = FakeApi(make_probe())
+    code, out, _, _ = dialogue(tmp_path, capsys, api, interactive=False, sources="git", since=["git=default"],
+                               start_runner="codex")
+    assert code == 0 and api.imports()[0]["start_block"] == {"runner": "codex", "model": None}
+    assert "starting point: default via codex" in out
 
 
 def test_start_block_only_refusals(tmp_path, capsys):

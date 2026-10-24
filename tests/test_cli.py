@@ -104,3 +104,20 @@ def test_base_url_precedence(tmp_path):
     assert base_url(home) == "http://127.0.0.1:40210"
     assert base_url({**home, "TRAJECTREE_URL": ""}) == "http://127.0.0.1:40210"
     assert base_url({**home, "TRAJECTREE_URL": "http://other:1/"}) == "http://other:1"
+
+
+def test_base_url_without_a_scheme_names_where_it_came_from(tmp_path, capsys):
+    import pytest
+    from trajectree.cli.main import _Fail, base_url
+
+    home = {"HOME": str(tmp_path)}
+    with pytest.raises(_Fail) as e:
+        base_url({**home, "TRAJECTREE_URL": "127.0.0.1:40210"})
+    assert e.value.code == 2 and "TRAJECTREE_URL" in str(e.value) and "http://" in str(e.value)
+    (tmp_path / ".config" / "trajectree").mkdir(parents=True)
+    (tmp_path / ".config" / "trajectree" / "url").write_text("127.0.0.1:40210\n")
+    with pytest.raises(_Fail) as e:
+        base_url(home)
+    assert str(tmp_path / ".config" / "trajectree" / "url") in str(e.value)
+    assert main(["runs"], env={**home, "TRAJECTREE_TOKEN": "t"}) == 2   # a usage error, not a traceback
+    assert "must start with http://" in capsys.readouterr().err

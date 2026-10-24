@@ -115,14 +115,14 @@ class RunService:
     def validate(self, conn, request: RunRequest, *, routine: Routine | None = None) -> tuple[Resolved, str]:
         """The checks `enqueue` makes before it creates a run, so a caller can run them before
         writing anything: runs not paused, runner well formed, the model resolved against the
-        stored catalog. A routine run without a model of its own takes the routine's runner and
-        model. Returns the resolved choice and the backend. Raises `RunsPaused` or `ValueError`
+        stored catalog. A routine run that names neither runner nor model takes the routine's
+        choice; naming either replaces it wholesale (a runner alone means its default model). Returns the resolved choice and the backend. Raises `RunsPaused` or `ValueError`
         (a `ModelChoiceError` for the model). The caller holds the ledger lock."""
         if get_caps(conn).paused:
             raise RunsPaused("runs are paused")
         runner, model = request.runner, request.model
-        if routine is not None and not model:
-            runner, model = runner or routine.runner, routine.model
+        if routine is not None and not (request.runner or request.model):
+            runner, model = routine.runner, routine.model
         if runner is not None:
             runner_parts(runner)  # refuses a malformed runner before it is looked up
         resolved = resolve_model(load_catalog(conn), model, runner)

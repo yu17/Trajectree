@@ -97,6 +97,17 @@ def test_two_settings_files_keep_their_own_tokens(app, client, anon, tmp_path, c
     assert cli.main(["hooks", "show", "--settings-file", str(two)], client=anon, env=env) == 0
     assert capsys.readouterr().out.endswith("token: present\n")
 
+def test_show_reports_a_handler_for_another_url_as_stale(app, anon, tmp_path, capsys):
+    f = tmp_path / "settings.json"
+    old = "http://127.0.0.1:8742/api/hooks/claude"
+    f.write_text(json.dumps({"hooks": {"Stop": [{"hooks": [{"type": "http", "url": old}]}]}}))
+    env = {**env_for(app), "HOME": str(tmp_path)}
+    assert cli.main(["hooks", "show", "--settings-file", str(f)], client=anon, env=env) == 0
+    out = capsys.readouterr().out
+    assert f"Stop: stale ({old}); run: trajectree hooks install\n" in out
+    assert "SessionStart: absent\n" in out
+
+
 def test_fresh_install_is_private_and_existing_mode_is_kept(app, anon, tmp_path):
     env = {**env_for(app), "HOME": str(tmp_path)}
     fresh = tmp_path / "fresh" / "settings.json"

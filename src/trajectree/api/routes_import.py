@@ -34,7 +34,7 @@ class ProbeRequest(BaseModel):
 
 class StartBlockChoice(BaseModel):
     runner: str | None = None
-    model: str | None = None  # a missing model is refused by model resolution, like every run request
+    model: str | None = None  # a runner alone means its default; neither is refused by model resolution
 
 
 class ImportRequest(BaseModel):

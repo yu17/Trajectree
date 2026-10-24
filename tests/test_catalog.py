@@ -162,7 +162,8 @@ def test_unreachable_backend_keeps_profile_models(settings):
     assert time.monotonic() - start < 2
     slow, fine = runner(c, "ccx:slow"), runner(c, "ccx:fine")
     assert [m.model for m in slow.models] == ["m1"] and slow.error == ("no model list from 127.0.0.1 (ConnectTimeout); edit the list with:"
-                                                                            " trajectree models --runner ccx:slow --add <model>")
+                                                                            " trajectree models --runner ccx:slow --add <model>"
+                                                                            "; or reach it through a host socket (README: Local backends through a socket)")
     assert [m.model for m in fine.models] == ["m2", "m3"] and fine.error is None
 
 

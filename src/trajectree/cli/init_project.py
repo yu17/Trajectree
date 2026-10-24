@@ -256,8 +256,9 @@ def _yes_no(answer: str) -> bool:
     raise ValueError("answer y or n")
 
 
-def _check_model(answer: str, choices: list[tuple[str, str]]) -> tuple[str, str] | None:
-    """`(runner, model)` for a list number, a `runner/model` line or a model name; None for none."""
+def _check_model(answer: str, choices: list[tuple[str, str | None]]) -> tuple[str, str | None] | None:
+    """`(runner, model)` for a list number, a `runner/model` line or a model name; `runner/default`
+    is the runner with no model. None for none."""
     if not answer:
         raise ValueError("give a number or a model name, or none to skip")
     if answer == "none":
@@ -268,7 +269,7 @@ def _check_model(answer: str, choices: list[tuple[str, str]]) -> tuple[str, str]
             raise ValueError(f"no model with number {n}")
         return choices[n - 1]
     for runner, model in choices:
-        if f"{runner}/{model}" == answer:
+        if f"{runner}/{model or 'default'}" == answer:
             return runner, model
     named = [c for c in choices if c[1] == answer]
     if len(named) > 1:
@@ -278,14 +279,18 @@ def _check_model(answer: str, choices: list[tuple[str, str]]) -> tuple[str, str]
     return named[0]
 
 
-def _ask_model(api: Any, ask: Callable[[str], str], out: TextIO, sources: list[str]) -> tuple[str, str] | None:
+def _ask_model(api: Any, ask: Callable[[str], str], out: TextIO, sources: list[str]) -> tuple[str, str | None] | None:
     """The owner's pick from the catalog's available runners and their models, or None."""
     catalog = api.get("/api/models")
-    choices = [(r["runner"], m["model"]) for r in catalog["runners"] if r["available"] for m in r["models"]]
+    choices: list[tuple[str, str | None]] = []
+    for r in catalog["runners"]:
+        if r["available"]:  # each runner's own default first, then its models
+            choices.append((r["runner"], None))
+            choices.extend((r["runner"], m["model"]) for m in r["models"])
     if choices:
         print("models:", file=out)
         for n, (runner, model) in enumerate(choices, 1):
-            print(f"  {n}. {runner}/{model}", file=out)
+            print(f"  {n}. {runner}/{model or 'default'}", file=out)
     else:
         print("no models in the catalog; run: trajectree models --refresh", file=out)
     return _prompt(
@@ -350,10 +355,10 @@ def _start_block_only(
         print(f"{slug}: no skipped history recorded, nothing to summarise", file=sys.stderr)
         return 2
     print("skipped history: " + ", ".join(f"{name} before {day}" for name, day in sorted(starts.items())), file=out)
-    choice = (start_runner, start_model) if start_model else None
+    choice = (start_runner, start_model) if (start_model or start_runner) else None
     if choice is None:
         if not interactive:
-            print("missing choices: --start-model", file=sys.stderr)
+            print("missing choices: --start-runner or --start-model", file=sys.stderr)
             return 2
         try:
             choice = _ask_model(api, ask, out, sorted(starts))
@@ -457,8 +462,8 @@ def _import_dialogue(
             effective = None if text == "all" else default_since if text == "default" else date.fromisoformat(text)
             if effective is not None and older(name, effective):
                 starts[name] = effective.isoformat()
-        if starts and not interactive and not start_model and not no_start_block:
-            missing.append("--start-model or --no-start-block")
+        if starts and not interactive and not (start_model or start_runner) and not no_start_block:
+            missing.append("--start-runner, --start-model or --no-start-block")
         undecided = [r for r in report["remotes"] if not r["declined"] and not r.get("followed")]
         if not interactive and not remote and not no_remotes and undecided:
             missing.append("--remote <url> or --no-remotes")
@@ -480,7 +485,7 @@ def _import_dialogue(
         start_block: dict[str, Any] | None = None
         if starts and not no_start_block:
             # The flags pass through as given; the daemon resolves and checks them.
-            choice = (start_runner, start_model) if start_model else None
+            choice = (start_runner, start_model) if (start_model or start_runner) else None
             if choice is None and interactive:
                 choice = _ask_model(api, ask, out, list(starts))
             if choice is not None:
@@ -496,7 +501,7 @@ def _import_dialogue(
             print(f"  remote: {url}", file=out)
         if start_block:
             via = f" via {start_block['runner']}" if start_block["runner"] else ""
-            print(f"  starting point: {start_block['model']}{via} summarises the skipped history of {', '.join(starts)}", file=out)
+            print(f"  starting point: {start_block['model'] or 'default'}{via} summarises the skipped history of {', '.join(starts)}", file=out)
         elif starts:
             print("  " + _skipped_line(starts, path), file=out)
         if interactive and not _prompt(ask, out, "Import now? [y/n]: ", _yes_no):

@@ -231,9 +231,13 @@ def show(
         return 1
     url = hooks_url(api.base)
     for event in HOOK_EVENTS:
-        present = any(
-            h.get("url") == url for g in current.get("hooks", {}).get(event, []) for h in g.get("hooks", [])
-        )
-        print(f"{event}: {'present' if present else 'absent'}", file=out)
+        ours = [h for g in current.get("hooks", {}).get(event, []) for h in g.get("hooks", []) if _ours(h)]
+        if any(h.get("url") == url for h in ours):
+            state = "present"
+        elif ours:
+            state = f"stale ({ours[0].get('url')}); run: trajectree hooks install"
+        else:
+            state = "absent"
+        print(f"{event}: {state}", file=out)
     print(f"token: {'present' if _hook_tokens(api, path) else 'absent'}", file=out)
     return 0

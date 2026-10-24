@@ -243,6 +243,9 @@ def base_url(env: Mapping[str, str]) -> str:
             url = lines[0].strip() if lines else ""
         except OSError:
             url = ""
+    if url and not url.startswith(("http://", "https://")):
+        where = "TRAJECTREE_URL" if (env.get("TRAJECTREE_URL") or "").strip() else str(_config_file(env, "url"))
+        raise _Fail(f"{where} is {url!r}; the daemon URL must start with http:// or https://, like http://127.0.0.1:8742", 2)
     return (url or DEFAULT_URL).rstrip("/")
 
 
@@ -762,7 +765,11 @@ def main(
             file=sys.stderr,
         )
         return 2
-    base = base_url(env)
+    try:
+        base = base_url(env)
+    except _Fail as exc:
+        print(str(exc), file=sys.stderr)
+        return exc.code
     owned = client is None
     http: Any = httpx.Client(timeout=30) if owned else client
     try:

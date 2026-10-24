@@ -19,7 +19,7 @@ from mcp.types import (
     TextContent,
 )
 
-from trajectree.cli.main import _token, base_url
+from trajectree.cli.main import _Fail, _token, base_url
 
 
 def _root_cause(exc: BaseException) -> BaseException:
@@ -85,7 +85,11 @@ def run_shim(env: Mapping[str, str]) -> int:
             file=sys.stderr,
         )
         return 2
-    url = base_url(env) + "/mcp"
+    try:
+        url = base_url(env) + "/mcp"
+    except _Fail as exc:
+        print(str(exc), file=sys.stderr)
+        return exc.code
     cwd = env.get("CLAUDE_PROJECT_DIR") or os.getcwd()
     server = build_proxy(remote_connector(url, token, cwd, env.get("CLAUDE_CODE_SESSION_ID")))
 

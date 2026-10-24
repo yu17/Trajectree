@@ -189,6 +189,8 @@ def _ccx(
             if sock is not None:
                 host += f" through {sock.name}"
             error = f"no model list from {host} ({err}); edit the list with: trajectree models --runner {runner} --add <model>"
+            if sock is None and host in ("127.0.0.1", "localhost", "::1"):
+                error += "; or reach it through a host socket (README: Local backends through a socket)"
         for e in entries:
             if e["id"] not in seen:
                 seen[e["id"]] = CatalogModel(runner=runner, model=e["id"], display=e.get("display_name"), source="api")

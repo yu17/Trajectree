@@ -1,5 +1,5 @@
 """The routine scheduler: cron fires within a grace window, retries of infrastructure failures and
-`session_end` triggers. A routine that names no model is never fired.
+`session_end` triggers. A routine that names neither a runner nor a model is never fired.
 
 One `tick` runs at a time (the daemon's loop and `POST /api/scheduler/tick` share it). Every DB
 access holds the ledger lock; `RunService.enqueue` takes the lock itself, so it is called with the
