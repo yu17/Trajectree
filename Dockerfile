@@ -44,7 +44,7 @@ ENV TRAJECTREE_DATA_DIR=/data \
     DISABLE_AUTOUPDATER=1 \
     TRAJECTREE_HOST=0.0.0.0 \
     TRAJECTREE_CODEX_BIN=/opt/codex/bin/codex \
-    PATH=/opt/claude/.local/bin:/app/.venv/bin:$PATH \
+    PATH=/opt/claude/.local/bin:/opt/codex/bin:/app/.venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1
 VOLUME /data
 EXPOSE 8742

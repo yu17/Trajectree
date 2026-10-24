@@ -100,6 +100,28 @@ def test_ensure_cfg_dirs_creates_private_ssh_dir(settings):
     assert ssh.is_dir() and ssh.stat().st_mode & 0o777 == 0o700
 
 
+def test_ensure_cfg_dirs_creates_codex_home(settings):
+    from trajectree.runner.credentials import ensure_cfg_dirs
+
+    ensure_cfg_dirs(settings)
+    assert settings.codex_home.is_dir() and settings.codex_home.stat().st_mode & 0o777 == 0o700
+
+
+def test_startup_makes_state_dirs_private(settings, ledger):
+    from fastapi.testclient import TestClient
+
+    from trajectree.api.app import create_app
+
+    for d in (settings.data_dir, settings.cfg_root):
+        d.mkdir(parents=True, exist_ok=True)
+        d.chmod(0o755)
+    with TestClient(create_app(settings, ledger=ledger)):
+        pass
+    assert settings.data_dir.stat().st_mode & 0o777 == 0o700
+    assert settings.cfg_root.stat().st_mode & 0o777 == 0o700
+    assert settings.codex_home.is_dir()
+
+
 def test_codex_sessions_root_from_env(monkeypatch, tmp_path):
     monkeypatch.setenv("TRAJECTREE_DATA_DIR", str(tmp_path / "d"))
     monkeypatch.setenv("TRAJECTREE_CODEX_SESSIONS", str(tmp_path / "sessions"))

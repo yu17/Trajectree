@@ -17,7 +17,7 @@ curl -fsSL https://raw.githubusercontent.com/yu17/Trajectree/main/deploy/env.exa
 # 2. Create data and cfg yourself (Docker would make them root-owned), keep cfg
 #    private, then fill in .env (at least TRAJECTREE_PROJECTS_ROOT, UID and GID).
 #    Create the host folders the container mounts too, for the same reason.
-mkdir -p data cfg && chmod 700 cfg
+mkdir -p data cfg && chmod 700 data cfg
 mkdir -p ~/.claude/projects ~/.config/claude-backends ~/.codex/sessions
 
 # 3. Build and start, then give the host CLI the token.
@@ -30,7 +30,7 @@ uv tool install git+https://github.com/yu17/Trajectree@<ref>
 # 5. Log in the runners.
 claude setup-token
 trajectree login
-docker compose exec -e CODEX_HOME=/cfg/codex trajectree codex login --device-auth
+docker compose exec trajectree codex login --device-auth
 trajectree backends sync
 
 # 6. Refresh the model catalog, then connect a project folder. If Codex lists
@@ -550,7 +550,7 @@ points. Log Codex in inside the container, so its credentials live only in
 `cfg/codex/` (never copy or share the host's `~/.codex/auth.json`):
 
 ```bash
-docker compose exec -e CODEX_HOME=/cfg/codex trajectree codex login --device-auth
+docker compose exec trajectree codex login --device-auth
 trajectree models --refresh
 ```
 

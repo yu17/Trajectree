@@ -85,3 +85,8 @@ def test_mcp_config_path_is_absolute(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     argv = claude_argv(spec(), binary="claude", mcp_config_path=Path("runs/x/mcp.json"))
     assert argv[argv.index("--mcp-config") + 1].startswith("/")
+
+def test_codex_argv_disables_code_mode_host():
+    argv = codex_argv(spec(runner="codex", backend="codex"), binary="codex", schema_path=None,
+                      last_message_path=Path("/tmp/last.md"))
+    assert any(argv[i:i + 2] == ["-c", "features.code_mode_host=false"] for i in range(len(argv) - 1))

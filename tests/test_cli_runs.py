@@ -58,7 +58,7 @@ def test_cli_caps_usage_login_and_status(app, anon, capsys):
 
 def test_cli_models_prints_and_refreshes(app, client, anon, capsys, settings):
     settings.codex_bin = settings.claude_bin  # any binary that exists
-    settings.codex_home.mkdir(parents=True)
+    settings.codex_home.mkdir(parents=True, exist_ok=True)
     (settings.codex_home / "models_cache.json").write_text(json.dumps({"models": [{"slug": "gpt-6.1-sol", "display_name": "GPT-6.1-Sol", "visibility": "list"}]}))
     calls = []
     real_post = anon.post

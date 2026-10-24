@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shutil
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -39,7 +40,7 @@ from trajectree.mcpserver.server import build_mcp
 from trajectree.repo import DuplicateEdge, DuplicateRoutine, DuplicateSlug, InvalidRange, NotFound, UnknownProject, UnknownSession
 from trajectree.repo.routines import disable_modelless_routines
 from trajectree.runner.catalog import ModelChoiceError, load_catalog
-from trajectree.runner.credentials import migrate_oauth_token
+from trajectree.runner.credentials import ensure_cfg_dirs, migrate_oauth_token
 from trajectree.runner.seeds import ensure_inbox_project, ensure_seed_routines
 from trajectree.runner.service import RunService
 from trajectree.runner.spec import AlreadyApplied, RunsPaused
@@ -90,8 +91,19 @@ def _error_handler(status: int):
     return handler
 
 
+def _private_state_dirs(settings: Settings) -> None:
+    """State dirs hold the ledger and credentials: owner-only, whatever mode the bind mount arrived with."""
+    try:
+        ensure_cfg_dirs(settings)  # also creates codex_home, so `codex login` works before the first run
+        os.chmod(settings.data_dir, 0o700)
+        os.chmod(settings.cfg_root, 0o700)
+    except OSError:
+        log.warning("could not make the state directories private", exc_info=True)
+
+
 def create_app(settings: Settings, *, ledger: Ledger | None = None) -> FastAPI:
     token = ensure_token(settings)
+    _private_state_dirs(settings)
     migrate_oauth_token(settings)  # out of the Claude config dir, which Claude runs may write
     if ledger is None:
         ledger = Ledger(open_db(settings.db_path))

@@ -32,6 +32,7 @@ def _private_dir(path: Path) -> None:
 def ensure_cfg_dirs(settings: Settings) -> None:
     for d in (
         settings.cfg_root,
+        settings.codex_home,  # `codex login` refuses a CODEX_HOME that does not exist
         settings.secrets_dir,
         settings.claude_config_dir,
         settings.run_home,

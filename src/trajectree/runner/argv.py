@@ -56,6 +56,8 @@ def codex_argv(spec: RunSpec, *, binary: str, schema_path: Path | None, last_mes
         "-C", str(spec.cwd),
         "-c", f'mcp_servers.{MCP_SERVER_NAME}.url="{spec.mcp_url}"',
         "-c", f'mcp_servers.{MCP_SERVER_NAME}.bearer_token_env_var="TRAJECTREE_RUN_TOKEN"',
+        # The image ships no codex-code-mode-host; without this every run logs a spawn failure.
+        "-c", "features.code_mode_host=false",
         "-o", str(last_message_path),
     ]
     if schema_path is not None:
