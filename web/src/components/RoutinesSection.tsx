@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
-import type { ModelChoice, Routine } from "../api/types";
+import type { Catalog, ModelChoice, Routine } from "../api/types";
 import { ActionNotice } from "../views/ActionNotice";
 import { errorText } from "./errorText";
 import { ModelPicker } from "./ModelPicker";
@@ -9,6 +9,16 @@ import { useRun } from "./useRun";
 
 const ACTIVE = ["queued", "running"];
 const local = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : "never");
+
+// The picker's value for a routine's stored model: the runner's option when it is in the catalog, or,
+// with no runner stored, the one available runner offering the model. Otherwise null (the row shows the
+// stored text and the daemon decides when it runs).
+function storedChoice(routine: Routine, catalog: Catalog | undefined): ModelChoice | null {
+  if (!routine.model || !catalog) return null;
+  const offering = catalog.runners.filter(r => r.available && r.models.some(m => m.model === routine.model));
+  if (routine.runner) return offering.some(r => r.runner === routine.runner) ? { runner: routine.runner, model: routine.model } : null;
+  return offering.length === 1 ? { runner: offering[0].runner, model: routine.model } : null;
+}
 
 function RoutineRow({ routine, onNotice }: { routine: Routine; onNotice: (text: string) => void }) {
   const qc = useQueryClient();
@@ -33,7 +43,8 @@ function RoutineRow({ routine, onNotice }: { routine: Routine; onNotice: (text: 
     onError: err => onNotice(errorText(err)),
     onSettled: () => void qc.invalidateQueries({ queryKey: ["routines"] }),
   });
-  const stored = routine.runner && routine.model ? { runner: routine.runner, model: routine.model } : null;
+  const catalog = useQuery({ queryKey: ["models"], queryFn: api.models });
+  const stored = storedChoice(routine, catalog.data);
   const runNow = useMutation({
     // Run now uses the stored model.
     mutationFn: () => api.runRoutine(routine.name),
@@ -53,6 +64,9 @@ function RoutineRow({ routine, onNotice }: { routine: Routine; onNotice: (text: 
       <td>{status ? <span className={`badge run-${status}`}>{status}</span> : <span className="muted">—</span>}</td>
       <td>
         <ModelPicker value={setModel.isPending ? setModel.variables : stored} onChange={c => setModel.mutate(c)} />
+        {routine.model && !stored && !setModel.isPending && (
+          <span className="muted">{`stored: ${routine.model}${routine.runner ? ` on ${routine.runner}` : ""}`}</span>
+        )}
       </td>
       <td>
         <button disabled={toggle.isPending} onClick={() => toggle.mutate()}>
@@ -60,7 +74,7 @@ function RoutineRow({ routine, onNotice }: { routine: Routine; onNotice: (text: 
         </button>
       </td>
       <td>
-        <button disabled={!stored || runNow.isPending || busy} onClick={() => runNow.mutate()}>Run now</button>
+        <button disabled={!routine.model || runNow.isPending || busy} onClick={() => runNow.mutate()}>Run now</button>
       </td>
     </tr>
   );

@@ -75,6 +75,34 @@ describe("RoutinesSection", () => {
     await waitFor(() => expect(api.routines).toHaveBeenCalledTimes(2));
   });
 
+  it("selects the unique runner for a model-only routine", async () => {
+    api.routines.mockResolvedValue([routine("only", { model: "claude-sonnet-5-5" })]);
+    wrap(<RoutinesSection />);
+    const row = (await screen.findByText("only")).closest("tr")!;
+    await waitFor(() => expect((within(row).getByRole("combobox", { name: "Model" }) as HTMLSelectElement).value).toBe("claude|claude-sonnet-5-5"));
+    expect(within(row).queryByText(/stored:/)).toBeNull();
+    expect((within(row).getByRole("button", { name: "Run now" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("shows the stored text and keeps Run now on for a model the catalog does not offer", async () => {
+    api.routines.mockResolvedValue([routine("odd", { model: "gpt-9" }), routine("odd2", { runner: "codex", model: "gpt-9" })]);
+    wrap(<RoutinesSection />);
+    const row = (await screen.findByText("odd")).closest("tr")!;
+    expect(await within(row).findByText("stored: gpt-9")).toBeTruthy();
+    expect((within(row).getByRole("combobox", { name: "Model" }) as HTMLSelectElement).value).toBe("");
+    expect((within(row).getByRole("button", { name: "Run now" }) as HTMLButtonElement).disabled).toBe(false);
+    const row2 = screen.getByText("odd2").closest("tr")!;
+    expect(await within(row2).findByText("stored: gpt-9 on codex")).toBeTruthy();
+  });
+
+  it("treats a runner-only routine as having no model", async () => {
+    api.routines.mockResolvedValue([routine("half", { runner: "claude" })]);
+    wrap(<RoutinesSection />);
+    const row = (await screen.findByText("half")).closest("tr")!;
+    expect((within(row).getByRole("button", { name: "Run now" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(within(row).queryByText(/stored:/)).toBeNull();
+  });
+
   it("shows the API's refusal when a routine without a model is enabled", async () => {
     const user = userEvent.setup();
     api.routines.mockResolvedValue([routine("bare", { enabled: false })]);
