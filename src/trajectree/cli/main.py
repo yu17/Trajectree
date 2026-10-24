@@ -419,12 +419,16 @@ def _cmd_accept(args: argparse.Namespace, api: _Api) -> None:
 
 
 def _cmd_runs(args: argparse.Namespace, api: _Api) -> None:
-    if args.id:
+    if args.id is not None:
+        if not args.id.strip():
+            raise _Fail("run id required", 2)
         _show_run(args.id, api)
         return
+    slugs = {p["id"]: p["slug"] for p in api.get("/api/projects")}
     for r in api.get(f"/api/runs?limit={args.limit}"):
         error = (r.get("error") or "-")[:60]  # a Codex failure carries Codex's own, possibly long, text
-        print(f"{r['id']}  {r['created_at']}  {r['kind']}  {r['status']}  {r['runner']}  {r['model'] or 'default'}  ${r['est_usd']:.4f}  {error}")
+        slug = slugs.get(r["project_id"], "-") if r["project_id"] else "-"
+        print(f"{r['id']}  {r['created_at']}  {r['kind']}  {r['status']}  {slug}  {r['runner']}  {r['model'] or 'default'}  ${r['est_usd']:.4f}  {error}")
 
 
 def _show_run(run_id: str, api: _Api) -> None:
@@ -444,7 +448,7 @@ def _show_run(run_id: str, api: _Api) -> None:
     print(f"error: {run.get('error') or '-'}")
     print(f"log: {run.get('log_path') or '-'}")
     print()
-    print(run["result_md"])
+    print(run["result_md"] or "")
 
 
 def _cmd_usage(args: argparse.Namespace, api: _Api) -> None:

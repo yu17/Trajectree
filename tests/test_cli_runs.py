@@ -32,7 +32,7 @@ def test_cli_summarize_no_wait_and_runs_listing(app, client, anon, capsys):
     assert capsys.readouterr().out.endswith(" queued\n")
     assert cli.main(["runs", "--limit", "5"], client=anon, env=env_for(app)) == 0
     line = capsys.readouterr().out.splitlines()[0]
-    assert "summarize" in line and " claude  " in line and line.endswith("  -")
+    assert "summarize" in line and "  clmi  claude  " in line and line.endswith("  -")
 
 def test_cli_summarize_session_posts_and_validates_args(app, client, anon, capsys):
     assert cli.main(["summarize", "--session", "nope", "--no-wait", "--model", MODEL], client=anon, env=env_for(app)) == 1   # 422 unknown session
@@ -293,3 +293,7 @@ def test_run_empty_routine_refused(app, anon, capsys):
     for name in ("", "  "):
         assert cli.main(["run", name], client=Boom(), env=env_for(app)) == 2
         assert capsys.readouterr().err.strip() == "routine name required"
+
+def test_runs_blank_id_refused(app, anon, capsys):
+    assert cli.main(["runs", " "], client=anon, env=env_for(app)) == 2
+    assert capsys.readouterr().err.strip() == "run id required"
