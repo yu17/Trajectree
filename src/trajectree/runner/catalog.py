@@ -133,7 +133,13 @@ def _profile_env(settings: Settings, name: str) -> dict[str, str]:
 
 
 def _ccx(
-    settings: Settings, name: str, now: datetime, http: httpx.Client, uds_client, which, timeout_s: float
+    settings: Settings,
+    name: str,
+    now: datetime,
+    http: httpx.Client,
+    uds_client: Callable[[Path], httpx.Client],
+    which,
+    timeout_s: float,
 ) -> RunnerCatalog:
     runner = f"ccx:{name}"
 

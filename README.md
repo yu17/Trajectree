@@ -315,8 +315,8 @@ requests through the socket, keeping the URL's host and path), and the model
 catalog asks the models endpoint through it too. The host profile is
 unchanged, so `ccx <profile>` on the host still uses its TCP URL.
 
-The units assume the instance directory `~/.local/share/trajectree`; with
-another one, edit `ListenStream=` in the `.socket` unit.
+The units assume the instance directory `~/.local/share/trajectree`; step 3
+shows the one line to run for another one.
 
 Run these in the instance directory, for a profile named `lmstudio`:
 
@@ -334,21 +334,40 @@ for unit in socket service; do
   curl -fsSL "https://raw.githubusercontent.com/yu17/Trajectree/main/deploy/systemd/trajectree-backend@.$unit" \
     -o ~/.config/systemd/user/trajectree-backend@.$unit
 done
+#    Instance directory other than ~/.local/share/trajectree: point the socket here.
+#    sed -i "s#%h/.local/share/trajectree#$PWD#" ~/.config/systemd/user/trajectree-backend@.socket
 systemctl --user daemon-reload && systemctl --user enable --now trajectree-backend@lmstudio.socket
 
 # 4. Recreate the container: a changed network needs down, not only up.
 docker compose down && docker compose up -d
 
-# 5. One-time firewall rule: the container reaches no host port at all.
+# 5. One-time firewall rule: the container reaches no host port at all (read
+#    the first bullet below before you run it). On an empty ufw ruleset,
+#    `insert 1` fails with "Invalid position"; run `sudo ufw deny in on trajectree0`.
 sudo ufw insert 1 deny in on trajectree0
 
 # 6. List the backend's models through the socket.
 trajectree models --refresh
 ```
 
+- The rule also cuts off, silently, every other host port the instance uses:
+  chatmaid at `TRAJECTREE_CHATMAID_URL` (failed deliveries quietly fall back to
+  the Inbox), a self-hosted GitLab on the same machine
+  (`TRAJECTREE_GITLAB_HOST`), and a DNS resolver listening on the host's own
+  LAN or bridge address (Docker's embedded DNS forwards from the container's
+  network namespace, so name resolution, and with it internet egress, would
+  fail). Allow each such port above the deny; run these after step 5, so
+  `insert 1` puts each allow ahead of it:
+  `sudo ufw insert 1 allow in on trajectree0 to any port <port> proto tcp`
+  (for DNS, port 53 with both `proto tcp` and `proto udp`). Then check name
+  resolution:
+  `docker compose exec trajectree python -c "import socket; print(socket.gethostbyname('api.anthropic.com'))"`.
 - The compose file names the container's bridge `trajectree0`, so step 5 is one
-  rule. After it the socket is the container's only way to the host; internet
-  egress is unaffected.
+  rule. After it, and with the exceptions above, the socket is the container's
+  only way to the host; internet egress is unaffected.
+- The fixed bridge name allows one instance per host from this template: a
+  second instance needs its own `com.docker.network.bridge.name` (and its own
+  firewall rule).
 - Every run can connect to every socket in `sockets/`: Landlock does not
   restrict connecting to a pathname socket. A `claude` or `codex` run never
   gets `ANTHROPIC_UNIX_SOCKET`, but nothing stops it from opening a socket
@@ -621,6 +640,8 @@ can deliver their results to chatmaid. The full contract is in
 - Outbound: set `TRAJECTREE_CHATMAID_URL` to chatmaid's base URL, store the
   token chatmaid issued with `trajectree connectors login chatmaid`, and set a
   routine's `delivery` to `chatmaid`. A failed delivery falls back to the Inbox.
+  With the `trajectree0` firewall rule, a chatmaid on a host port needs its own
+  allow rule (see [Local backends through a socket](#local-backends-through-a-socket)).
 
 ## Settings
 
@@ -643,8 +664,9 @@ The instance template builds the image with Codex (`INSTALL_CODEX: "1"` in
 `deploy/compose.yaml`): the pinned release (`CODEX_VERSION`, 0.163.0, checked
 against `CODEX_SHA256`) at `/opt/codex/bin/codex`, where `TRAJECTREE_CODEX_BIN`
 points, and its Code Mode helper `codex-code-mode-host` beside it (checked
-against `CODEX_CODE_MODE_HOST_SHA256`). Log Codex in inside the container, so its credentials live only in
-`cfg/codex/` (never copy or share the host's `~/.codex/auth.json`):
+against `CODEX_CODE_MODE_HOST_SHA256`). Log Codex in inside the container, so
+its credentials live only in `cfg/codex/` (never copy or share the host's
+`~/.codex/auth.json`):
 
 ```bash
 docker compose exec trajectree codex login --device-auth
