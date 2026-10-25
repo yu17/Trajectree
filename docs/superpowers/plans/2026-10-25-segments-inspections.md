@@ -23,7 +23,7 @@
 - The proposals and episodes JSON schemas stay strict for Codex: `additionalProperties: False`, every property required, optional ones nullable. `tests/test_runner_kinds.py::test_every_plan_schema_is_strict` must keep passing.
 - Host tooling: `npm` is a pnpm shim (no `npx`): use `npm test`, `npm exec tsc --noEmit`, `npm run build`, `npm run e2e`, all from `web/`. Python: `uv run pytest -q`.
 - The worktree command guard refuses shell loops, heredocs, `git -C`, awk and variable-built commands: run plain commands one at a time; write files with the Write tool.
-- Commits end with `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`. Never force-push; never push main.
+- Commits end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Never force-push; never push main.
 
 ## Review Focus
 
