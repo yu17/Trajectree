@@ -192,6 +192,17 @@ def test_digest_transcript_skips_noise_and_keeps_first_and_last_assistant(tmp_pa
     assert "x" * 301 not in d.split("## Final message")[0]
     assert "## Final message\nstep 25 " in d
 
+def test_digest_window_keeps_only_records_inside_it(tmp_path):
+    from trajectree.connectors.claude_sessions import digest_transcript
+    recs = [rec_user("2026-08-30T10:00:00.000Z", text="first"), rec_assistant_text("2026-08-30T10:01:00.000Z", "aug reply"),
+            rec_user("2026-08-30T10:02:00.000Z", text="second"),
+            rec_user("2026-09-22T10:00:00.000Z", text="third"), rec_assistant_text("2026-09-22T10:01:00.000Z", "sep reply")]
+    path = write_transcript(tmp_path, CWD, SID, recs)
+    d = digest_transcript(path, window=(datetime(2026, 9, 22, tzinfo=timezone.utc), datetime(2026, 9, 23, tzinfo=timezone.utc)))
+    assert d.split("## Assistant")[0].strip().endswith("1. third") and "first" not in d and "second" not in d
+    assert "aug reply" not in d and "sep reply" in d
+    assert "first" in digest_transcript(path)  # no window: unchanged
+
 def import_props(**sources):
     return {"import": {"sources": sources, "recorded_at": "2026-10-01T00:00:00+00:00"}}
 

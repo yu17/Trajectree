@@ -215,11 +215,20 @@ def _text_blocks(content: Any) -> list[str]:
     return [t for t in texts if t is not None and t.strip()]
 
 
-def digest_transcript(path: Path, *, max_chars: int = 12000) -> str:
+def in_window(rec: dict[str, Any], window: tuple[datetime, datetime] | None) -> bool:
+    """True when no `window` is given, or the record's timestamp lies in it (inclusive); a record without a timestamp is outside."""
+    if window is None:
+        return True
+    ts = _timestamp(rec.get("timestamp"))
+    return ts is not None and window[0] <= ts <= window[1]
+
+
+def digest_transcript(path: Path, *, max_chars: int = 12000, window: tuple[datetime, datetime] | None = None) -> str:
     """A compact Markdown digest of a transcript: prompts, tools used, assistant text, last message.
 
     Streams the file once and skips lines it cannot read; `OSError` from opening or reading
-    the file propagates. The raw JSONL never leaves this function.
+    the file propagates. The raw JSONL never leaves this function. With a `window`, only records
+    stamped inside it (inclusive) are digested.
     """
     prompts: list[str] = []
     tools: Counter[str] = Counter()
@@ -233,7 +242,7 @@ def digest_transcript(path: Path, *, max_chars: int = 12000) -> str:
                 rec = json.loads(line)
             except Exception:
                 continue
-            if not isinstance(rec, dict):
+            if not isinstance(rec, dict) or not in_window(rec, window):
                 continue
             content = _dict(rec.get("message")).get("content")
             if rec.get("type") == "user" and _is_prompt(rec):
@@ -338,8 +347,8 @@ def project_transcripts(
 
     A transcript belongs to `folder` when its recorded cwd lies in it and `folder` is the deepest
     of the `registered` folder host paths containing that cwd (the rule `project_for_path` uses),
-    so `/x/app-android` never counts for `/x/app`. `before` keeps only sessions that ended before
-    it. `before_by_source` (import source -> cutoff) does the same per source and skips, without
+    so `/x/app-android` never counts for `/x/app`. `before` keeps only sessions with a segment that
+    started before it. `before_by_source` (import source -> cutoff) does the same per source and skips, without
     reading, the transcripts of any source it does not list. At most `max_files` transcripts are
     parsed (newest files first); `capped` says the rest were left out. Pure file I/O: no DB, no lock.
     """
@@ -385,7 +394,8 @@ def select_in_folder(
     parse: Callable[[Iterable[bytes], SessionSummary], SessionSummary] | None = None,
 ) -> ProjectTranscripts:
     """Parse the newest `max_files` of `candidates` (`(mtime, backend, path)`) and keep the sessions
-    whose cwd belongs to `folder` (the deepest-registered-folder rule), ended before their cutoff."""
+    whose cwd belongs to `folder` (the deepest-registered-folder rule) and that have work before
+    their cutoff: any segment starting before it (a session crossing the cutoff is kept)."""
     candidates = sorted(candidates, key=lambda c: c[0], reverse=True)
     capped = len(candidates) > max_files
     found: list[SessionSummary] = []
@@ -402,8 +412,10 @@ def select_in_folder(
         if not cwd_in_folder(summary.cwd, folder, registered):
             continue
         ended = summary.t_end or datetime.fromtimestamp(mtime, timezone.utc)
-        if cutoff is not None and ended >= cutoff:
-            continue
+        if cutoff is not None:
+            starts = [seg.t_start for seg in summary.segments] or [ended]
+            if min(starts) >= cutoff:
+                continue
         found.append(summary.model_copy(update={"t_end": ended}))
     found.sort(key=lambda sm: sm.t_end or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
     return ProjectTranscripts(sessions=found, capped=capped)

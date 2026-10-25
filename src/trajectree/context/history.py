@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel
 
 from trajectree.config import Settings
-from trajectree.connectors.claude_sessions import SessionSummary, MAX_TRANSCRIPT_FILES, project_transcripts
+from trajectree.connectors.claude_sessions import MAX_TRANSCRIPT_FILES, Segment, SessionSummary, project_transcripts
 from trajectree.connectors.codex_sessions import digest_session, project_codex_sessions
 from trajectree.connectors.folders import DEFAULT_EXCLUDES, load_gitignore
 from trajectree.importing import SESSION_SOURCE_OF_BACKEND, local_midnight
@@ -271,14 +271,15 @@ def session_history(
     starts: Mapping[str, date],
     budget_chars: int,
 ) -> str:
-    """Digests of agent sessions in the project's `folders` (host paths) that ended before their
-    source's start, newest first, until `budget_chars` is used.
+    """Digests of agent sessions in the project's `folders` (host paths), newest first, until
+    `budget_chars` is used. Each work segment that started before its source's start is rendered
+    on its own, windowed to end at that start, so a session crossing it contributes only its earlier part.
 
     Reads the transcripts directly, so it does not depend on what the ingest scanner kept; a
     source that did not skip history is left out. `registered` is every registered folder host path.
     """
     cutoffs = {source: local_midnight(day, settings.tz) for source, day in starts.items()}
-    found: dict[str, tuple[datetime, SessionSummary]] = {}
+    found: dict[tuple[str, datetime | None], tuple[datetime, SessionSummary, Segment | None, datetime | None]] = {}
     capped = codex_capped = False
     for folder in folders:
         scan = project_transcripts(settings, folder, registered=registered, before_by_source=cutoffs)
@@ -286,20 +287,29 @@ def session_history(
         capped = capped or scan.capped
         codex_capped = codex_capped or codex.capped
         for summary in [*scan.sessions, *codex.sessions]:
-            if summary.t_end is not None:
-                found[summary.transcript_path] = (summary.t_end, summary)
+            cutoff = cutoffs[SESSION_SOURCE_OF_BACKEND[summary.backend]]
+            if not summary.segments:  # no timestamped conversation records: the whole session, as before
+                if summary.t_end is not None:
+                    found[(summary.transcript_path, None)] = (summary.t_end, summary, None, None)
+                continue
+            for seg in summary.segments:
+                if seg.t_start < cutoff:
+                    found[(summary.transcript_path, seg.t_start)] = (min(seg.t_end, cutoff), summary, seg, cutoff)
     zone = ZoneInfo(settings.tz)
     sections: list[str] = []
     used = 0
-    for ended, summary in sorted(found.values(), key=lambda item: item[0], reverse=True):
+    for ended, summary, seg, cutoff in sorted(found.values(), key=lambda item: item[0], reverse=True):
         title = summary.title or (summary.session_id or Path(summary.transcript_path).stem)[:8]
-        head = f"### {ended.astimezone(zone).date().isoformat()} {title} ({summary.prompts} prompts)"
+        prompts = summary.prompts if seg is None else seg.prompts
+        head = f"### {ended.astimezone(zone).date().isoformat()} {title} ({prompts} prompts)"
+        window = None if seg is None or cutoff is None else (seg.t_start, min(seg.t_end, cutoff))
         room = budget_chars - used - len(head) - 2
         if room < 200:
             break
         try:
             digest = digest_session(
-                summary.backend, Path(summary.transcript_path), max_chars=min(settings.digest_max_chars, room)
+                summary.backend, Path(summary.transcript_path), max_chars=min(settings.digest_max_chars, room),
+                window=window,
             )
         except OSError:
             digest = ""

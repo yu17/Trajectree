@@ -33,6 +33,7 @@ from trajectree.connectors.claude_sessions import (
     add_to_segment,
     cwd_in_folder,
     digest_transcript,
+    in_window,
     refresh_file,
     render_digest,
     reparse_continuations,
@@ -136,7 +137,7 @@ def parse_codex_lines(lines: Iterable[bytes], acc: SessionSummary, *, gap_s: int
     return out  # no session_id until the session_meta record is read: not a session (yet)
 
 
-def digest_codex(path: Path, *, max_chars: int = 12000) -> str:
+def digest_codex(path: Path, *, max_chars: int = 12000, window: tuple[datetime, datetime] | None = None) -> str:
     """A compact Markdown digest of a rollout: prompts, tool calls, assistant messages, final message.
 
     Streams the file once and skips lines it cannot read; `OSError` from opening or reading
@@ -155,7 +156,7 @@ def digest_codex(path: Path, *, max_chars: int = 12000) -> str:
                 rec = json.loads(line)
             except Exception:
                 continue
-            if not isinstance(rec, dict):
+            if not isinstance(rec, dict) or not in_window(rec, window):
                 continue
             payload = _dict(rec.get("payload"))
             prompts.extend(" ".join(t.split())[:300] for t in _user_prompts(rec))
@@ -176,9 +177,11 @@ def digest_codex(path: Path, *, max_chars: int = 12000) -> str:
     return render_digest(prompts, tools, head, list(tail), texts, final or last, max_chars)
 
 
-def digest_session(backend: str, path: Path, *, max_chars: int) -> str:
+def digest_session(
+    backend: str, path: Path, *, max_chars: int, window: tuple[datetime, datetime] | None = None
+) -> str:
     """The digest for a session of `backend`: a rollout for codex, a Claude-format transcript otherwise."""
-    return (digest_codex if backend == "codex" else digest_transcript)(path, max_chars=max_chars)
+    return (digest_codex if backend == "codex" else digest_transcript)(path, max_chars=max_chars, window=window)
 
 
 def session_signal(conn: apsw.Connection, session_id: str) -> Signal | None:

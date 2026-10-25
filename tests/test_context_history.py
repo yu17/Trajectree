@@ -95,6 +95,18 @@ def test_session_history_before_start(settings, tmp_path):
     assert session_history(st, ["/work/a"], ["/work/a"], starts={"git": date(2025, 1, 1)}, budget_chars=5000) == ""
 
 
+def test_session_history_splits_a_session_at_the_cutoff(settings, tmp_path):
+    home, st = _with_home(settings, tmp_path)
+    d = home / "projects" / encode_project_dir("/work/a")
+    d.mkdir(parents=True)
+    recs = [{"type": "user", "cwd": "/work/a", "sessionId": "s", "timestamp": when,
+             "message": {"role": "user", "content": text}}
+            for when, text in (("2026-08-30T10:00:00Z", "august prompt"), ("2026-09-22T10:00:00Z", "september prompt"))]
+    (d / "s.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
+    got = session_history(st, ["/work/a"], ["/work/a"], starts={"claude": date(2026, 9, 1)}, budget_chars=5000)
+    assert "august prompt" in got and "september prompt" not in got
+
+
 def test_project_transcripts_prefix_collision(settings, tmp_path):
     home, st = _with_home(settings, tmp_path)
     _transcript(home, "/x/transcriptor", "mine", "in transcriptor", when="2024-01-01T00:00:00Z")
