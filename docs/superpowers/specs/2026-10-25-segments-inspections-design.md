@@ -21,8 +21,9 @@ the import's starting-point block. Measured on the owner's data (Appendix A):
 
 - a pixiv_dl transcript holds three bursts of work, on Aug 30, Sep 22 and
   Sep 29, and shows on the activity strip as one tick on Aug 30;
-- the second pixiv_dl transcript is a resume of the first: all 155 of its
-  records are copied from it, so the same work is counted twice;
+- the later pixiv_dl transcript (`ddd53b9c`) continues the earlier one
+  (`facdbc2d`): all 155 of the earlier one's records are copied into it, so
+  the same work is counted twice;
 - a session that started before the last summary and was resumed weeks later
   never marks the project stale again, because staleness compares the
   session's start with `summary_at`;
@@ -70,7 +71,10 @@ Claude Code.
 - Drawing blocks as spans. The span stays in the data and the details panel.
 - Changing the rule that signals never become blocks.
 - Removing `summarize`, `summarize --session`, `ask`, `quick-add`, routines or
-  reports. They stay as they are; inspection is a new run kind beside them.
+  reports. They stay; inspection is a new run kind beside them. The one
+  change they need: `summarize --session <id>` today looks a session up by the
+  whole-session signal key, so it must resolve the id across that session's
+  segment signals and digest the whole transcript, as it does now.
 - Reading transcripts in any way other than Trajectree's existing read-only
   mounts and defensive parsers.
 
@@ -131,16 +135,21 @@ Even if everything works, these would make it a failure:
   segment's first prompt).
 - The incremental reader stays: files are read from their stored cursor, and
   per-segment accumulators live in the stored summary.
-- **Copied resume history counts once.** When Claude Code resumes or forks a
-  session, the new transcript begins with the earlier transcript's records
-  copied verbatim, same `uuid` and `timestamp`, with `sessionId` rewritten.
-  A record belongs to the transcript that first recorded it. A later transcript
-  that begins with a copied prefix contributes only the records after that
-  prefix; its segments start there, and its signals carry
-  `resumed_from: <earlier session id>`. The builder picks the mechanism
-  (the copied part is an exact prefix, so comparing against sibling
-  transcripts in the same project directory is enough; no global index of
-  record ids is required). The builder verifies whether Codex `resume` copies
+- **Copied resume history counts once.** When Claude Code continues a
+  session, it writes a new transcript with a new session id. The original
+  transcript ends with a `continued-in` record whose `continuedInSessionId`
+  names the continuation. The continuation opens with its own metadata records
+  (`custom-title`, `mode`, `permission-mode`, `file-history-snapshot` and the
+  like), then the original's records copied verbatim, same `uuid` and
+  `timestamp`, with `sessionId` rewritten, then its own new records (on
+  pixiv_dl: ten metadata records, the 155 copied records at positions 10–164,
+  then the Sep 29 work). A record belongs to the transcript that first recorded
+  it. A continuation contributes only the records after the copied run; its
+  segments start there, and its signals carry
+  `resumed_from: <original session id>`. Mechanism: follow the `continued-in`
+  marker when the original has one; otherwise compare record `uuid`s against
+  sibling transcripts in the same project directory. No global index of
+  record ids is needed. The builder verifies whether Codex `resume` copies
   history into a new rollout or appends to the same file, and applies the same
   rule if it copies.
 - Subagent transcripts and child rollouts stay skipped, as today.
@@ -207,10 +216,12 @@ holds one imported project at the time of writing.
   A complex feature may be several blocks only if each one is a checkpoint by
   this test.
 - A **pill** is a step on the way to a block: a design choice made, a notable
-  commit (a release, a revert, a switch of approach), a blocker hit or cleared,
-  a meeting held.
+  commit (a revert, a switch of approach, the commit that first made something
+  work), a blocker hit or cleared, a meeting held.
 - Not a pill: ordinary commits, individual prompts, file edits. Those are
   already on the activity strip.
+- A release is a checkpoint by the block test: something ships. The
+  `milestone` events the remote connector records for releases stay blocks.
 - Titles are 80 characters or fewer. A block body is 10 lines or fewer and
   says what was reached, how, and what was left open; a pill body is 3 lines
   or fewer. Bodies cite the dates of the segments they rest on.
@@ -239,7 +250,16 @@ holds one imported project at the time of writing.
 A run of the new kind `inspect` (interactive slot, caps as for other runs)
 over one project. Input: the project's context pack (summary, the most recent
 blocks with their pills and bodies, open todos), and the project's uninspected
-stretches, each rendered as a time span, its sources, and a digest per segment.
+stretches, each rendered as a time span, its sources, a digest per segment,
+and the **blocks whose spans overlap or abut the stretch's dates**, with their
+pills (so a stretch that came back as due is read next to the block that
+already covers part of it). A stretch inspected before is read whole, for
+continuity, and marked "inspected up to <date>" so the agent knows what the
+existing block already covers.
+Tools: the same read access as `summarize` and the starting-point run (Read,
+Grep, Glob and `git log` in the project folder, secrets denied), so the agent
+can check that a checkpoint really works or is written down; the prompt says
+the folder may be inspected read-only for detail.
 Output: writes through the MCP write tools, scoped to the project and the tools
 `record_event`, `update_event`, `add_todo`, `link`, `set_project_summary`,
 all landing pending; a one-line `answer`; and `proposals` for anything outside
@@ -254,12 +274,15 @@ holds a write token scoped to its project.
 
 For each stretch, in time order:
 
-- It is a **continuation** when it works on the same deliverable as the most
-  recent block and that block has not been superseded by a later checkpoint.
-  Then: do not create a new block. Call `update_event` on that block: move
-  `t_end` to the end of the stretch, revise the title if the checkpoint
-  changed, revise the body to include the new work, keep its tier. Add pills
-  for notable moments in the stretch and link them `part_of` the block.
+- It is a **continuation** when it works on the same deliverable as an
+  existing block: first the block whose span overlaps or abuts the stretch's
+  dates, otherwise the most recent block, provided that block has not been
+  superseded by a later checkpoint. Then: do not create a new block. Call
+  `update_event` on that block: move `t_end` to the end of the stretch, revise
+  the title if the checkpoint changed, revise the body to include the new
+  work, keep its tier. Add pills for notable moments in the stretch and link
+  them `part_of` the block. Work the block's body already describes is not
+  recorded again.
 - Otherwise it is **new progress**: create a block for each checkpoint the
   stretch reaches, pills for the notable moments, and todos for follow-ups
   left open. Cite the stretch's dates.
@@ -283,12 +306,26 @@ activity digest renders them now.
 
 - `project.inspected_at`, a new column: the end of the newest stretch the last
   successful inspection covered. Set when the run finishes `ok`; a failed or
-  capped run leaves it unchanged.
+  capped run leaves it unchanged. Existing projects start with null, so
+  everything since their scan start is due once; blocks they already have are
+  in the context pack, and the continuation rule keeps them from being
+  recorded twice.
 - A stretch is **uninspected** when it ends after `inspected_at`, or when any
   of its segments was written or changed after the last inspection started
-  (a session resumed weeks later extends an old segment, and that must come
-  back as due). The builder picks how "changed" is tracked; the scanner must
-  not mark an unchanged signal as changed on every pass.
+  (late commits, a source picked later, a folder added later). The builder
+  picks how "changed" is tracked; the scanner must not mark an unchanged signal
+  as changed on every pass.
+- A stretch is **due** only once it has **settled**: its last activity is
+  older than the segment gap and the project has no live session. Work in
+  progress never sits in the Inbox; yesterday's work is due by the morning.
+  The 24-hour `stale_settle_h` delay does not apply to inspections (it keeps
+  its role for `summarize` staleness only).
+- **Rejecting an inspection's writes does not move the watermark back.** To
+  run a project's history again (another model, say), the owner uses
+  **Re-inspect since <date>** on the project page, or `trajectree inspect
+  <slug> --since <date>`: it sets `inspected_at` to that date and starts an
+  inspection. The agent sees the existing blocks, accepted or rejected, in
+  the context pack as they stand after the rejection.
 - One inspection per project at a time: starting one while another is queued
   or running returns 409.
 - Resolving the model follows the existing rules: a model name, or a runner
@@ -328,20 +365,31 @@ activity digest renders them now.
 - The list is derived from signals and `inspected_at`, not stored; a project
   leaves the list when its inspection finishes `ok`.
 - The inspection's pending writes land in the existing Inbox list of
-  unreviewed transactions. An `update_event` shows what changed (the ledger
-  already stores the change rows; the Inbox renders before and after for the
-  changed fields). Reject reverts, as for any transaction, whether the block
-  was accepted earlier or still pending.
+  unreviewed transactions, **grouped by run and series** (one heading per
+  inspection, episodes in order), with accept-all and reject-all for the
+  group. An `update_event` shows what changed (the ledger already stores the
+  change rows; the Inbox renders before and after for the changed fields).
+  Reject reverts, as for any transaction, whether the block was accepted
+  earlier or still pending.
+- Episodes build on each other: episode 2 may edit a block episode 1 created,
+  and pills point at blocks through `part_of` edges. Reject-all on a group
+  reverts newest first, so the dependents go before what they depend on.
+  Rejecting one transaction that later pending transactions depend on (a later
+  edit of the same event, an edge to it) is refused with the existing revert
+  conflict, naming the dependents and offering the group reject. No new
+  cascade machinery.
 
 ### 8.7 API and CLI
 
 - `GET /api/inspections` — the due list.
-- `POST /api/projects/{id}/inspect` `{runner, model}` → 202 Run (the first run
-  of the series when one is needed); 409 when one is active.
+- `POST /api/projects/{id}/inspect` `{runner, model, since?}` → 202 Run (the
+  first run of the series when one is needed); 409 when one is active;
+  `since` resets the watermark first (8.4).
 - `POST /api/inspect` `{projects: [...] | "all", runner, model}` → list of
   Runs.
 - `trajectree inspections`; `trajectree inspect <slug> | --all [--model M]
-  [--runner R] [--no-wait]` printing the series progress while waiting.
+  [--runner R] [--since YYYY-MM-DD] [--no-wait]` printing the series progress
+  while waiting.
 
 ### 8.8 Prompts
 
@@ -368,6 +416,10 @@ proposals.
   owner described.
 - The starting-point block (history before the cutoff) keeps its own run kind
   and prompt; it is a `block`.
+- The import cutoff applies **per segment**, not per transcript: a session
+  that crosses the cutoff contributes its earlier segments to the starting
+  point and its later ones to the import. Today such a session falls through
+  both (the starting point keeps only sessions that ended before the cutoff).
 
 ## 10. Session guidance becomes opt-in
 
@@ -400,12 +452,25 @@ proposals.
   kind as Claude's, one per Codex config file, stored in a 0600 file under
   the Trajectree config directory because a command hook has no headers to
   carry it. `hooks show` and `hooks uninstall` cover both.
-- The builder confirms against Codex 0.163 where hooks are configured
-  (`[hooks]` in `config.toml` or a `hooks.json`), whether a feature flag is
-  needed, and the exact payload fields (`session_id`, `cwd`,
-  `transcript_path`, `hook_event_name`, `source`), and writes the merge the
-  same way the Claude installer does: Trajectree's handlers in their own
-  matcher group, only Trajectree's handlers removed on uninstall.
+- On the owner's host, Codex 0.163 reads hooks from `~/.codex/hooks.json`
+  (same shape as Claude's: event → matcher groups → handlers), gated by
+  `[features] hooks = true` in `config.toml`, which is already set. Each
+  handler is trusted separately in `config.toml` as
+  `[hooks.state."<file>:<event>:<group index>:<handler index>"]
+  trusted_hash = "sha256:…"`; the key is positional. The installer appends
+  Trajectree's handlers as the last matcher group of each event, so the owner's
+  existing groups keep their indexes, and uninstall removes only that group.
+  If a group of the owner's was added after Trajectree's, uninstall warns that
+  the trust entries after it need re-approval rather than silently shifting
+  them. The builder confirms the payload fields (`session_id`, `cwd`,
+  `transcript_path`, `hook_event_name`, `source`) against the installed
+  version.
+- **Trust (owner's decision pending):** the recommended behaviour is that the
+  installer does **not** write `trusted_hash` entries for its own handlers;
+  it prints that Codex will ask to trust the new hooks on its next start, and
+  `hooks show` reports a Codex handler as "installed, not yet trusted" until
+  the entry appears. Writing the hash ourselves would skip an approval step in
+  the owner's tool.
 - The receiver gains `/api/hooks/codex`; `handle_hook` takes the backend from
   the route and stores it on the session row (`session.backend` exists).
 
@@ -416,8 +481,12 @@ A session in the registry with no `Stop` for `TRAJECTREE_SESSION_IDLE_S`
 `ended_at = last_seen`. The check runs on the scheduler tick. This makes the
 existing `session_end` routine trigger usable with the owner's habits (sessions
 left to die in the background or killed at reboot) and keeps the live list
-honest. A later `Stop` from the same session id reopens it (clears `ended_at`),
-since Claude Code resumes keep the id.
+honest. A later `Stop` from the same session id (a terminal that went quiet and
+came back; a continued Claude Code session gets a new id and a new row) reopens
+it: `ended_at` is cleared, and the `session_end` trigger's handled set is keyed
+by `(session id, ended_at)` so the session fires again when it idles out again.
+A turn that runs longer than the idle window without a `Stop` would count as
+ended until its next `Stop` reopens it; that is accepted.
 
 ### 11.3 Codex transcripts
 
@@ -478,11 +547,36 @@ existing variables.
 | What | Value |
 |---|---|
 | Transcripts under `~/.claude/projects` | 837 |
-| pixiv_dl `ddd53b9c` | 624 KiB, 191 records, 12 prompts, active Aug 30 (19:20–19:59, 5 prompts), Sep 22 (3 min, 3 prompts), Sep 29 (4 min, 4 prompts); 3 segments at a 2 h gap; full digest 6,251 chars |
-| pixiv_dl `facdbc2d` | 426 KiB, 156 records, 8 prompts, active Aug 30 and Sep 22; all 155 uuid-bearing records also present in `ddd53b9c` with `sessionId` rewritten |
+| pixiv_dl `facdbc2d` (original) | 426 KiB, 156 records, 8 prompts, active Aug 30 and Sep 22; ends with a `continued-in` record whose `continuedInSessionId` is `ddd53b9c` |
+| pixiv_dl `ddd53b9c` (continuation) | 624 KiB, 191 records, 12 prompts, active Aug 30 (19:20–19:59, 5 prompts), Sep 22 (3 min, 3 prompts), Sep 29 (4 min, 4 prompts); 3 segments at a 2 h gap; opens with 10 metadata records, then the original's 155 records at positions 10–164 (same `uuid` and `timestamp`, `sessionId` rewritten), then its own; full digest 6,251 chars |
 | Largest transcripts, full digest vs 12,000 cap | Misaka-Project 124 MiB, 10 days, 40,778 chars; Keccak-Attack 47 MiB, 25 days, 49,052 chars; Trajectree 50 MiB, 5 days, 18,450 chars |
-| Codex | 0.163.0 in the image; hooks events include SessionStart, Stop, SessionEnd, UserPromptSubmit; handlers `command` and `mcp_tool` |
+| Codex | 0.163.0 in the image; hooks in `~/.codex/hooks.json` (SessionStart, Stop, UserPromptSubmit, PermissionRequest groups present, one handler each); `[features] hooks = true` and 4 `trusted_hash` entries in `config.toml`; handlers `command` and `mcp_tool` |
 | Claude Code | 2.1.310; owner's `~/.claude/settings.json` carries its own hooks in separate matcher groups |
+
+## 15. Calls made at the builder check
+
+A fresh reviewer planned from the first draft and asked nine questions. These
+were settled here without the owner (each is open to override):
+
+1. A stretch that comes back as due is read whole, marked "inspected up to
+   <date>", next to the blocks overlapping its dates; the continuation target
+   is the overlapping block before the most recent one (8.1, 8.2).
+2. Due means settled: last activity older than the segment gap, no live
+   session; the 24-hour `stale_settle_h` is not applied to inspections (8.4).
+3. Rejecting writes does not move the watermark; "Re-inspect since <date>"
+   does (8.4, 8.7).
+4. The Inbox groups an inspection's transactions; reject-all reverts newest
+   first; a single reject with dependents is refused with the existing
+   conflict (8.6).
+5. Inspect runs get the same read access to the project folder as `summarize`
+   (8.1).
+6. Idle-ended sessions reopen on a later `Stop`; the `session_end` handled set
+   is keyed by `(id, ended_at)`; a turn longer than the idle window is an
+   accepted edge (11.2).
+7. Existing projects start with a null watermark; the import cutoff applies
+   per segment (8.4, 9).
+8. Releases are blocks; "a release" is no longer a pill example (7.2).
+9. Codex hook trust is the owner's call; the recommended default is in 11.1.
 
 ## Appendix B. Owner decisions recorded in this design
 
