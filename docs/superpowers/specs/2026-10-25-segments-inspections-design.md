@@ -1,6 +1,6 @@
 # Work segments, inspections and tiered events
 
-Date: 2026-10-25. Status: draft for the owner's approval. Builds on the
+Date: 2026-10-25. Status: approved by the owner on 2026-10-25. Builds on the
 architecture design (`2026-10-21-trajectree-architecture-design.md`) and the
 instance/import/models design (`2026-10-23-instance-import-models-design.md`);
 where this document disagrees with them, this document wins.
@@ -465,12 +465,11 @@ proposals.
   them. The builder confirms the payload fields (`session_id`, `cwd`,
   `transcript_path`, `hook_event_name`, `source`) against the installed
   version.
-- **Trust (owner's decision pending):** the recommended behaviour is that the
-  installer does **not** write `trusted_hash` entries for its own handlers;
-  it prints that Codex will ask to trust the new hooks on its next start, and
-  `hooks show` reports a Codex handler as "installed, not yet trusted" until
-  the entry appears. Writing the hash ourselves would skip an approval step in
-  the owner's tool.
+- **Trust (owner's decision, 2026-10-25):** the installer does **not** write
+  `trusted_hash` entries for its own handlers; it prints that Codex will ask
+  to trust the new hooks on its next start, and `hooks show` reports a Codex
+  handler as "installed, not yet trusted" until the entry appears. Writing the
+  hash ourselves would skip an approval step in the owner's tool.
 - The receiver gains `/api/hooks/codex`; `handle_hook` takes the backend from
   the route and stores it on the session row (`session.backend` exists).
 
@@ -576,7 +575,8 @@ were settled here without the owner (each is open to override):
 7. Existing projects start with a null watermark; the import cutoff applies
    per segment (8.4, 9).
 8. Releases are blocks; "a release" is no longer a pill example (7.2).
-9. Codex hook trust is the owner's call; the recommended default is in 11.1.
+9. Codex hook trust: the owner approved the default in 11.1 (no trust hashes
+   written by the installer).
 
 ## Appendix B. Owner decisions recorded in this design
 
