@@ -5,7 +5,7 @@ import apsw
 from tests.test_repo_signals import sig
 from trajectree.context.stretches import merge_stretches
 from trajectree.db.schema import MIGRATIONS, migrate
-from trajectree.models import ProjectIn, Watermark
+from trajectree.models import ProjectIn, SignalIn, Watermark
 from trajectree.repo.inspections import (
     due_projects,
     get_watermark,
@@ -69,24 +69,59 @@ def test_upsert_signals_counts_only_changes(conn):
     assert by_key["session:p1:6"].updated_at.year >= 2026
 
 
-def test_uninspected_stretches_use_end_and_change_time(ledger, human, settings):
+def _cover(*sigs):
+    return {s.dedupe_key: s.t_end.isoformat() for s in sigs}
+
+
+def test_uninspected_stretches_use_end_and_coverage(ledger, human, settings):
     p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
     conn = ledger.conn
-    upsert_signals(conn, [
-        seg(p.id, 5, 10, 0, 10, 30, "old"),
-        seg(p.id, 12, 10, 0, 10, 30, "new"),
-        seg(p.id, 20, 10, 0, 10, 30, "touched"),
-    ])
-    conn.execute("UPDATE signal SET updated_at = '2026-01-01T00:00:00Z'")
-    conn.execute("UPDATE signal SET updated_at = '2026-02-01T00:00:00Z' WHERE dedupe_key = 'touched'")
-    set_watermark(conn, p.id, Watermark(inspected_at=at(10), started_at=datetime(2026, 1, 25, tzinfo=UTC)))
-    # day 5 ended before the mark and was not changed since: excluded; 12 and 20 (end > mark) included
-    now = at(28)
-    assert [s.t_start.day for s in uninspected_stretches(conn, settings, p, now=now)] == [12, 20]
-    # a stretch ending before the mark but changed after `started_at` is included
-    conn.execute("UPDATE signal SET updated_at = '2026-02-01T00:00:00Z' WHERE dedupe_key = 'old'")
-    assert [s.t_start.day for s in uninspected_stretches(conn, settings, p, now=now)] == [5, 12, 20]
+    old, new, late = seg(p.id, 5, 10, 0, 10, 30, "old"), seg(p.id, 12, 10, 0, 10, 30, "new"), seg(p.id, 8, 10, 0, 10, 30, "late")
+    upsert_signals(conn, [old, new, late])
+    # day 5 is covered; day 12 ends after the mark; day 8 is inside the old span but was never covered
+    set_watermark(conn, p.id, Watermark(inspected_at=at(10), covered=_cover(old)))
+    assert [s.t_start.day for s in uninspected_stretches(conn, settings, p, now=at(28))] == [8, 12]
+    # an old segment whose end grew is uninspected again
+    grown = old.model_copy(update={"t_end": at(5, 12)})
+    upsert_signals(conn, [grown])
+    assert [s.t_start.day for s in uninspected_stretches(conn, settings, p, now=at(28))] == [5, 8, 12]
     assert get_watermark(conn, p.id).inspected_at == at(10)
+
+
+def test_resumed_session_keeps_inspected_segments_inspected(ledger, human, settings):
+    p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    conn = ledger.conn
+    a, b = seg(p.id, 5, 10, 0, 10, 30, "a"), seg(p.id, 5, 14, 0, 14, 30, "b")
+    a, b = (x.model_copy(update={"payload": {"segments": 2, "title": "t"}}) for x in (a, b))
+    upsert_signals(conn, [a, b])
+    set_watermark(conn, p.id, Watermark(inspected_at=b.t_end, started_at=at(6), covered=_cover(a, b)))
+    assert uninspected_stretches(conn, settings, p, now=at(28)) == []
+    c = seg(p.id, 9, 10, 0, 10, 30, "c").model_copy(update={"payload": {"segments": 3, "title": "u"}})
+    resumed = [x.model_copy(update={"payload": {"segments": 3, "title": "u"}}) for x in (a, b)]
+    upsert_signals(conn, [*resumed, c])
+    got = uninspected_stretches(conn, settings, p, now=at(28))
+    assert len(got) == 1 and got[0].t_start == c.t_start
+    from trajectree.repo.inspections import uninspected_signals
+
+    assert [s.dedupe_key for s in uninspected_signals(conn, p.id, get_watermark(conn, p.id))] == ["c"]
+    upsert_signals(conn, [resumed[0].model_copy(update={"t_end": at(5, 11)})])
+    assert [s.dedupe_key for s in uninspected_signals(conn, p.id, get_watermark(conn, p.id))] == ["a", "c"]
+
+
+def test_uninspected_signals_are_not_capped(conn):
+    from trajectree.repo.inspections import uninspected_signals
+
+    rows = [
+        SignalIn(project_id="p", kind="session", t_start=at(1) + timedelta(minutes=i), t_end=at(1) + timedelta(minutes=i, seconds=30), dedupe_key=f"k{i}")
+        for i in range(5200)
+    ]
+    newest = SignalIn(project_id="p", kind="commits", t_start=at(25), dedupe_key="newest")
+    upsert_signals(conn, [*rows, newest])
+    assert [s.dedupe_key for s in uninspected_signals(conn, "p", Watermark())][-1] == "newest"
+    assert len(uninspected_signals(conn, "p", Watermark())) == 5201
+    wm = Watermark(inspected_at=at(20), covered={f"k{i}": r.t_end.isoformat() for i, r in enumerate(rows[:5100])})
+    got = [s.dedupe_key for s in uninspected_signals(conn, "p", wm)]
+    assert got[-1] == "newest" and len(got) == 101
 
 
 def test_due_requires_settlement(ledger, human, settings):

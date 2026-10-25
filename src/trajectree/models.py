@@ -260,6 +260,8 @@ class Watermark(BaseModel):
     inspected_at: AwareDatetime | None = None
     started_at: AwareDatetime | None = None
     series_id: str | None = None
+    # dedupe_key -> that signal's end (ISO) when it was inspected
+    covered: dict[str, str] = {}
 
 
 class Edge(BaseModel):

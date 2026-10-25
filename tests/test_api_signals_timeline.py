@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from tests.test_api_entities import mk_project
 from trajectree.models import SignalIn, Watermark
 from trajectree.repo.inspections import set_watermark
@@ -31,8 +31,7 @@ def test_timeline_due_counts_settled_stretches(client, app):
     params = {"from": "2026-01-01T00:00:00Z", "to": "2026-02-01T00:00:00Z"}
     tl = client.get("/api/timeline", params=params).json()
     assert tl["due"] == {p["id"]: 1} and tl["stale"] == [p["id"]]
-    later = datetime.now(UTC) + timedelta(days=1)   # started after the signals were written
-    set_watermark(conn, p["id"], Watermark(inspected_at=datetime(2026, 1, 6, tzinfo=UTC), started_at=later))
+    set_watermark(conn, p["id"], Watermark(inspected_at=datetime(2026, 1, 6, tzinfo=UTC), covered={"s1": "2026-01-05T10:00:00Z"}))
     tl = client.get("/api/timeline", params=params).json()
     assert tl["due"] == {} and tl["stale"] == []
     other = mk_project(client, "other")
