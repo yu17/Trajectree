@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 import pytest
-from trajectree.runner.argv import claude_argv, codex_argv, mask, mcp_config_json, run_env
+from trajectree.runner.argv import claude_argv, codex_argv, mask, mcp_config_json, run_env, run_secrets
 from trajectree.runner.spec import MissingCredentials, RunSpec, ToolPolicy
 
 def spec(**over):
@@ -119,17 +119,29 @@ def test_run_env_exports_the_profile_env_with_a_socket(settings, tmp_path):
     prof.mkdir(parents=True)
     (prof / "settings.json").write_text(json.dumps({"env": {
         "ANTHROPIC_AUTH_TOKEN": "k", "ANTHROPIC_BASE_URL": "http://127.0.0.1:40090", "ANTHROPIC_MODEL": "qwen",
-        "PATH": "/evil", "CLAUDE_CONFIG_DIR": "/x", "ANTHROPIC_UNIX_SOCKET": "/y.sock", "TRAJECTREE_RUN_TOKEN": "t",
-        "MAX_TOKENS": 5}}))
+        "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "65536", "ANTHROPIC_MAX_TOKENS": 5,
+        # The confine wrapper starts unconfined, so nothing that could load code into it gets through.
+        "LD_PRELOAD": "/cfg/backends/lmstudio/evil.so", "LD_LIBRARY_PATH": "/x", "NODE_OPTIONS": "--require /x",
+        "PATH": "/evil", "LANG": "x", "DISABLE_AUTOUPDATER": "0", "CLAUDE_CONFIG_DIR": "/x",
+        "ANTHROPIC_UNIX_SOCKET": "/y.sock", "TRAJECTREE_RUN_TOKEN": "t"}}))
     d = tmp_path / "sockets"
     d.mkdir()
-    s = settings.model_copy(update={"sockets_dir": d})
+    # A passthrough name never overrides the profile, as settings.json wins on a run without a socket.
+    s = settings.model_copy(update={"sockets_dir": d, "run_env_passthrough": ["ANTHROPIC_MODEL"]})
+    base = {"PATH": "/bin", "LANG": "C.UTF-8", "ANTHROPIC_MODEL": "from-daemon"}
     ccx = spec(runner="ccx:lmstudio", backend="lmstudio")
-    assert "ANTHROPIC_AUTH_TOKEN" not in run_env(ccx, s, base={"PATH": "/bin"}, oauth_token=None)  # settings.json serves it
+    assert "ANTHROPIC_AUTH_TOKEN" not in run_env(ccx, s, base=base, oauth_token=None)  # settings.json serves it
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
         sock.bind(str(d / "lmstudio.sock"))
-        env = run_env(ccx, s, base={"PATH": "/bin"}, oauth_token=None)
+        env = run_env(ccx, s, base=base, oauth_token=None)
     assert (env["ANTHROPIC_AUTH_TOKEN"], env["ANTHROPIC_BASE_URL"], env["ANTHROPIC_MODEL"]) == ("k", "http://127.0.0.1:40090", "qwen")
-    assert env["PATH"] == "/bin" and env["CLAUDE_CONFIG_DIR"] == str(prof)
-    assert env["ANTHROPIC_UNIX_SOCKET"] == str(d / "lmstudio.sock") and "TRAJECTREE_RUN_TOKEN" not in env
-    assert "MAX_TOKENS" not in env
+    assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "65536" and "ANTHROPIC_MAX_TOKENS" not in env
+    assert not {"LD_PRELOAD", "LD_LIBRARY_PATH", "NODE_OPTIONS", "TRAJECTREE_RUN_TOKEN"} & set(env)
+    assert (env["PATH"], env["LANG"], env["DISABLE_AUTOUPDATER"]) == ("/bin", "C.UTF-8", "1")
+    assert env["CLAUDE_CONFIG_DIR"] == str(prof) and env["ANTHROPIC_UNIX_SOCKET"] == str(d / "lmstudio.sock")
+
+
+def test_run_secrets_takes_credentials_not_token_counts():
+    env = {"ANTHROPIC_AUTH_TOKEN": "a", "ANTHROPIC_API_KEY": "b", "ANTHROPIC_CUSTOM_HEADERS": "X: c",
+           "TRAJECTREE_RUN_TOKEN": "d", "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "65536", "ANTHROPIC_MODEL": "m", "EMPTY_KEY": ""}
+    assert sorted(run_secrets(env)) == ["X: c", "a", "b", "d"]

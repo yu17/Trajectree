@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -12,10 +13,16 @@ from trajectree.runner.spec import MissingCredentials, RunSpec
 MCP_SERVER_NAME = "trajectree"
 # ANTHROPIC_UNIX_SOCKET too: only a ccx run gets one, and only its own backend's.
 _NEVER_PASSTHROUGH = {"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_UNIX_SOCKET"}
-# Variables a profile's env never overrides in a run (the service sets HOME and TMPDIR).
-_RUNNER_OWNED = {"PATH", "HOME", "TMPDIR", "TERM", "CLAUDE_CONFIG_DIR", "ANTHROPIC_UNIX_SOCKET"}
-# A profile key exported into a run's env, so it is masked like the run's own secrets.
-PROFILE_SECRET_KEYS = ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY")
+# The profile keys a socket run exports. Only Claude Code's own: the confine wrapper starts
+# unconfined, and the run may rewrite its profile, so LD_PRELOAD and the like never pass.
+_PROFILE_PREFIXES = ("ANTHROPIC_", "CLAUDE_CODE_")
+# An exported key whose value is masked like the run's own secrets.
+_SECRET_KEY = re.compile(r"(TOKEN|KEY|SECRET|HEADERS)$")  # not CLAUDE_CODE_MAX_CONTEXT_TOKENS
+
+
+def run_secrets(env: Mapping[str, str]) -> list[str]:
+    """The values in a run's env that stored output must never show."""
+    return [v for k, v in env.items() if _SECRET_KEY.search(k) and v]
 
 
 def mcp_config_json(spec: RunSpec) -> str:
@@ -74,6 +81,7 @@ def codex_argv(spec: RunSpec, *, binary: str, schema_path: Path | None, last_mes
 
 def run_env(spec: RunSpec, settings: Settings, *, base: Mapping[str, str], oauth_token: str | None) -> dict[str, str]:
     env: dict[str, str] = {}
+    profile_vars: dict[str, str] = {}
     for key in ("PATH", "LANG"):
         if key in base:
             env[key] = base[key]
@@ -93,18 +101,19 @@ def run_env(spec: RunSpec, settings: Settings, *, base: Mapping[str, str], oauth
         if (sock := backend_socket(settings, spec.backend)) is not None:
             # With a socket set, Claude Code 2.1.310 ignores the settings.json env ("Not logged in"),
             # so the profile's variables go in the process env.
-            env.update({
+            profile_vars = {
                 k: v for k, v in profile_env(profile / "settings.json").items()
-                if k not in _RUNNER_OWNED and not k.startswith("TRAJECTREE_")
-            })
-            env["ANTHROPIC_UNIX_SOCKET"] = str(sock)
+                if k.startswith(_PROFILE_PREFIXES) and k != "ANTHROPIC_UNIX_SOCKET"
+            }
+            profile_vars["ANTHROPIC_UNIX_SOCKET"] = str(sock)
     elif spec.runner == "codex":
         env["CODEX_HOME"] = str(settings.codex_home)
         env["TRAJECTREE_RUN_TOKEN"] = spec.mcp_token
     for name in settings.run_env_passthrough:
         if name in base and not name.startswith("TRAJECTREE_") and name not in _NEVER_PASSTHROUGH:
             env[name] = base[name]
-    return env
+    # Last, so the profile wins over passthrough, as its settings.json does on a run without a socket.
+    return {**env, **profile_vars}
 
 
 def mask_text(text: str, secrets: list[str]) -> str:

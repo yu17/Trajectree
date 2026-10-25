@@ -41,7 +41,7 @@ from trajectree.repo.runs import (
     spent_usd,
     update_run,
 )
-from trajectree.runner.argv import PROFILE_SECRET_KEYS, claude_argv, codex_argv, mask_text, mcp_config_json, run_env
+from trajectree.runner.argv import claude_argv, codex_argv, mask_text, mcp_config_json, run_env, run_secrets
 from trajectree.runner.catalog import Resolved, load_catalog, resolve_model
 from trajectree.runner.confine import CONFINE_FAILED_EXIT, LandlockUnavailable, confine_argv, landlock_abi
 from trajectree.runner.credentials import cli_version, ensure_cfg_dirs, load_oauth_token
@@ -203,7 +203,7 @@ class RunService:
             if isinstance(prepared, Run):
                 return prepared
             run, caps, plan, spec, env, token_id, oauth_token, actor = prepared
-        secrets = [spec.mcp_token, oauth_token or "", *(env.get(k, "") for k in PROFILE_SECRET_KEYS)]
+        secrets = [spec.mcp_token, oauth_token or "", *run_secrets(env)]
         run_dir = self.settings.runs_dir / run_id
         mcp_path = run_dir / "mcp.json"
         tmp_dir: Path | None = None
