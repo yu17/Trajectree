@@ -1,6 +1,7 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from tests.test_api_entities import mk_project
-from trajectree.models import SignalIn
+from trajectree.models import SignalIn, Watermark
+from trajectree.repo.inspections import set_watermark
 from trajectree.repo.signals import upsert_signals
 from trajectree.repo.state import set_state
 
@@ -11,26 +12,32 @@ def test_timeline_includes_strip_live_and_stale(client, app):
     conn = app.state.ledger.conn
     upsert_signals(conn, [SignalIn(project_id=p["id"], kind="session", t_start=datetime(2026, 1, 5, 10, tzinfo=UTC), dedupe_key="s1"),
                           SignalIn(project_id=p["id"], kind="commits", t_start=datetime(2026, 1, 5, 11, tzinfo=UTC), dedupe_key="g1", payload={"count": 3})])
-    # Stale is computed live: p's activity settled long ago with no summary. `fresh` has activity
-    # inside stale_settle_h, and `quiet` is named only by the ingest job's (outdated) state.
-    fresh, quiet = mk_project(client, "fresh"), mk_project(client, "quiet")
-    upsert_signals(conn, [SignalIn(project_id=fresh["id"], kind="session", t_start=datetime.now(UTC), dedupe_key="s2")])
+    # Due is computed live: `old` has a settled, uninspected stretch. p has one too but a live session
+    # (below), `fresh` has activity inside the gap, and `quiet` is named only by the ingest job's (outdated) state.
+    old, fresh, quiet = mk_project(client, "old"), mk_project(client, "fresh"), mk_project(client, "quiet")
+    upsert_signals(conn, [SignalIn(project_id=old["id"], kind="session", t_start=datetime(2026, 1, 5, 10, tzinfo=UTC), dedupe_key="s3"),
+                          SignalIn(project_id=fresh["id"], kind="session", t_start=datetime.now(UTC), dedupe_key="s2")])
     set_state(conn, "stale_projects", [quiet["id"], "other"])
     set_state(conn, "live_sessions", [{"project_id": p["id"], "session_id": "x", "cwd": "/c", "title": None, "started": None, "last_seen": "2026-01-05T12:00:00Z"},
                                       {"project_id": "other", "session_id": "y", "cwd": "/d", "title": None, "started": None, "last_seen": "2026-01-05T12:00:00Z"}])
     tl = client.get("/api/timeline", params={"from": "2026-01-01T00:00:00Z", "to": "2026-02-01T00:00:00Z"}).json()
-    assert sorted((b["kind"], b["count"]) for b in tl["strip"]) == [("commits", 3), ("session", 1)]  # commits bins sum payload counts
-    assert tl["stale"] == [p["id"]] and [l["session_id"] for l in tl["live"]] == ["x"]
+    assert sorted((b["kind"], b["count"]) for b in tl["strip"]) == [("commits", 3), ("session", 1), ("session", 1)]  # commits bins sum payload counts
+    assert tl["stale"] == [old["id"]] and [l["session_id"] for l in tl["live"]] == ["x"]
 
-def test_timeline_stale_clears_once_summarized(client, app):
+def test_timeline_due_counts_settled_stretches(client, app):
     p = mk_project(client)
-    upsert_signals(app.state.ledger.conn, [SignalIn(project_id=p["id"], kind="session", t_start=datetime(2026, 1, 5, 10, tzinfo=UTC), dedupe_key="s1")])
+    conn = app.state.ledger.conn
+    upsert_signals(conn, [SignalIn(project_id=p["id"], kind="session", t_start=datetime(2026, 1, 5, 10, tzinfo=UTC), dedupe_key="s1")])
     params = {"from": "2026-01-01T00:00:00Z", "to": "2026-02-01T00:00:00Z"}
-    assert client.get("/api/timeline", params=params).json()["stale"] == [p["id"]]
-    assert client.patch(f"/api/projects/{p['id']}", json={"summary_md": "# Done"}).status_code == 200
-    assert client.get("/api/timeline", params=params).json()["stale"] == []
+    tl = client.get("/api/timeline", params=params).json()
+    assert tl["due"] == {p["id"]: 1} and tl["stale"] == [p["id"]]
+    later = datetime.now(UTC) + timedelta(days=1)   # started after the signals were written
+    set_watermark(conn, p["id"], Watermark(inspected_at=datetime(2026, 1, 6, tzinfo=UTC), started_at=later))
+    tl = client.get("/api/timeline", params=params).json()
+    assert tl["due"] == {} and tl["stale"] == []
     other = mk_project(client, "other")
-    assert client.get("/api/timeline", params={**params, "projects": other["id"]}).json()["stale"] == []   # filtered out
+    upsert_signals(conn, [SignalIn(project_id=p["id"], kind="session", t_start=datetime(2026, 1, 9, 10, tzinfo=UTC), dedupe_key="s2")])
+    assert client.get("/api/timeline", params={**params, "projects": other["id"]}).json()["due"] == {}   # filtered out
 
 def test_signals_route_filters_and_limits(client, app):
     p = mk_project(client)

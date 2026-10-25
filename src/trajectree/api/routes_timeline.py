@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import timedelta
-
 from fastapi import APIRouter, Depends, Query
 from pydantic import AwareDatetime, BaseModel
 
@@ -14,7 +12,8 @@ from trajectree.models import Edge, Event, Project, StripBin, Todo
 from trajectree.repo import edges, events, projects, todos
 from trajectree.repo.review import pending_txns
 from trajectree.repo.sessions import live_sessions
-from trajectree.repo.signals import stale_projects, strip_bins
+from trajectree.repo.inspections import due_projects
+from trajectree.repo.signals import strip_bins
 from trajectree.repo.state import get_state
 from trajectree.timeutil import utcnow
 
@@ -32,6 +31,7 @@ class TimelineResponse(BaseModel):
     strip: list[StripBin]
     live: list[LiveSession]
     stale: list[str]
+    due: dict[str, int]
 
 
 @router.get("/timeline",response_model=TimelineResponse)
@@ -73,10 +73,9 @@ def timeline(
             now=now,
             window_s=settings.live_window_s,
         )
-        # Computed live so a new summary clears the flag at once; the ingest job's
+        # Computed live so an inspection clears the flag at once; the ingest job's
         # `stale_projects` state only feeds its report.
-        settled_before = now - timedelta(hours=settings.stale_settle_h)
-        stale = [pid for pid in stale_projects(conn, settled_before=settled_before) if pid in shown]
+        due = {d.project_id: d.stretches for d in due_projects(conn, settings, now=now) if d.project_id in shown}
     return TimelineResponse(
         projects=project_rows,
         events=event_rows,
@@ -85,5 +84,6 @@ def timeline(
         pending=pending,
         strip=strip,
         live=live,
-        stale=stale,
+        stale=list(due),
+        due=due,
     )

@@ -13,8 +13,13 @@ from trajectree.timeutil import to_db, utcnow
 
 
 def upsert_signals(conn: apsw.Connection, rows: list[SignalIn]) -> int:
-    """Insert or refresh signals keyed by `dedupe_key`; returns the number of rows given."""
+    """Insert or refresh signals keyed by `dedupe_key`; returns the number of rows changed.
+
+    A conflicting row is rewritten (and its `updated_at` bumped) only when its span, payload or
+    project differs, so a repeat pass over unchanged data counts 0 and moves nothing.
+    """
     now = to_db(utcnow())
+    changed = 0
     with conn:
         for r in rows:
             conn.execute(
@@ -23,14 +28,17 @@ def upsert_signals(conn: apsw.Connection, rows: list[SignalIn]) -> int:
                 " ON CONFLICT(dedupe_key) DO UPDATE SET project_id = excluded.project_id,"
                 " resource_id = excluded.resource_id, t_start = excluded.t_start,"
                 " t_end = excluded.t_end, payload = excluded.payload,"
-                " updated_at = excluded.updated_at",
+                " updated_at = excluded.updated_at"
+                " WHERE signal.t_start IS NOT excluded.t_start OR signal.t_end IS NOT excluded.t_end"
+                " OR signal.payload IS NOT excluded.payload OR signal.project_id IS NOT excluded.project_id",
                 (
                     new_id(), r.project_id, r.resource_id, r.kind, to_db(r.t_start),
                     to_db(r.t_end) if r.t_end else None, json.dumps(r.payload),
                     r.dedupe_key, now,
                 ),
             )
-    return len(rows)
+            changed += conn.changes()
+    return changed
 
 
 def _where(
@@ -168,19 +176,4 @@ def strip_bins(
     sql += " GROUP BY project_id, day, kind ORDER BY day, project_id, kind"
     return [
         StripBin(project_id=p, day=d, kind=k, count=c) for p, d, k, c in conn.execute(sql, params)
-    ]
-
-
-def stale_projects(conn: apsw.Connection, *, settled_before: datetime) -> list[str]:
-    """Active projects whose earliest activity since the last summary has settled."""
-    return [
-        r[0]
-        for r in conn.execute(
-            "SELECT p.id FROM project p WHERE p.status = 'active' AND ("
-            " SELECT MIN(ts) FROM ("
-            "  SELECT t_start AS ts FROM signal WHERE project_id = p.id"
-            "  UNION ALL SELECT created_at FROM event WHERE project_id = p.id"
-            " ) WHERE ts > coalesce(p.summary_at, '')) <= ? ORDER BY p.id",
-            (to_db(settled_before),),
-        )
     ]

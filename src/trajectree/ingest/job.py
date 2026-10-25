@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from urllib.parse import urlparse
 
@@ -41,9 +41,9 @@ from trajectree.db.ledger import Ledger
 from trajectree.importing import source_picked, source_start
 from trajectree.ingest.exports import render_exports, write_files
 from trajectree.models import Actor, Resource, ResourceIn
+from trajectree.repo.inspections import due_projects
 from trajectree.repo.projects import list_projects
 from trajectree.repo.resources import find_resource, list_resources, upsert_resource
-from trajectree.repo.signals import stale_projects
 from trajectree.repo.review import pending_txns
 from trajectree.repo.state import get_state, set_state
 from trajectree.timeutil import utcnow
@@ -229,7 +229,7 @@ def run_ingest(ledger: Ledger, settings: Settings, *, now: datetime | None = Non
                 )
             recurrence = materialize(ledger, now=now, tz=settings.tz)
             with ledger.locked() as conn:
-                stale = stale_projects(conn, settled_before=now - timedelta(hours=settings.stale_settle_h))
+                stale = [d.project_id for d in due_projects(conn, settings, now=now)]
                 with conn:
                     set_state(conn, "live_sessions", [s.model_dump(mode="json") for s in (scan.live if scan else [])])
                     set_state(conn, "stale_projects", stale)

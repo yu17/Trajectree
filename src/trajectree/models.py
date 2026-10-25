@@ -227,6 +227,41 @@ class StripBin(BaseModel):
     )
 
 
+class Stretch(BaseModel):
+    """Segments of one project that sit within the gap of each other, with their activity counts."""
+
+    project_id: str
+    t_start: AwareDatetime
+    t_end: AwareDatetime
+    segments: int
+    sessions: int
+    commits: int
+    file_days: int
+    signal_ids: list[str]
+    inspected_up_to: AwareDatetime | None = None
+
+
+class InspectionDue(BaseModel):
+    project_id: str
+    slug: str
+    title: str
+    stretches: int
+    first_day: str
+    last_day: str
+    sessions: int
+    commits: int
+    file_days: int
+    active_run: str | None = None
+    episode: int | None = None
+    episodes: int | None = None
+
+
+class Watermark(BaseModel):
+    inspected_at: AwareDatetime | None = None
+    started_at: AwareDatetime | None = None
+    series_id: str | None = None
+
+
 class Edge(BaseModel):
     id: str
     src_type: EntityType

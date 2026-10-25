@@ -168,12 +168,22 @@ _V4_STATEMENTS: list[str] = [
     )""",
 ]
 
+_V5_STATEMENTS: list[str] = [
+    "ALTER TABLE event ADD COLUMN tier TEXT NOT NULL DEFAULT 'block'",
+    "UPDATE event SET tier = 'pill' WHERE kind IN ('idea', 'note')",
+    # Session signals are rebuilt per work segment: drop the old-key ones and the stored scan
+    # state so the first pass re-reads every transcript.
+    "DELETE FROM signal WHERE kind = 'session'",
+    "DELETE FROM state WHERE key LIKE 'scan:%'",
+]
+
 # Ordered migration steps; a later schema version appends (version, statements).
 MIGRATIONS: list[tuple[int, list[str]]] = [
     (1, _V1_STATEMENTS),
     (2, _V2_STATEMENTS),
     (3, _V3_STATEMENTS),
     (4, _V4_STATEMENTS),
+    (5, _V5_STATEMENTS),
 ]
 
 SCHEMA_VERSION: int = MIGRATIONS[-1][0]
