@@ -185,3 +185,83 @@ def test_schema_v5_adds_tier_and_purges_session_signals(tmp_path):
     tiers = dict(conn.execute("SELECT kind, tier FROM event"))
     assert tiers == {"idea": "pill", "note": "pill", "milestone": "block"}
     conn.close()
+
+
+def _session_signal(pid, path, key, start, end, n=1, m=1, title="Encoder"):
+    from trajectree.models import Signal
+
+    return Signal(
+        id=f"id-{key}", project_id=pid, kind="session", t_start=start, t_end=end, dedupe_key=key, updated_at=start,
+        payload={"session_id": "s", "title": title, "model": "opus", "prompts": 2, "transcript_path": str(path),
+                 "backend": "claude", "segment": n, "segments": m, "first_prompt": "fix the encoder"},
+    )
+
+
+def _render_fixture(ledger, human, settings, tmp_path):
+    from tests.test_claude_sessions import CWD, SID, rec_assistant, rec_user, write_transcript
+    from trajectree.models import EdgeIn, EventIn
+    from trajectree.repo.edges import create_edge, list_edges
+    from trajectree.repo.events import create_event, list_events
+
+    p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    path = write_transcript(tmp_path, CWD, SID, [
+        rec_user("2026-08-30T10:00:00.000Z", text="fix the encoder"), rec_assistant("2026-08-30T10:05:00.000Z"),
+        rec_user("2026-09-22T10:00:00.000Z", text="train the decoder"), rec_assistant("2026-09-22T10:05:00.000Z"),
+    ])
+    block = create_event(ledger, human, EventIn(project_id=p.id, kind="milestone", title="Encoder frozen",
+                                                 t_start=datetime(2026, 8, 29, tzinfo=UTC), t_end=datetime(2026, 8, 30, 9, tzinfo=UTC)))
+    pill = create_event(ledger, human, EventIn(project_id=p.id, kind="note", title="Check LR", tier="pill",
+                                                t_start=datetime(2026, 8, 29, 5, tzinfo=UTC)))
+    create_edge(ledger, human, EdgeIn(src_type="event", src_id=pill.id, dst_type="event", dst_id=block.id, rel="part_of"))
+    s1 = _session_signal(p.id, path, "k1", datetime(2026, 8, 30, 10, tzinfo=UTC), datetime(2026, 8, 30, 10, 30, tzinfo=UTC))
+    commit = s1.model_copy(update={"id": "id-c", "kind": "commits", "dedupe_key": "c", "t_start": datetime(2026, 8, 30, 11, tzinfo=UTC),
+                                   "t_end": None, "payload": {"count": 2, "subjects": ["add encoder", "fix lr"]}})
+    sigs = [s1, commit]
+    stretches = merge_stretches(sigs, gap_s=7200)
+    return p, block, pill, stretches, {s.id: s for s in sigs}, list_events(ledger.conn), list_edges(ledger.conn)
+
+
+def test_render_stretches_includes_overlapping_blocks_and_windowed_digests(ledger, human, settings, tmp_path):
+    from trajectree.context.stretches import render_stretches
+
+    p, block, pill, stretches, by_id, events, edges = _render_fixture(ledger, human, settings, tmp_path)
+    text, size = render_stretches(stretches, by_id, blocks=events, edges=edges, settings=settings, budget_chars=100000)
+    assert "### Stretch 1: 2026-08-30 → 2026-08-30" in text
+    assert f"Encoder frozen ({block.id}) [milestone/block]" in text and f"pills: Check LR ({pill.id})" in text
+    assert '- 2026-08-30 10:00–10:30 claude session "Encoder" segment 1/1, 2 prompts, opus' in text
+    assert '<data name="digest id-k1">' in text and "fix the encoder" in text and "train the decoder" not in text
+    assert "- 2026-08-30 2 commits: add encoder; fix lr" in text
+    assert size == len(text)
+
+
+def test_render_stretches_truncates_at_budget_with_a_marker(ledger, human, settings, tmp_path):
+    from trajectree.context.stretches import render_stretches
+
+    p, block, pill, stretches, by_id, events, edges = _render_fixture(ledger, human, settings, tmp_path)
+    text, size = render_stretches(stretches, by_id, blocks=events, edges=edges, settings=settings, budget_chars=300)
+    assert text.rstrip().endswith("more segments not shown)") and "(… 2 more segments not shown)" in text
+    assert size > 300
+
+
+def test_render_segment_lines_has_one_line_per_segment_with_size(ledger, human, settings, tmp_path):
+    from trajectree.context.stretches import estimate_sizes, render_segment_lines
+
+    p, block, pill, stretches, by_id, events, edges = _render_fixture(ledger, human, settings, tmp_path)
+    sizes = estimate_sizes(stretches, by_id, settings)
+    assert sizes["id-k1"] > 0
+    lines = render_segment_lines(stretches, by_id, sizes).splitlines()
+    assert len(lines) == 2
+    assert lines[0].startswith('- 2026-08-30 10:00–10:30 claude session "Encoder" 2 prompts (~') and 'chars): "fix the encoder"' in lines[0]
+    assert lines[1] == "- 2026-08-30 2 commits: add encoder; fix lr"
+
+
+def test_overlapping_blocks_adds_the_three_most_recent_blocks(ledger, human, settings, tmp_path):
+    from trajectree.context.stretches import overlapping_blocks
+    from trajectree.models import EventIn
+    from trajectree.repo.events import create_event, list_events
+
+    p, block, pill, stretches, by_id, events, edges = _render_fixture(ledger, human, settings, tmp_path)
+    for d in range(1, 5):
+        create_event(ledger, human, EventIn(project_id=p.id, kind="milestone", title=f"old{d}", t_start=datetime(2026, 1, d, tzinfo=UTC)))
+    got = overlapping_blocks(stretches[0], list_events(ledger.conn), gap_s=7200)
+    assert [e.title for e in got] == ["old3", "old4", "Encoder frozen"]
