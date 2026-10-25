@@ -415,6 +415,26 @@ def test_chain_of_continuations_counts_each_record_once(ledger, human, settings,
     assert sum(r.payload["prompts"] for rows in by.values() for r in rows) == 7
 
 
+def test_continuation_without_own_records_emits_no_signal(ledger, human, settings, tmp_path):
+    from trajectree.ingest.job import run_ingest
+    home, s, p = _continuation_setup(ledger, human, settings, tmp_path)
+    cont_path = home / "projects" / encode_project_dir(CWD) / f"{CONT}.jsonl"
+    full = cont_path.read_text().splitlines(keepends=True)
+    cont_path.write_text("".join(full[:13]))  # 3 metadata + 10 copied, nothing of its own
+    now = datetime(2026, 10, 25, tzinfo=UTC)
+    run_ingest(ledger, s, now=now)
+    by = _by_session(ledger)
+    assert CONT not in by and len(by[ORIG]) == 2
+    assert all(r.payload["resumed_from"] is None for r in by[ORIG])
+    with cont_path.open("a") as f:
+        f.write("".join(full[13:]))
+    os.utime(cont_path, None)
+    run_ingest(ledger, s, now=now)
+    by = _by_session(ledger)
+    (cont,) = by[CONT]
+    assert cont.t_start.day == 29 and cont.payload["resumed_from"] == ORIG and len(by[ORIG]) == 2
+
+
 def test_continuation_state_survives_a_restart(ledger, human, settings, tmp_path):
     from trajectree.ingest.job import run_ingest
     home, s, p = _continuation_setup(ledger, human, settings, tmp_path)

@@ -631,6 +631,8 @@ def session_signals(
         if start is not None and (summary.t_end or seen) < start:
             continue
         running = (now - seen).total_seconds() < settings.live_window_s
+        if summary.skip_until is not None and not summary.segments:
+            continue  # a continuation holding only copied history has nothing of its own yet
         # a summary with no conversation timestamps still yields one signal, so nothing is lost
         segments = summary.segments or [
             Segment(t_start=summary.t_start or seen, t_end=summary.t_end or seen, prompts=summary.prompts)
