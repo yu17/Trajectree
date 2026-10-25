@@ -44,7 +44,7 @@ from trajectree.runner.catalog import ModelChoiceError, load_catalog
 from trajectree.runner.credentials import ensure_cfg_dirs, migrate_oauth_token
 from trajectree.runner.seeds import ensure_inbox_project, ensure_seed_routines
 from trajectree.runner.service import RunService
-from trajectree.runner.spec import AlreadyApplied, RunsPaused
+from trajectree.runner.spec import AlreadyApplied, InspectionActive, NothingToInspect, RunsPaused
 from trajectree.scheduler import Scheduler
 from trajectree.timeutil import utcnow
 
@@ -170,6 +170,8 @@ def create_app(settings: Settings, *, ledger: Ledger | None = None) -> FastAPI:
     app.add_exception_handler(UnknownSession, _error_handler(422))
     app.add_exception_handler(ModelChoiceError, _error_handler(422))
     app.add_exception_handler(RunsPaused, lambda r, e: JSONResponse({"detail": "runs are paused"}, status_code=409))
+    app.add_exception_handler(InspectionActive, _error_handler(409))  # an inspection is already running for <slug>
+    app.add_exception_handler(NothingToInspect, _error_handler(409))  # nothing to inspect for <slug>
     app.add_exception_handler(
         AlreadyApplied, lambda r, e: JSONResponse({"detail": str(e)}, status_code=409)
     )

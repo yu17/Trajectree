@@ -396,6 +396,29 @@ def test_plan_inspect_boundaries_is_read_only_with_episode_schema(ledger, human,
     assert "never split a stretch" in plan.prompt and "12345" in plan.prompt and "$budget" not in plan.prompt
 
 
+def test_plan_inspect_boundaries_renders_stretches_with_stored_sizes(ledger, human, settings):
+    from datetime import timedelta
+    from trajectree.models import SignalIn
+    from trajectree.repo.runs import update_run
+    from trajectree.repo.signals import list_signals, upsert_signals
+    ensure_prompts(settings)
+    p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    t = datetime(2026, 1, 5, 10, tzinfo=UTC)
+    upsert_signals(ledger.conn, [
+        SignalIn(project_id=p.id, kind="session", t_start=t, t_end=t + timedelta(hours=1), dedupe_key="s1",
+                 payload={"title": "Sized", "prompts": 3, "first_prompt": "do x"}),
+        SignalIn(project_id=p.id, kind="session", t_start=t + timedelta(hours=2), t_end=t + timedelta(hours=3),
+                 dedupe_key="s2", payload={"title": "Unsized", "prompts": 1}),
+    ])
+    sized = next(s for s in list_signals(ledger.conn, project_ids=[p.id]) if s.dedupe_key == "s1")
+    run = update_run(ledger.conn, _inspect_run(ledger, p, "inspect_boundaries").id, props={"sizes": {sized.id: 4321}})
+    plan = plan_run(ledger.conn, settings, run=run, request=InspectBoundariesRequest(project="a", series_id="s", budget_chars=10), now=NOW)
+    sized_line = next(line for line in plan.prompt.splitlines() if '"Sized"' in line)
+    unsized_line = next(line for line in plan.prompt.splitlines() if '"Unsized"' in line)
+    assert "2026-01-05 10:00–11:00" in sized_line and "3 prompts (~4321 chars)" in sized_line and '"do x"' in sized_line
+    assert "(~0 chars)" in unsized_line
+
+
 def test_inspect_kinds_are_interactive_and_round_trip():
     from trajectree.models import SLOT_OF
     assert SLOT_OF["inspect"] == "interactive" and SLOT_OF["inspect_boundaries"] == "interactive"

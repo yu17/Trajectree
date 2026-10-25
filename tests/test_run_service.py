@@ -971,3 +971,296 @@ def test_apply_proposal_sets_tier(ledger, human, settings, logged_in):
     s.apply_proposal(run.id, 0, actor=human)
     s.apply_proposal(run.id, 1, actor=human)
     assert {e.title: e.tier for e in list_events(ledger.conn, project_ids=[p.id])} == {"Moment": "pill", "Checkpoint": "block"}
+
+
+# -- inspections -------------------------------------------------------------------------------
+
+from datetime import timedelta
+from trajectree.models import SignalIn, Watermark
+from trajectree.repo.inspections import due_projects, get_watermark, set_watermark, uninspected_stretches
+from trajectree.repo.runs import find_active
+from trajectree.repo.signals import upsert_signals
+from trajectree.runner.kinds import InspectRequest
+from trajectree.runner.spec import InspectionActive, NothingToInspect
+from trajectree.timeutil import utcnow
+
+UTC = timezone.utc
+PROPOSALS_ANSWER = json.dumps({"answer": "done", "proposals": []})
+
+
+def _at(day, hour=0, minute=0):
+    return datetime(2026, 1, day, hour, minute, tzinfo=UTC)
+
+
+def _seg(pid, day, h1, h2, key, kind="session"):
+    return SignalIn(project_id=pid, kind=kind, t_start=_at(day, h1), t_end=_at(day, h2),
+                    payload={"title": key, "prompts": 2}, dedupe_key=key)
+
+
+def _inspect_project(ledger, human, tmp_path, slug="a"):
+    p = create_project(ledger, human, ProjectIn(slug=slug, title=slug.upper(), kind="research"))
+    folder = tmp_path / f"proj-{slug}"
+    folder.mkdir()
+    upsert_resource(ledger, human, ResourceIn(project_id=p.id, kind="folder", locator=str(folder)))
+    return p
+
+
+def isvc(ledger, settings, structured=PROPOSALS_ANSWER, mode="ok"):
+    env = {"PATH": os.environ["PATH"], "FAKE_CLAUDE_MODE": mode, "FAKE_CLAUDE_STRUCTURED": structured}
+    return RunService(ledger, settings, base_env=env)
+
+
+def _set_structured(s, structured, mode="ok"):
+    s.base_env = {**s.base_env, "FAKE_CLAUDE_STRUCTURED": structured, "FAKE_CLAUDE_MODE": mode}
+
+
+def _stretches(ledger, settings, p):
+    from trajectree.repo.projects import get_project
+    return uninspected_stretches(ledger.conn, settings, get_project(ledger.conn, p.id), now=utcnow())
+
+
+def _due_slugs(ledger, settings):
+    return [d.slug for d in due_projects(ledger.conn, settings, now=utcnow())]
+
+
+def _queued_inspect_runs(ledger):
+    from trajectree.repo.runs import list_runs
+    return [r for r in list_runs(ledger.conn, limit=50) if r.kind.startswith("inspect") and r.status == "queued"]
+
+
+def test_inspect_small_material_runs_once_and_advances_watermark(ledger, human, settings, logged_in, tmp_path):
+    p = _inspect_project(ledger, human, tmp_path)
+    upsert_signals(ledger.conn, [_seg(p.id, 5, 10, 11, "s1"), _seg(p.id, 5, 12, 13, "s2")])
+    [stretch] = _stretches(ledger, settings, p)
+    s = isvc(ledger, settings)
+    run = s.inspect(InspectRequest(project="a", model=MODEL))
+    assert run.kind == "inspect" and run.project_id == p.id
+    assert run.props["series_id"] and run.props["episode_no"] == 1 and run.props["episodes"] == 1
+    done = s.execute(run.id)
+    assert done.status == "ok"
+    wm = get_watermark(ledger.conn, p.id)
+    assert wm.inspected_at == stretch.t_end and wm.series_id == run.props["series_id"]
+    assert wm.started_at == done.started
+    assert set(wm.covered) == {"s1", "s2"}
+    assert "a" not in _due_slugs(ledger, settings)
+    assert _queued_inspect_runs(ledger) == []
+
+
+def test_inspect_material_is_rendered_outside_the_lock(ledger, human, settings, logged_in, tmp_path, monkeypatch):
+    p = _inspect_project(ledger, human, tmp_path)
+    upsert_signals(ledger.conn, [_seg(p.id, 5, 10, 11, "s1")])
+    seen = []
+    real = service_mod.render_stretches
+    def spy(*a, **kw):
+        seen.append(_lock_free(ledger))
+        return real(*a, **kw)
+    monkeypatch.setattr(service_mod, "render_stretches", spy)
+    prompt_file = settings.claude_config_dir / "prompt.txt"  # the confined fake may write only there
+    s = isvc(ledger, settings)
+    s.base_env = {**s.base_env, "FAKE_CLAUDE_PROMPT_FILE": str(prompt_file)}
+    run = s.inspect(InspectRequest(project="a", model=MODEL))
+    done = s.execute(run.id)
+    assert done.status == "ok", done.error
+    assert seen and all(seen)  # once to size the material in `inspect`, once to render it in the run
+    assert "### Stretch 1: 2026-01-05" in prompt_file.read_text()
+
+
+def test_inspect_mints_scope_with_five_tools(ledger, human, settings, logged_in, tmp_path, monkeypatch):
+    p = _inspect_project(ledger, human, tmp_path)
+    upsert_signals(ledger.conn, [_seg(p.id, 5, 10, 11, "s1")])
+    seen = {}
+    real = service_mod.mint_token
+    def spy(conn, **kw):
+        seen.update(kw)
+        return real(conn, **kw)
+    monkeypatch.setattr(service_mod, "mint_token", spy)
+    s = isvc(ledger, settings)
+    assert s.execute(s.inspect(InspectRequest(project="a", model=MODEL)).id).status == "ok"
+    assert seen["scope"] == Scope(
+        projects=[p.id], tools=["record_event", "update_event", "add_todo", "link", "set_project_summary"], write=True
+    )
+
+
+def test_inspect_refuses_a_second_active_inspection(ledger, human, settings, logged_in, tmp_path):
+    p = _inspect_project(ledger, human, tmp_path)
+    upsert_signals(ledger.conn, [_seg(p.id, 5, 10, 11, "s1")])
+    s = isvc(ledger, settings)
+    s.inspect(InspectRequest(project="a", model=MODEL))
+    with pytest.raises(InspectionActive, match="an inspection is already running for a"):
+        s.inspect(InspectRequest(project="a", model=MODEL))
+    with pytest.raises(InspectionActive):
+        s.enqueue(InspectRequest(project="a", model=MODEL))
+
+
+def test_inspect_nothing_due_raises(ledger, human, settings, logged_in, tmp_path):
+    _inspect_project(ledger, human, tmp_path)
+    s = isvc(ledger, settings)
+    with pytest.raises(NothingToInspect, match="nothing to inspect for a"):
+        s.inspect(InspectRequest(project="a", model=MODEL))
+
+
+def test_inspect_with_a_bad_model_writes_nothing(ledger, human, settings, logged_in, tmp_path):
+    p = _inspect_project(ledger, human, tmp_path)
+    upsert_signals(ledger.conn, [_seg(p.id, 5, 10, 11, "s1")])
+    set_watermark(ledger.conn, p.id, Watermark(inspected_at=_at(30)))
+    s = isvc(ledger, settings)
+    with pytest.raises(ValueError):
+        s.inspect(InspectRequest(project="a", model="no-such-model", since=date(2026, 1, 1)))
+    assert get_watermark(ledger.conn, p.id).inspected_at == _at(30)  # `since` was not applied
+
+
+def _three_stretches(ledger, p):
+    upsert_signals(ledger.conn, [
+        _seg(p.id, 5, 10, 11, "s1"), _seg(p.id, 5, 12, 13, "s2"),
+        _seg(p.id, 10, 9, 10, "s3"),
+        _seg(p.id, 20, 14, 15, "s4"),
+    ])
+
+
+TWO_EPISODES = json.dumps({"answer": "two", "episodes": [
+    {"start": "2026-01-05", "end": "2026-01-10", "label": "first"},
+    {"start": "2026-01-20", "end": "2026-01-20", "label": "second"},
+]})
+
+
+def test_inspect_large_material_runs_boundaries_then_episodes_in_order(ledger, human, settings, logged_in, tmp_path):
+    settings.inspect_budget_chars = 200
+    p = _inspect_project(ledger, human, tmp_path)
+    _three_stretches(ledger, p)
+    st1, st2, st3 = _stretches(ledger, settings, p)
+    s = isvc(ledger, settings, structured=TWO_EPISODES)
+    b = s.inspect(InspectRequest(project="a", model=MODEL))
+    assert b.kind == "inspect_boundaries" and b.project_id == p.id
+    assert set(b.props["sizes"]) == {sid for st in (st1, st2, st3) for sid in st.signal_ids}
+    series = b.props["series_id"]
+    assert s.execute(b.id).status == "ok"
+    b = get_run(ledger.conn, b.id)
+    assert [e["label"] for e in b.props["episodes_json"]] == ["first", "second"]
+    assert b.props["episodes"] == 2
+    [ep1] = _queued_inspect_runs(ledger)
+    assert ep1.kind == "inspect" and ep1.props["episode_no"] == 1 and ep1.props["episodes"] == 2
+    req1 = InspectRequest.model_validate(ep1.props["request"])
+    assert req1.episode_start == st1.t_start and req1.episode_end == st2.t_end and req1.model == MODEL
+    assert get_watermark(ledger.conn, p.id).inspected_at is None  # the boundary pass moves nothing
+    _set_structured(s, PROPOSALS_ANSWER)
+    assert s.execute(ep1.id).status == "ok"
+    assert get_watermark(ledger.conn, p.id).inspected_at == st2.t_end
+    [ep2] = _queued_inspect_runs(ledger)
+    assert ep2.props["episode_no"] == 2 and ep2.props["episodes"] == 2
+    assert InspectRequest.model_validate(ep2.props["request"]).episode_start == st3.t_start
+    assert s.execute(ep2.id).status == "ok"
+    wm = get_watermark(ledger.conn, p.id)
+    assert wm.inspected_at == st3.t_end and set(wm.covered) == {"s1", "s2", "s3", "s4"}
+    assert {r.props["series_id"] for r in (b, ep1, ep2)} == {series}
+    assert _queued_inspect_runs(ledger) == [] and "a" not in _due_slugs(ledger, settings)
+
+
+def test_inspect_failed_episode_stops_series_and_keeps_watermark(ledger, human, settings, logged_in, tmp_path):
+    settings.inspect_budget_chars = 200
+    p = _inspect_project(ledger, human, tmp_path)
+    _three_stretches(ledger, p)
+    s = isvc(ledger, settings, structured=TWO_EPISODES)
+    s.execute(s.inspect(InspectRequest(project="a", model=MODEL)).id)
+    [ep1] = _queued_inspect_runs(ledger)
+    _set_structured(s, PROPOSALS_ANSWER, mode="garbage")
+    assert s.execute(ep1.id).status == "failed"
+    assert _queued_inspect_runs(ledger) == []
+    assert get_watermark(ledger.conn, p.id).inspected_at is None
+    assert "a" in _due_slugs(ledger, settings)
+
+
+@pytest.mark.parametrize("episodes, reason", [
+    ([{"start": "2026-01-20", "end": "2026-01-20", "label": "x"}, {"start": "2026-01-05", "end": "2026-01-10", "label": "y"}], "out of order"),
+    ([{"start": "2026-01-05", "end": "2026-01-10", "label": "x"}, {"start": "2026-01-10", "end": "2026-01-20", "label": "y"}], "overlap"),
+    ([], "no episodes"),
+    ([{"start": "Jan 5", "end": "2026-01-10", "label": "x"}], "unparsable"),
+    ([{"start": "2025-12-01", "end": "2026-01-10", "label": "x"}], "outside"),
+    ([{"start": "2026-01-12", "end": "2026-01-15", "label": "x"}], "no stretch"),
+    (None, "no episodes"),
+])
+def test_bad_boundaries_fail_the_series_and_keep_the_watermark(ledger, human, settings, logged_in, tmp_path, episodes, reason):
+    settings.inspect_budget_chars = 200
+    p = _inspect_project(ledger, human, tmp_path)
+    _three_stretches(ledger, p)
+    body = {"answer": "bad"} if episodes is None else {"answer": "bad", "episodes": episodes}
+    s = isvc(ledger, settings, structured=json.dumps(body))
+    done = s.execute(s.inspect(InspectRequest(project="a", model=MODEL)).id)
+    stored = get_run(ledger.conn, done.id)
+    assert done.status == stored.status == "failed"
+    assert stored.error.startswith("boundaries invalid:") and reason in stored.error
+    assert _queued_inspect_runs(ledger) == []
+    assert get_watermark(ledger.conn, p.id).inspected_at is None
+    assert "a" in _due_slugs(ledger, settings)
+
+
+def test_series_that_cannot_queue_its_next_episode_records_why(ledger, human, settings, logged_in, tmp_path):
+    settings.inspect_budget_chars = 200
+    p = _inspect_project(ledger, human, tmp_path)
+    _three_stretches(ledger, p)
+    s = isvc(ledger, settings, structured=TWO_EPISODES)
+    b = s.inspect(InspectRequest(project="a", model=MODEL))
+    set_caps(ledger.conn, Caps(paused=True))  # the owner pauses runs while the boundary pass runs
+    done = s.execute(b.id)
+    assert done.status == "ok" and done.props["series_stopped"] == "runs are paused"
+    assert _queued_inspect_runs(ledger) == [] and "a" in _due_slugs(ledger, settings)
+
+
+def test_boundaries_snap_episode_dates_to_stretch_edges(ledger, human, settings, logged_in, tmp_path):
+    settings.inspect_budget_chars = 200
+    p = _inspect_project(ledger, human, tmp_path)
+    _three_stretches(ledger, p)
+    st1, st2, st3 = _stretches(ledger, settings, p)
+    # Day boundaries that fall between stretches snap to the stretches inside them.
+    body = {"answer": "x", "episodes": [
+        {"start": "2026-01-05", "end": "2026-01-07", "label": "a"},
+        {"start": "2026-01-08", "end": "2026-01-20", "label": "b"},
+    ]}
+    s = isvc(ledger, settings, structured=json.dumps(body))
+    b = s.execute(s.inspect(InspectRequest(project="a", model=MODEL)).id)
+    eps = get_run(ledger.conn, b.id).props["episodes_json"]
+    assert [(e["start"], e["end"]) for e in eps] == [
+        (st1.t_start.isoformat(), st1.t_end.isoformat()), (st2.t_start.isoformat(), st3.t_end.isoformat()),
+    ]
+
+
+def test_inspect_since_resets_watermark(ledger, human, settings, logged_in, tmp_path):
+    p = _inspect_project(ledger, human, tmp_path)
+    upsert_signals(ledger.conn, [_seg(p.id, 1, 10, 11, "s1"), _seg(p.id, 20, 10, 11, "s2")])
+    set_watermark(ledger.conn, p.id, Watermark(inspected_at=_at(30), covered={"s1": _at(1, 11).isoformat(), "s2": _at(20, 11).isoformat()}))
+    assert "a" not in _due_slugs(ledger, settings)
+    s = isvc(ledger, settings)
+    run = s.inspect(InspectRequest(project="a", model=MODEL, since=date(2026, 1, 1)))
+    req = InspectRequest.model_validate(run.props["request"])
+    assert req.episode_start.date() == date(2026, 1, 1) and req.episode_start == _at(1, 10)
+    assert get_watermark(ledger.conn, p.id).inspected_at == _at(1)
+
+
+def test_inspect_since_keeps_earlier_history_inspected(ledger, human, settings, logged_in, tmp_path):
+    p = _inspect_project(ledger, human, tmp_path)
+    upsert_signals(ledger.conn, [_seg(p.id, 1, 10, 11, "old"), _seg(p.id, 20, 10, 11, "new")])
+    s = isvc(ledger, settings)  # never inspected before
+    run = s.inspect(InspectRequest(project="a", model=MODEL, since=date(2026, 1, 15)))
+    wm = get_watermark(ledger.conn, p.id)
+    assert wm.inspected_at == _at(15) and set(wm.covered) == {"old"}
+    assert InspectRequest.model_validate(run.props["request"]).episode_start == _at(20, 10)
+
+
+def test_segment_changed_during_inspection_is_due_again(ledger, human, settings, logged_in, tmp_path):
+    p = _inspect_project(ledger, human, tmp_path)
+    upsert_signals(ledger.conn, [_seg(p.id, 5, 10, 11, "s1"), _seg(p.id, 5, 12, 13, "s2")])
+    s = isvc(ledger, settings)
+    assert s.execute(s.inspect(InspectRequest(project="a", model=MODEL)).id).status == "ok"
+    assert "a" not in _due_slugs(ledger, settings)
+    upsert_signals(ledger.conn, [_seg(p.id, 5, 12, 15, "s2")])  # the same segment, extended
+    assert "a" in _due_slugs(ledger, settings)
+    [st] = _stretches(ledger, settings, p)
+    assert st.inspected_up_to == _at(5, 13)
+
+
+def test_inspections_report_the_active_run_and_episode(ledger, human, settings, logged_in, tmp_path):
+    p = _inspect_project(ledger, human, tmp_path)
+    upsert_signals(ledger.conn, [_seg(p.id, 5, 10, 11, "s1")])
+    run = isvc(ledger, settings).inspect(InspectRequest(project="a", model=MODEL))
+    [due] = due_projects(ledger.conn, settings, now=utcnow())
+    assert (due.active_run, due.episode, due.episodes) == (run.id, 1, 1)
+    assert find_active(ledger.conn, p.id, "inspect").id == run.id

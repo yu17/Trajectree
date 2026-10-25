@@ -19,6 +19,22 @@ class AlreadyApplied(Exception):
     pass
 
 
+class InspectionActive(Exception):
+    """An `inspect` or `inspect_boundaries` run of the project is queued or running."""
+
+    def __init__(self, slug: str) -> None:
+        super().__init__(f"an inspection is already running for {slug}")
+        self.slug = slug
+
+
+class NothingToInspect(Exception):
+    """The project has no settled uninspected stretch."""
+
+    def __init__(self, slug: str) -> None:
+        super().__init__(f"nothing to inspect for {slug}")
+        self.slug = slug
+
+
 class ToolPolicy(BaseModel):
     tools: list[str]
     allowed: list[str]

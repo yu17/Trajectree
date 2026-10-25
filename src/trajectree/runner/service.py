@@ -16,9 +16,10 @@ import shutil
 import subprocess
 import tempfile
 from collections.abc import Callable, Mapping
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
 
@@ -26,10 +27,26 @@ from trajectree.auth.tokens import mint_token, revoke_token
 from trajectree.config import Settings
 from trajectree.connectors.codex_sessions import session_signal
 from trajectree.context.history import collect_history, session_history
+from trajectree.context.stretches import estimate_sizes, render_blocks, render_stretches
 from trajectree.db.ledger import Ledger
-from trajectree.models import SLOT_OF, Actor, EventIn, Proposal, Routine, Run, RunSlot, TodoIn
+from trajectree.ids import new_id
+from trajectree.importing import local_midnight
+from trajectree.models import SLOT_OF, Actor, EventIn, Proposal, Routine, Run, RunSlot, Stretch, TodoIn
 from trajectree.repo import NotFound, UnknownProject, UnknownSession, events, todos
 from trajectree.repo.caps import get_caps
+from trajectree.repo.edges import list_edges
+from trajectree.repo.inspections import (
+    INSPECT_KINDS,
+    active_inspection,
+    advance_watermark,
+    covered_map,
+    episode_material,
+    get_watermark,
+    reset_watermark_since,
+    set_watermark,
+    uninspected_signals,
+    uninspected_stretches,
+)
 from trajectree.repo.projects import get_project_by_slug, resolve_project_ref
 from trajectree.repo.routines import resolve_routine_ref
 from trajectree.repo.runs import (
@@ -48,6 +65,8 @@ from trajectree.runner.credentials import cli_version, ensure_cfg_dirs, load_oau
 from trajectree.runner.kinds import (
     KIND_OF,
     AskRequest,
+    InspectBoundariesRequest,
+    InspectRequest,
     ReportRequest,
     RoutineRequest,
     RunPlan,
@@ -70,16 +89,19 @@ from trajectree.runner.safe_io import MiB, read_regular
 from trajectree.runner.sandbox import registered_folders, run_paths, runner_cfg_dir
 from trajectree.runner.spec import (
     AlreadyApplied,
+    InspectionActive,
     MissingCredentials,
+    NothingToInspect,
     RunsPaused,
     RunSpec,
 )
-from trajectree.timeutil import parse_when_lenient, to_db, utcnow
+from trajectree.timeutil import parse_iso, parse_when_lenient, to_db, utcnow
 
 log = logging.getLogger("trajectree.runner")
 
 _TOKEN_RE = re.compile(r"trj_[A-Za-z0-9_-]+")  # our run tokens, wherever an error message echoes one
 LAST_MESSAGE_MAX_BYTES = MiB  # a larger Codex final message is refused, not truncated
+RECENT_BLOCKS = 20  # the project's most recent blocks an inspect run is shown besides each stretch's own
 
 
 class RunService:
@@ -132,7 +154,9 @@ class RunService:
         with self.ledger.locked() as conn:
             self.validate(conn, request)
 
-    def enqueue(self, request: RunRequest) -> Run:
+    def enqueue(self, request: RunRequest, *, props: Mapping[str, Any] | None = None) -> Run:
+        """Create a queued run for `request`; `props` adds entries to the run's props (an
+        inspection series passes the boundary pass's `sizes` and the episode list this way)."""
         with self.ledger.locked() as conn:
             kind = KIND_OF[type(request)]
             routine, routine_id, attempt, project_id = None, None, 1, None
@@ -152,14 +176,27 @@ class RunService:
                 if session is None:
                     raise UnknownSession(f"unknown session '{request.session_id}'")
                 project_id = session.project_id
+            elif isinstance(request, (InspectRequest, InspectBoundariesRequest)):
+                project = resolve_project_ref(conn, request.project)
+                project_id = project.id
+                if active_inspection(conn, project_id) is not None:
+                    raise InspectionActive(project.slug)  # one inspection series per project at a time
             elif isinstance(request, (AskRequest, RoutineRequest, ReportRequest)):
                 for ref in request.projects or []:
                     resolve_project_ref(conn, ref)
             elif request.project:
                 resolve_project_ref(conn, request.project)
-            props: dict[str, Any] = {"request": request.model_dump(mode="json")}
+            run_props: dict[str, Any] = {"request": request.model_dump(mode="json")}
             if resolved.warning:
-                props["model_warning"] = resolved.warning
+                run_props["model_warning"] = resolved.warning
+            if isinstance(request, InspectRequest):
+                run_props.update(
+                    series_id=request.series_id, episode_no=request.episode_no, episodes=request.episodes
+                )
+            elif isinstance(request, InspectBoundariesRequest):
+                # The boundary pass precedes episode 1; `episodes` is set once its answer validates.
+                run_props.update(series_id=request.series_id, episode_no=0, episodes=0)
+            run_props.update(props or {})
             return create_run(
                 conn,
                 kind=kind,
@@ -167,11 +204,155 @@ class RunService:
                 backend=backend,
                 model=resolved.model,
                 project_id=project_id,
-                props=props,
+                props=run_props,
                 routine_id=routine_id,
                 slot=SLOT_OF[kind],
                 attempt=attempt,
             )
+
+    # -- inspections ------------------------------------------------------------------------
+
+    def inspect(self, request: InspectRequest) -> Run:
+        """Start an inspection series for the project: one `inspect` run when its uninspected
+        material fits `inspect_budget_chars`, else an `inspect_boundaries` run that splits it into
+        episodes. `since` re-inspects from that local midnight. The DB is read under the lock;
+        the material is sized (transcripts read) with the lock released, then the run is enqueued.
+        Raises `InspectionActive`, `NothingToInspect`, `RunsPaused` or `ValueError`."""
+        now = self.now()
+        with self.ledger.locked() as conn:
+            project = resolve_project_ref(conn, request.project)
+            if active_inspection(conn, project.id) is not None:
+                raise InspectionActive(project.slug)
+            self.validate(conn, request)  # a refused model or paused runs move no watermark
+            before = get_watermark(conn, project.id)
+            if request.since is not None:
+                reset_watermark_since(conn, project.id, local_midnight(request.since, self.settings.tz))
+            stretches = uninspected_stretches(conn, self.settings, project, now=now)
+            if not stretches:
+                if request.since is not None:
+                    set_watermark(conn, project.id, before)  # nothing started: leave it as it was
+                raise NothingToInspect(project.slug)
+            signals = {s.id: s for s in uninspected_signals(conn, project.id, get_watermark(conn, project.id))}
+            project_events = events.list_events(conn, project_ids=[project.id])  # blocks and pills
+            edges = list_edges(conn, event_ids=[e.id for e in project_events])
+        sizes = estimate_sizes(stretches, signals, self.settings)
+        _, size = render_stretches(
+            stretches, signals, blocks=project_events, edges=edges, settings=self.settings, budget_chars=10**9
+        )
+        budget = self.settings.inspect_budget_chars
+        choice = {"project": project.id, "runner": request.runner, "model": request.model}
+        if size <= budget:
+            return self.enqueue(
+                InspectRequest(
+                    **choice,
+                    episode_start=stretches[0].t_start,
+                    episode_end=stretches[-1].t_end,
+                    series_id=new_id(),
+                    episode_no=1,
+                    episodes=1,
+                )
+            )
+        return self.enqueue(
+            InspectBoundariesRequest(**choice, series_id=new_id(), budget_chars=budget), props={"sizes": sizes}
+        )
+
+    def _collect_inspection(self, run: Run) -> dict[str, Any] | None:
+        """For a queued `inspect` run: the stretches inside its episode, rendered with no lock held.
+        What the material covers (signal key -> end, and the last stretch's end) is stored on the
+        run as read now, so the watermark later advances by exactly what the run was shown."""
+        request = request_from_props(run.kind, run.props["request"])
+        assert isinstance(request, InspectRequest)
+        if run.project_id is None:
+            return None
+        with self.ledger.locked() as conn:
+            stretches, signals = episode_material(
+                conn, self.settings, run.project_id, start=request.episode_start, end=request.episode_end
+            )
+            project_events = events.list_events(conn, project_ids=[run.project_id])
+            edges = list_edges(conn, event_ids=[e.id for e in project_events])
+            current = get_run(conn, run.id) or run
+            update_run(
+                conn,
+                run.id,
+                props={
+                    **current.props,
+                    "covered": covered_map(list(signals.values())),
+                    "material_end": to_db(stretches[-1].t_end) if stretches else None,
+                },
+            )
+        if not stretches:
+            return None  # the planner fails the run: inspection material missing
+        stretches_md, _ = render_stretches(
+            stretches,
+            signals,
+            blocks=project_events,
+            edges=edges,
+            settings=self.settings,
+            budget_chars=self.settings.inspect_budget_chars,  # an episode over the budget is cut
+        )
+        blocks = sorted((e for e in project_events if e.tier == "block"), key=lambda e: (e.t_end or e.t_start, e.id))
+        blocks_md = render_blocks(blocks[-RECENT_BLOCKS:], edges, {e.id: e for e in project_events})
+        return {"stretches_md": stretches_md, "blocks_md": blocks_md or "- (none)"}
+
+    def _after_inspect(self, done: Run) -> Run:
+        """Carry an inspection series on after one of its runs finished (no lock held on entry).
+
+        An ok boundary pass has its episodes validated (else it fails with `boundaries invalid: …`)
+        and enqueues episode 1; an ok `inspect` run advances the watermark and enqueues the next
+        episode, if any. Any other status stops the series. Returns the run as now stored."""
+        if done.status != "ok" or done.project_id is None:
+            return done
+        request = request_from_props(done.kind, done.props["request"])
+        with self.ledger.locked() as conn:
+            current = get_run(conn, done.id) or done
+            project = resolve_project_ref(conn, done.project_id)
+            if isinstance(request, InspectBoundariesRequest):
+                stretches = uninspected_stretches(conn, self.settings, project, now=self.now(), live_check=False)
+                try:
+                    episodes = _validate_episodes(current.props.get("episodes_raw"), stretches, self.settings.tz)
+                except ValueError as exc:
+                    return self._fail(conn, done.id, f"boundaries invalid: {exc}"[:500])
+                current = update_run(
+                    conn, done.id, props={**current.props, "episodes": len(episodes), "episodes_json": episodes}
+                )
+                series, number, total = episodes, 1, len(episodes)
+            else:
+                assert isinstance(request, InspectRequest)
+                material_end = current.props.get("material_end")
+                end = request.episode_end or (parse_iso(material_end) if material_end else None)
+                if end is not None:
+                    advance_watermark(
+                        conn,
+                        project.id,
+                        inspected_at=end,
+                        started_at=done.started,
+                        series_id=request.series_id,
+                        covered=current.props.get("covered") or {},
+                    )
+                series = current.props.get("series_episodes") or []
+                number, total = request.episode_no + 1, request.episodes
+                if number > total or len(series) < number:
+                    return current  # the series is complete
+        episode = series[number - 1]
+        nxt = InspectRequest(
+            project=project.id,
+            runner=request.runner,
+            model=request.model,
+            episode_start=datetime.fromisoformat(episode["start"]),
+            episode_end=datetime.fromisoformat(episode["end"]),
+            series_id=request.series_id,
+            episode_no=number,
+            episodes=total,
+        )
+        try:
+            self.enqueue(nxt, props={"series_episodes": series, "episode_label": episode.get("label", "")})
+        except (InspectionActive, RunsPaused, UnknownProject, ValueError) as exc:
+            # The series stops here; the watermark keeps what the finished episodes covered.
+            log.warning("inspection series %s stopped before episode %d: %s", request.series_id, number, type(exc).__name__)
+            with self.ledger.locked() as conn:
+                current = get_run(conn, done.id) or current
+                current = update_run(conn, done.id, props={**current.props, "series_stopped": str(exc)[:500]})
+        return current
 
     # -- execute ---------------------------------------------------------------------------
 
@@ -197,7 +378,7 @@ class RunService:
             if current is not None and current.status == "queued"
             else None
         )
-        prelocked = self._collect_history(current)  # None unless a queued starting_point run
+        prelocked = self._collect_history(current)  # None unless a queued starting_point or inspect run
         with self.ledger.locked() as conn:
             prepared = self._prepare(conn, run_id, version, prelocked)  # revokes its own token if it fails
             if isinstance(prepared, Run):
@@ -267,6 +448,8 @@ class RunService:
                 mcp_path.unlink(missing_ok=True)
             if tmp_dir is not None:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
+        if done.kind in INSPECT_KINDS:
+            return self._after_inspect(done)  # the token is revoked; the next episode is only queued
         if done.kind != "routine":
             return done
         # Delivery runs with the lock released; the token is already revoked.
@@ -274,8 +457,13 @@ class RunService:
 
     def _collect_history(self, run: Run | None) -> dict[str, Any] | None:
         """For a queued starting_point run, its git, folder and session history; `git log` and the folder
-        walk run with no lock held, only the folder lookup takes it."""
-        if run is None or run.kind != "starting_point" or run.status != "queued":
+        walk run with no lock held, only the folder lookup takes it. For a queued inspect run, its
+        episode's material (see `_collect_inspection`); a boundary pass needs nothing (sizes are in props)."""
+        if run is None or run.status != "queued":
+            return None
+        if run.kind == "inspect":
+            return self._collect_inspection(run)
+        if run.kind != "starting_point":
             return None
         request = request_from_props(run.kind, run.props["request"])
         assert isinstance(request, StartingPointRequest)
@@ -398,6 +586,12 @@ class RunService:
             status = "failed"
         structured = parsed.structured
         answer = structured.get("answer") if isinstance(structured, dict) else None
+        extra: dict[str, Any] = {}
+        if run.kind == "inspect_boundaries":
+            # Stored raw; `_after_inspect` validates the episodes once the run is finished.
+            current = get_run(conn, run.id) or run
+            raw = structured.get("episodes") if isinstance(structured, dict) else None
+            extra["props"] = {**current.props, "episodes_raw": raw}
         done = update_run(
             conn,
             run.id,
@@ -415,6 +609,7 @@ class RunService:
             proposals=_proposals(parsed),
             log_path=outcome.log_path,
             finished=self.now(),
+            **extra,
         )
         return done  # a routine run's delivery and routine state follow in `execute`, unlocked
 
@@ -581,6 +776,66 @@ def _write_private(path, text: str) -> None:
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(text)
     os.chmod(path, 0o600)
+
+
+def _episode_day(value: object, zone: ZoneInfo, n: int, field: str) -> date:
+    """An episode boundary as a date in `zone`: `YYYY-MM-DD`, or an ISO datetime taken at its local date."""
+    if isinstance(value, str):
+        text = value.strip()
+        try:
+            return date.fromisoformat(text)
+        except ValueError:
+            pass
+        try:
+            moment = datetime.fromisoformat(text)
+            return (moment.astimezone(zone) if moment.tzinfo else moment).date()
+        except ValueError:
+            pass
+    shown = repr(value)
+    raise ValueError(f"episode {n} has an unparsable {field} date {shown[:40]}")
+
+
+def _validate_episodes(raw: object, stretches: list[Stretch], tz: str) -> list[dict[str, str]]:
+    """A boundary pass's episodes checked against the settled uninspected stretches and snapped to
+    their edges: `[{"start", "end", "label"}]` with ISO instants. Raises `ValueError(reason)` when the
+    list is empty, a date cannot be read, the episodes are out of order or overlap, one lies outside
+    the uninspected span or covers no stretch, or two would split one stretch. An episode over the
+    budget is accepted: its render is cut."""
+    if not stretches:
+        raise ValueError("no uninspected stretches left")
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("no episodes")
+    zone = ZoneInfo(tz)
+    first_day = stretches[0].t_start.astimezone(zone).date()
+    last_day = stretches[-1].t_end.astimezone(zone).date()
+    days: list[tuple[date, date, str]] = []
+    for n, item in enumerate(raw, 1):
+        if not isinstance(item, dict):
+            raise ValueError(f"episode {n} is not an object")
+        start = _episode_day(item.get("start"), zone, n, "start")
+        end = _episode_day(item.get("end"), zone, n, "end")
+        if end < start:
+            raise ValueError(f"episode {n} ends before it starts")
+        if start < first_day or end > last_day:
+            raise ValueError(f"episode {n} ({start}..{end}) is outside the uninspected span {first_day}..{last_day}")
+        if days and start < days[-1][0]:
+            raise ValueError(f"episodes out of order at episode {n}")
+        if days and start <= days[-1][1]:
+            raise ValueError(f"episodes {n - 1} and {n} overlap")
+        days.append((start, end, " ".join(str(item.get("label") or "").split())[:200]))
+    out: list[dict[str, str]] = []
+    previous_end: datetime | None = None
+    for n, (start, end, label) in enumerate(days, 1):
+        lo, hi = local_midnight(start, tz), local_midnight(end + timedelta(days=1), tz)
+        # A start inside a stretch snaps to that stretch's start, an end inside one to its end.
+        inside = [st for st in stretches if st.t_start < hi and st.t_end >= lo]
+        if not inside:
+            raise ValueError(f"episode {n} ({start}..{end}) covers no stretch")
+        if previous_end is not None and inside[0].t_start <= previous_end:
+            raise ValueError(f"episodes {n - 1} and {n} split a stretch")
+        previous_end = inside[-1].t_end
+        out.append({"start": inside[0].t_start.isoformat(), "end": inside[-1].t_end.isoformat(), "label": label})
+    return out
 
 
 def _proposals(parsed: ParsedResult) -> list[Proposal]:
