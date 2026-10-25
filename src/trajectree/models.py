@@ -324,7 +324,8 @@ class Conflict(BaseModel):
 # --- phase 3: runs, sessions, caps ------------------------------------------
 
 RunKind = Literal[
-    "summarize", "ask", "quick_add", "summarize_session", "routine", "report", "starting_point"
+    "summarize", "ask", "quick_add", "summarize_session", "routine", "report", "starting_point",
+    "inspect", "inspect_boundaries",
 ]
 RunSlot = Literal["interactive", "scheduled"]
 SLOT_OF: dict[str, RunSlot] = {
@@ -335,6 +336,8 @@ SLOT_OF: dict[str, RunSlot] = {
     "routine": "scheduled",
     "report": "interactive",
     "starting_point": "interactive",
+    "inspect": "interactive",
+    "inspect_boundaries": "interactive",
 }
 RunStatus = Literal["queued", "running", "ok", "failed", "capped", "cancelled"]
 RUNNER_PATTERN = r"^(claude|codex|ccx:[A-Za-z0-9][A-Za-z0-9._-]*)$"

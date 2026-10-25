@@ -19,11 +19,13 @@ from trajectree.config import Settings
 from trajectree.connectors.codex_sessions import digest_session, session_signal
 from trajectree.connectors.paths import to_local
 from trajectree.context.digest import activity_digest
+from trajectree.context.stretches import fence_safe, render_segment_lines
 from trajectree.context.history import HistoryInput, block_date, local_midnight
 from trajectree.context.pack import build_context_pack
 from trajectree.importing import IMPORT_SOURCES
 from trajectree.models import RUNNER_PATTERN, Delivery, Project, ReportKind, Run, RunKind
 from trajectree.repo import NotFound
+from trajectree.repo.inspections import get_watermark, uninspected_signals, uninspected_stretches
 from trajectree.repo.projects import get_project_by_slug, list_projects, resolve_project_ref
 from trajectree.repo.resources import list_resources
 from trajectree.repo.review import pending_txns
@@ -97,6 +99,26 @@ class StartingPointRequest(BaseModel):
         return starts
 
 
+class InspectRequest(BaseModel):
+    project: str
+    runner: str | None = None
+    model: str | None = None
+    since: date | None = None
+    episode_start: AwareDatetime | None = None
+    episode_end: AwareDatetime | None = None
+    series_id: str | None = None
+    episode_no: int = 1
+    episodes: int = 1
+
+
+class InspectBoundariesRequest(BaseModel):
+    project: str
+    runner: str | None = None
+    model: str | None = None
+    series_id: str
+    budget_chars: int
+
+
 RunRequest = (
     SummarizeRequest
     | SummarizeSessionRequest
@@ -105,6 +127,8 @@ RunRequest = (
     | RoutineRequest
     | ReportRequest
     | StartingPointRequest
+    | InspectRequest
+    | InspectBoundariesRequest
 )
 
 KIND_OF: dict[type[BaseModel], RunKind] = {
@@ -115,6 +139,8 @@ KIND_OF: dict[type[BaseModel], RunKind] = {
     RoutineRequest: "routine",
     ReportRequest: "report",
     StartingPointRequest: "starting_point",
+    InspectRequest: "inspect",
+    InspectBoundariesRequest: "inspect_boundaries",
 }
 _CLASS_OF = {kind: cls for cls, kind in KIND_OF.items()}
 
@@ -152,6 +178,30 @@ PROPOSAL_SCHEMA: dict[str, Any] = {
         },
     },
 }
+
+BOUNDARIES_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["answer", "episodes"],
+    "properties": {
+        "answer": {"type": "string"},
+        "episodes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["start", "end", "label"],
+                "properties": {"start": {"type": "string"}, "end": {"type": "string"}, "label": {"type": "string"}},
+            },
+        },
+    },
+}
+
+INSPECT_SYSTEM = (
+    "You are inspecting the owner's project `$project_slug` for its tracker. "
+    "Write only through the trajectree MCP tools, each with a one-line intent naming the stretch dates; "
+    "writes land pending review. Anything outside this project goes into `proposals`."
+)
 
 SUMMARIZE_SYSTEM = (
     "You are updating the owner's project tracker. Write through the trajectree MCP tools only: "
@@ -242,6 +292,10 @@ def plan_run(
     `{"history": HistoryInput}`)."""
     if isinstance(request, StartingPointRequest):
         return _plan_starting_point(conn, settings, run, request, now, prelocked or {})
+    if isinstance(request, InspectRequest):
+        return _plan_inspect(conn, settings, run, request, now, prelocked or {})
+    if isinstance(request, InspectBoundariesRequest):
+        return _plan_inspect_boundaries(conn, settings, run, request, now)
     if isinstance(request, SummarizeRequest):
         return _plan_summarize(conn, settings, run, request, now)
     if isinstance(request, SummarizeSessionRequest):
@@ -532,6 +586,86 @@ def _plan_routine(
         delivery_project_id=ids[0] if refs else None,
         routine_name=routine.name,
         routine_tz=routine.tz,
+    )
+
+
+def _plan_inspect(
+    conn: apsw.Connection,
+    settings: Settings,
+    run: Run,
+    request: InspectRequest,
+    now: datetime,
+    prelocked: dict[str, Any],
+) -> RunPlan:
+    stretches_md = prelocked.get("stretches_md")
+    blocks_md = prelocked.get("blocks_md")
+    if stretches_md is None or blocks_md is None:
+        raise NotFound("inspection material missing")
+    project = resolve_project_ref(conn, run.project_id or request.project)
+    wm = get_watermark(conn, project.id)
+    note = f" Work before {_day(wm.inspected_at)} was inspected already." if wm.inspected_at else ""
+    pack = build_context_pack(
+        conn,
+        project_ids=[project.id],
+        t_from=(request.episode_start or now - timedelta(days=365)) - timedelta(days=30),
+        t_to=now + timedelta(days=30),
+        token_budget=6000,
+    )
+    prompt = render_prompt(
+        load_prompt(settings, "inspect"),
+        {
+            "project_title": fence_safe(project.title),
+            "project_slug": project.slug,
+            "today": _day(now),
+            "inspected_note": note,
+            "blocks": blocks_md,  # rendered by render_blocks, already fence-safe
+            "context_pack": fence_safe(pack.markdown),
+            "stretches": stretches_md,  # rendered by render_stretches, already fence-safe
+        },
+    )
+    return RunPlan(
+        prompt=prompt,
+        system_prompt=render_prompt(INSPECT_SYSTEM, {"project_slug": project.slug}),
+        cwd=_folder_cwd(conn, settings, project.id) or settings.runs_dir / run.id,
+        tools=ToolPolicy(
+            tools=["Read", "Grep", "Glob", "Bash"],
+            allowed=["Read", "Grep", "Glob", "Bash(git log *)", "mcp__trajectree__*"],
+            disallowed=_secret_denies(settings),
+        ),
+        json_schema=PROPOSAL_SCHEMA,
+        scope=Scope(
+            projects=[project.id],
+            tools=["record_event", "update_event", "add_todo", "link", "set_project_summary"],
+            write=True,
+        ),
+    )
+
+
+def _plan_inspect_boundaries(
+    conn: apsw.Connection, settings: Settings, run: Run, request: InspectBoundariesRequest, now: datetime
+) -> RunPlan:
+    project = resolve_project_ref(conn, run.project_id or request.project)
+    stretches = uninspected_stretches(conn, settings, project, now=now)
+    signals = {s.id: s for s in uninspected_signals(conn, project.id, get_watermark(conn, project.id))}
+    raw = run.props.get("sizes")
+    sizes = {k: v for k, v in raw.items() if isinstance(v, int)} if isinstance(raw, dict) else {}
+    prompt = render_prompt(
+        load_prompt(settings, "inspect_boundaries"),
+        {
+            "project_title": fence_safe(project.title),
+            "project_slug": project.slug,
+            "today": _day(now),
+            "segments": render_segment_lines(stretches, signals, sizes),  # fence-safe lines
+            "budget": str(request.budget_chars),
+        },
+    )
+    return RunPlan(
+        prompt=prompt,
+        system_prompt=READ_ONLY_SYSTEM,
+        cwd=settings.runs_dir / run.id,
+        tools=ToolPolicy(tools=[], allowed=["mcp__trajectree__*"]),
+        json_schema=BOUNDARIES_SCHEMA,
+        scope=Scope(write=False),
     )
 
 

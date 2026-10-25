@@ -26,3 +26,4 @@ $context_pack
 1. Write a summary of the session in 5 to 10 lines as your `answer`: what was asked, what was done, what was decided, and where it stopped.
 2. Put each decision worth recording as an `event` proposal and each follow-up left open as a `todo` proposal, both for project `$project_slug`, each with a short `reason`.
 3. Propose only what the session clearly shows; do not invent work or decisions.
+4. Give each event proposal a tier: block for a checkpoint, pill for a moment on the way.

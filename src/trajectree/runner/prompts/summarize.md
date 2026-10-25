@@ -28,3 +28,4 @@ $activity_digest
 2. Call the `set_project_summary` tool for `$project_slug` exactly once, with the new summary and the intent `regenerate summary`.
 3. Do not write anything else. Events or follow-ups you notice that are not yet recorded must go into `proposals` in your final answer, not into tool writes.
 4. Make `answer` a single line saying what changed in the summary.
+5. Give each event proposal a tier: block for a checkpoint, pill for a moment on the way.
