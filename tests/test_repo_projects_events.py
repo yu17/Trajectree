@@ -62,3 +62,11 @@ def test_update_event_rejects_merged_inverted_span(ledger, human):
 def test_update_missing_event(ledger, human):
     with pytest.raises(NotFound):
         update_event(ledger, human, "nope", EventPatch(title="x"))
+
+def test_event_tier_round_trips_and_defaults_to_block(ledger, human):
+    p = create_project(ledger, human, ProjectIn(slug="t", title="T", kind="research"))
+    e = create_event(ledger, human, EventIn(project_id=p.id, kind="note", title="x", t_start=ts(2)))
+    assert e.tier == "block"
+    assert update_event(ledger, human, e.id, EventPatch(tier="pill")).tier == "pill"
+    assert [x.tier for x in list_events(ledger.conn, project_ids=[p.id])] == ["pill"]
+    assert create_event(ledger, human, EventIn(project_id=p.id, kind="note", title="y", t_start=ts(3), tier="pill")).tier == "pill"

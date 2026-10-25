@@ -61,6 +61,7 @@ def _parser() -> argparse.ArgumentParser:
     ev.add_argument("--at", default="now")
     ev.add_argument("--end")
     ev.add_argument("--status", default="happened")
+    ev.add_argument("--tier", choices=["block", "pill"], default="block")
     ev.add_argument("--body", default="")
     ev.add_argument("--intent")
 
@@ -696,6 +697,7 @@ def _run(
                 "body_md": args.body,
                 "t_start": _when(args.at),
                 "status": args.status,
+                "tier": args.tier,
             }
             if args.end:
                 body["t_end"] = _when(args.end)

@@ -25,7 +25,7 @@ def test_pack_sections_and_ids(ledger, human):
     md = pack.markdown
     assert md.startswith("# Trajectree context (2026-01-01 to 2026-02-01)")
     assert "## A (a) — active" in md and "### Summary\nThe summary." in md
-    assert "- 2026-01-02 [note/happened] Event 0 (" in md and "- [ ] Write up (no due) (" in md
+    assert "- 2026-01-02 [note/happened/block] Event 0 (" in md and "- [ ] Write up (no due) (" in md
     assert pack.dropped == [] and pack.projects == ["a"] and pack.tokens_est == len(md) // 4
 
 def test_pack_respects_budget_and_reports_drops(ledger, human):
@@ -109,3 +109,10 @@ async def test_tool_rejects_unknown_slug_and_bad_date(ledger, settings, human):
         assert r.is_error and "known projects" in r.content[0].text
         r = await c.call_tool("get_context_pack", {"start": "yesterday"})
         assert r.is_error and "ISO 8601" in r.content[0].text
+
+
+def test_context_pack_event_line_shows_tier(ledger, human):
+    p = seed(ledger, human, n_events=1)
+    create_event(ledger, human, EventIn(project_id=p.id, kind="note", title="Moment", tier="pill", t_start=datetime(2026, 1, 3, tzinfo=UTC)))
+    md = build_context_pack(ledger.conn, project_ids=[p.id], t_from=FROM, t_to=TO).markdown
+    assert "[note/happened/pill] Moment (" in md and "[note/happened/block] Event 0 (" in md

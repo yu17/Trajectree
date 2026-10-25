@@ -196,3 +196,16 @@ async def test_save_report_draft_records_report_id_on_the_run(ledger, settings, 
                      scope=Scope(projects=[a.id], tools=["save_report_draft"], write=True), token_id="tok")
     async with Client(build_mcp(ledger, settings, resolve=lambda ctx: gone)) as c:  # a missing run is tolerated
         assert not (await c.call_tool("save_report_draft", {"title": "D", "kind": "deck", "source_md": "#", "intent": "i", "projects": ["a"]})).is_error
+
+
+async def test_record_event_and_update_event_accept_tier(ledger, settings, human):
+    two_projects(ledger, human)
+    async with Client(owner_mcp(ledger, settings)) as c:
+        r = await c.call_tool("record_event", {"project": "a", "title": "Moment", "tier": "pill", "intent": "log"})
+        assert not r.is_error and r.structured_content["tier"] == "pill"
+        assert ledger.list_txns()[0].review == "pending"
+        u = await c.call_tool("update_event", {"event_id": r.structured_content["id"], "tier": "block", "intent": "promote"})
+        assert not u.is_error and u.structured_content["tier"] == "block"
+        assert ledger.list_txns()[0].review == "pending"
+        d = await c.call_tool("record_event", {"project": "a", "title": "Plain", "intent": "log"})
+        assert d.structured_content["tier"] == "block"

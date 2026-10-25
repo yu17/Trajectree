@@ -10,6 +10,7 @@ ProjectKind = Literal["research", "tooling", "routine", "admin", "inbox"]
 ProjectStatus = Literal["active", "paused", "done", "archived"]
 EventStatus = Literal["happened", "planned", "suggested", "dropped"]
 Source = Literal["human", "agent", "connector"]
+Tier = Literal["block", "pill"]
 TodoState = Literal["open", "doing", "done", "dropped"]
 Review = Literal["none", "pending", "accepted", "rejected"]
 ActorKind = Literal["human", "agent", "session", "connector"]
@@ -62,6 +63,7 @@ class EventIn(BaseModel):
     t_end: AwareDatetime | None = None
     status: EventStatus = "happened"
     source: Source = "human"
+    tier: Tier = "block"
     props: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -132,6 +134,7 @@ class EventPatch(BaseModel):
     t_end: AwareDatetime | None = None
     status: EventStatus | None = None
     source: Source | None = None
+    tier: Tier | None = None
     props: dict[str, Any] | None = None
 
     @model_validator(mode="after")
@@ -178,6 +181,7 @@ class Event(BaseModel):
     t_end: AwareDatetime | None = None
     status: EventStatus
     source: Source
+    tier: Tier
     props: dict[str, Any] = Field(default_factory=dict)
     created_txn: str | None = None
     created_at: AwareDatetime
@@ -348,6 +352,7 @@ class Proposal(BaseModel):
     due: str | None = None
     body_md: str = ""
     status: Literal["happened", "planned", "suggested"] = "happened"
+    tier: Tier | None = None
     applied_txn: str | None = None
     applied_id: str | None = None
     dismissed: bool = False

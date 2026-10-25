@@ -61,12 +61,12 @@ def create_event(
             raise NotFound(data.project_id)
         h.conn.execute(
             "INSERT INTO event (id, project_id, kind, title, body_md, t_start, t_end, status,"
-            " source, props, created_txn, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " source, tier, props, created_txn, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 event_id, data.project_id, data.kind, data.title, data.body_md,
                 to_db(data.t_start), to_db(data.t_end) if data.t_end else None,
-                data.status, data.source, dumps_props(data.props), h.id, now, now,
+                data.status, data.source, data.tier, dumps_props(data.props), h.id, now, now,
             ),
         )
     event = get_event(ledger.conn, event_id)

@@ -121,3 +121,12 @@ def test_base_url_without_a_scheme_names_where_it_came_from(tmp_path, capsys):
     assert str(tmp_path / ".config" / "trajectree" / "url") in str(e.value)
     assert main(["runs"], env={**home, "TRAJECTREE_TOKEN": "t"}) == 2   # a usage error, not a traceback
     assert "must start with http://" in capsys.readouterr().err
+
+
+def test_cli_event_tier_flag(app, client, anon, capsys):
+    client.post("/api/projects", json={"slug": "clmi", "title": "CLMI", "kind": "research"})
+    pid = next(p["id"] for p in client.get("/api/projects").json() if p["slug"] == "clmi")
+    assert main(["event", "clmi", "A moment", "--tier", "pill", "--at", "2026-01-05T10:00:00Z"], client=anon, env=env_for(app)) == 0
+    assert main(["event", "clmi", "A checkpoint", "--at", "2026-01-06T10:00:00Z"], client=anon, env=env_for(app)) == 0
+    tiers = {e["title"]: e["tier"] for e in client.get("/api/events", params={"projects": pid}).json()}
+    assert tiers == {"A moment": "pill", "A checkpoint": "block"}

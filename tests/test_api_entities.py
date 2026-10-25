@@ -20,7 +20,9 @@ def test_event_create_validation_and_window(client):
     ok = client.post("/api/events", json={"project_id": p["id"], "kind": "decision", "title": "Freeze", "t_start": "2026-01-05T10:00:00Z"})
     assert ok.status_code == 200 and ok.json()["status"] == "happened"
     got = client.get("/api/events", params={"projects": p["id"], "from": "2026-01-01T00:00:00Z", "to": "2026-01-31T00:00:00Z"}).json()
-    assert [e["title"] for e in got] == ["Freeze"]
+    assert [e["title"] for e in got] == ["Freeze"] and got[0]["tier"] == "block"
+    pill = client.post("/api/events", json={"project_id": p["id"], "kind": "note", "title": "Hm", "tier": "pill", "t_start": "2026-01-06T10:00:00Z"})
+    assert pill.json()["tier"] == "pill"
 
 
 def test_event_unknown_project_404(client):

@@ -42,6 +42,7 @@ from trajectree.models import (
     ResourceIn,
     ResourceKind,
     Source,
+    Tier,
     Todo,
     TodoIn,
     TodoPatch,
@@ -123,6 +124,7 @@ def register_write_tools(mcp: MCPServer, deps: ToolDeps) -> None:
         end: str | None,
         body_md: str,
         status: EventStatus,
+        tier: Tier = "block",
     ) -> Event:
         principal = deps.resolve(ctx)
         with deps.ledger.locked() as conn:
@@ -139,6 +141,7 @@ def register_write_tools(mcp: MCPServer, deps: ToolDeps) -> None:
                 t_start=t_start,
                 t_end=t_end,
                 status=status,
+                tier=tier,
                 source=source_for(principal.actor),
             )
             return events.create_event(deps.ledger, principal.actor, data, intent=intent)
@@ -154,15 +157,17 @@ def register_write_tools(mcp: MCPServer, deps: ToolDeps) -> None:
         body_md: str = "",
         status: EventStatus = "happened",
         project: str | None = None,
+        tier: Tier = "block",
     ) -> Event:
         """Record an event (decision, milestone, note, ...) on a project's timeline; `when`/`end`
-        are ISO 8601 (default now). `intent` is a one-line reason recorded in the ledger, and the
-        write lands pending the owner's review."""
+        are ISO 8601 (default now). `tier` is "block" for a checkpoint or "pill" for a moment on
+        the way to one. `intent` is a one-line reason recorded in the ledger, and the write lands
+        pending the owner's review."""
 
         def body() -> Event:
             return _record(
                 ctx, "record_event", project=project, title=title, intent=intent, kind=kind,
-                when=when, end=end, body_md=body_md, status=status,
+                when=when, end=end, body_md=body_md, status=status, tier=tier,
             )
 
         return await anyio.to_thread.run_sync(body)
@@ -193,16 +198,19 @@ def register_write_tools(mcp: MCPServer, deps: ToolDeps) -> None:
         status: EventStatus | None = None,
         when: str | None = None,
         end: str | None = None,
+        tier: Tier | None = None,
     ) -> Event:
-        """Change the given fields of an event; omitted fields stay as they are. `intent` is a
-        one-line reason recorded in the ledger, and the write lands pending the owner's review."""
+        """Change the given fields of an event; omitted fields stay as they are. `tier` is "block"
+        (a checkpoint) or "pill" (a moment on the way to one). `intent` is a one-line reason
+        recorded in the ledger, and the write lands pending the owner's review."""
 
         def body() -> Event:
             principal = deps.resolve(ctx)
             fields: dict[str, object] = {
                 k: v
                 for k, v in {
-                    "title": title, "body_md": body_md, "kind": kind, "status": status
+                    "title": title, "body_md": body_md, "kind": kind, "status": status,
+                    "tier": tier,
                 }.items()
                 if v is not None
             }
@@ -303,8 +311,9 @@ def register_write_tools(mcp: MCPServer, deps: ToolDeps) -> None:
         intent: Intent,
         ctx: Context,
     ) -> Edge:
-        """Link two entities with a relation such as `caused`, `blocks` or `relates`. `intent` is
-        a one-line reason recorded in the ledger, and the write lands pending the owner's review."""
+        """Link two entities with a relation: `depends_on`, `derived_from`, `caused`, `relates_to`
+        or `part_of` (a pill is `part_of` the block it leads to). `intent` is a one-line reason
+        recorded in the ledger, and the write lands pending the owner's review."""
 
         def body() -> Edge:
             principal = deps.resolve(ctx)

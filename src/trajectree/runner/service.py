@@ -518,6 +518,7 @@ class RunService:
                         body_md=proposal.body_md,
                         t_start=parse_when_lenient(proposal.when) if proposal.when else self.now(),
                         status=proposal.status,
+                        tier=proposal.tier or "block",
                         source="agent",
                     ),
                     intent=proposal.reason,

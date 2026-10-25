@@ -958,3 +958,16 @@ def test_run_model_filled_from_model_usage(ledger, settings, logged_in):
     assert s.execute(s.enqueue(AskRequest(question="q", runner="claude")).id).model == "b"
     chosen = s.execute(s.enqueue(AskRequest(question="q", model=MODEL)).id)
     assert chosen.model == MODEL  # a chosen model is never overwritten
+
+
+def test_apply_proposal_sets_tier(ledger, human, settings, logged_in):
+    p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    s = svc(ledger, settings)
+    run = s.execute(s.enqueue(QuickAddRequest(model=MODEL, text="x")).id)
+    base = {"kind": "event", "project": "a", "reason": "r", "event_kind": "note"}
+    update_run(ledger.conn, run.id, proposals=[
+        Proposal(**base, title="Moment", tier="pill"), Proposal(**base, title="Checkpoint", tier=None),
+    ])
+    s.apply_proposal(run.id, 0, actor=human)
+    s.apply_proposal(run.id, 1, actor=human)
+    assert {e.title: e.tier for e in list_events(ledger.conn, project_ids=[p.id])} == {"Moment": "pill", "Checkpoint": "block"}

@@ -72,7 +72,7 @@ def newest_body(lines: list[str], cap: int) -> tuple[str, int]:
 
 
 def event_line(e: Event) -> str:
-    return f"- {_day(e.t_start)} [{e.kind}/{e.status}] {e.title} ({e.id})"
+    return f"- {_day(e.t_start)} [{e.kind}/{e.status}/{e.tier}] {e.title} ({e.id})"
 
 
 def todo_line(t: Todo) -> str:

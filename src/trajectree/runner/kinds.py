@@ -135,7 +135,7 @@ PROPOSAL_SCHEMA: dict[str, Any] = {
                 "type": "object",
                 "additionalProperties": False,
                 # OpenAI strict mode (codex): every property is required, optional ones are nullable.
-                "required": ["kind", "project", "title", "reason", "event_kind", "when", "due", "body_md", "status"],
+                "required": ["kind", "project", "title", "reason", "event_kind", "when", "due", "body_md", "status", "tier"],
                 "properties": {
                     "kind": {"enum": ["event", "todo"]},
                     "project": {"type": "string"},
@@ -146,6 +146,7 @@ PROPOSAL_SCHEMA: dict[str, Any] = {
                     "due": {"type": ["string", "null"]},
                     "body_md": {"type": ["string", "null"]},
                     "status": {"enum": ["happened", "planned", "suggested", None]},
+                    "tier": {"enum": ["block", "pill", None]},
                 },
             },
         },
