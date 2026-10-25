@@ -68,6 +68,28 @@ def get_signal_by_key(conn: apsw.Connection, dedupe_key: str) -> Signal | None:
     return Signal.model_validate(data)
 
 
+def session_signals_for(conn: apsw.Connection, session_id: str) -> list[Signal]:
+    """Every `session` signal of one session id (Claude- or Codex-format), earliest first.
+
+    Matches the pre-segment key `<source>_session:<id>` and the segment keys `<source>_session:<id>:<minute>`.
+    """
+    cols = table_columns(conn, "signal")
+    escaped = session_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    keys = [f"{src}_session:{session_id}" for src in ("claude", "codex")]
+    likes = [f"{src}_session:{escaped}:%" for src in ("claude", "codex")]
+    out = []
+    for row in conn.execute(
+        f"SELECT {', '.join(cols)} FROM signal WHERE dedupe_key IN (?, ?)"
+        " OR dedupe_key LIKE ? ESCAPE '\\' OR dedupe_key LIKE ? ESCAPE '\\'"
+        " ORDER BY t_start, id",
+        [*keys, *likes],
+    ):
+        data = dict(zip(cols, row))
+        data["payload"] = json.loads(data["payload"])
+        out.append(Signal.model_validate(data))
+    return out
+
+
 def list_signals(
     conn: apsw.Connection,
     *,

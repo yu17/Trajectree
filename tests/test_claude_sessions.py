@@ -69,7 +69,7 @@ def test_session_id_falls_back_to_file_stem(ledger, human, settings, tmp_path):
     write_transcript(home, CWD, "4" * 36, [rec])
     scan_transcripts(ledger.conn, s, now=datetime.now(UTC))
     sig = list_signals(ledger.conn, project_ids=[p.id])[0]
-    assert sig.dedupe_key == f"claude_session:{'4' * 36}" and sig.payload["session_id"] == "4" * 36
+    assert sig.dedupe_key == f"claude_session:{'4' * 36}:2026-01-05T10:00" and sig.payload["session_id"] == "4" * 36
 
 def test_scan_maps_sessions_and_skips_unmapped(ledger, human, settings, tmp_path):
     home, s, p = setup(ledger, human, settings, tmp_path)
@@ -79,7 +79,7 @@ def test_scan_maps_sessions_and_skips_unmapped(ledger, human, settings, tmp_path
     report = scan_transcripts(ledger.conn, s, now=now)
     assert report.files_seen == 2 and report.files_read == 2 and report.signals_written == 1
     sig = list_signals(ledger.conn, project_ids=[p.id])[0]
-    assert sig.kind == "session" and sig.dedupe_key == f"claude_session:{SID}"
+    assert sig.kind == "session" and sig.dedupe_key == f"claude_session:{SID}:2026-01-05T10:00"
     assert sig.payload["prompts"] == 2 and sig.payload["backend"] == "claude" and sig.payload["running"] is True
     assert report.live[0].session_id == SID and report.live[0].project_id == p.id
 
@@ -246,3 +246,97 @@ def test_digest_transcript_missing_file_raises(tmp_path):
     import pytest
     with pytest.raises(OSError):
         digest_transcript(tmp_path / "nope.jsonl")
+
+
+def _two_bursts():
+    return [
+        rec_user("2026-08-30T19:20:00.000Z"), rec_assistant("2026-08-30T19:30:00.000Z"),
+        rec_user("2026-09-22T02:57:00.000Z"), rec_assistant("2026-09-22T03:00:00.000Z"),
+    ]
+
+
+def _lines(records):
+    return [json.dumps(r).encode() + b"\n" for r in records]
+
+
+def test_segments_split_on_idle_gap_with_stable_keys():
+    from trajectree.connectors.claude_sessions import segment_key
+    acc = parse_lines(_lines(_two_bursts()), SessionSummary(transcript_path="/x/a.jsonl", backend="claude"))
+    assert len(acc.segments) == 2
+    a, b = acc.segments
+    assert a.t_start == datetime(2026, 8, 30, 19, 20, tzinfo=UTC) and a.t_end == datetime(2026, 8, 30, 19, 30, tzinfo=UTC)
+    assert (a.prompts, a.records, a.first_prompt) == (1, 2, "hi")
+    assert b.t_start == datetime(2026, 9, 22, 2, 57, tzinfo=UTC)
+    assert segment_key("claude", SID, a.t_start) == f"claude_session:{SID}:2026-08-30T19:20"
+
+
+def test_segment_extends_as_the_file_grows(ledger, human, settings, tmp_path):
+    home, s, p = setup(ledger, human, settings, tmp_path)
+    path = write_transcript(home, CWD, SID, _two_bursts()[:2])
+    now = datetime.now(UTC)
+    scan_transcripts(ledger.conn, s, now=now)
+    (first,) = list_signals(ledger.conn, kinds=["session"])
+    with path.open("a") as f:
+        f.write(json.dumps(rec_user("2026-08-30T19:45:00.000Z")) + "\n")
+        f.write(json.dumps(rec_user("2026-09-22T02:57:00.000Z")) + "\n")
+    os.utime(path, None)
+    scan_transcripts(ledger.conn, s, now=now)
+    rows = list_signals(ledger.conn, kinds=["session"])
+    assert len(rows) == 2
+    assert rows[0].dedupe_key == first.dedupe_key and rows[0].t_end == datetime(2026, 8, 30, 19, 45, tzinfo=UTC)
+    assert (rows[0].payload["segment"], rows[0].payload["segments"]) == (1, 2)
+    assert rows[1].payload["segment"] == 2
+
+
+def test_segments_tolerate_unordered_and_missing_timestamps():
+    no_ts = rec_user("x")
+    del no_ts["timestamp"]
+    records = [
+        rec_assistant("2026-08-30T19:30:00.000Z", cwd=None),
+        rec_user("2026-08-30T19:20:00.000Z", cwd=None),
+        no_ts,
+        rec_user("2026-08-30T19:25:00.000Z", cwd=None),
+    ]
+    acc = parse_lines(_lines(records), SessionSummary(transcript_path="/x/a.jsonl", backend="claude"))
+    (seg,) = acc.segments
+    assert seg.t_start == datetime(2026, 8, 30, 19, 20, tzinfo=UTC) and seg.t_end == datetime(2026, 8, 30, 19, 30, tzinfo=UTC)
+    assert seg.records == 3
+    assert acc.cwd == CWD
+
+
+def test_metadata_records_do_not_open_or_count_toward_segments():
+    meta = {"type": "custom-title", "customTitle": "t", "timestamp": "2026-07-01T00:00:00.000Z"}
+    acc = parse_lines(_lines([meta, rec_user("2026-08-30T19:20:00.000Z")]), SessionSummary(transcript_path="/x/a.jsonl", backend="claude"))
+    (seg,) = acc.segments
+    assert seg.records == 1 and seg.t_start == datetime(2026, 8, 30, 19, 20, tzinfo=UTC)
+    assert acc.t_start == datetime(2026, 7, 1, tzinfo=UTC)
+
+
+def test_first_uuid_and_skip_until():
+    a = rec_user("2026-08-30T19:20:00.000Z"); a["uuid"] = "u1"
+    b = rec_user("2026-09-22T02:57:00.000Z"); b["uuid"] = "u2"
+    base = SessionSummary(transcript_path="/x/a.jsonl", backend="claude", skip_until=datetime(2026, 9, 1, tzinfo=UTC))
+    acc = parse_lines(_lines([a, b]), base)
+    assert acc.first_uuid == "u1" and acc.prompts == 1 and len(acc.segments) == 1
+
+
+def test_session_payload_carries_segment_fields(ledger, human, settings, tmp_path):
+    home, s, p = setup(ledger, human, settings, tmp_path)
+    write_transcript(home, CWD, SID, _two_bursts())
+    scan_transcripts(ledger.conn, s, now=datetime.now(UTC))
+    rows = list_signals(ledger.conn, kinds=["session"])
+    for key in ("segment", "segments", "records", "prompts", "first_prompt", "resumed_from"):
+        assert key in rows[0].payload
+    assert rows[0].payload["resumed_from"] is None
+    assert [r.payload["running"] for r in rows] == [False, True]
+
+
+def test_settings_read_segment_gap_and_idle(monkeypatch, tmp_path):
+    from trajectree.config import load_settings
+    monkeypatch.setenv("TRAJECTREE_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("TRAJECTREE_SESSION_IDLE_S", raising=False)
+    monkeypatch.setenv("TRAJECTREE_SEGMENT_GAP_S", "600")
+    s = load_settings()
+    assert s.segment_gap_s == 600 and s.idle_s == 600 and s.inspect_budget_chars == 40000
+    monkeypatch.setenv("TRAJECTREE_SESSION_IDLE_S", "90")
+    assert load_settings().idle_s == 90

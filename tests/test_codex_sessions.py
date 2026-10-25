@@ -107,7 +107,8 @@ def test_truncated_line_is_kept_for_next_pass(ledger, human, settings, tmp_path)
     state = get_state(ledger.conn, f"scan:{dest.absolute()}")
     assert state["offset"] == body.rindex(b"\n") + 1 < len(body)  # stops before the partial line
     first = list_signals(ledger.conn, project_ids=[p.id])[0]
-    assert first.t_end == datetime(2026, 1, 5, 10, 0, 8, tzinfo=UTC)
+    # the 10:00:08 token_usage_record is metadata: it does not extend the segment
+    assert first.t_end == datetime(2026, 1, 5, 10, 0, 7, tzinfo=UTC)
     # the rest of the line arrives
     dest.write_bytes(BASIC.read_bytes())
     scan_codex(ledger.conn, s, now=datetime.now(UTC))
@@ -131,7 +132,7 @@ def test_signal_attaches_by_cwd_and_honours_codex_choice(ledger, human, settings
     report = scan_codex(ledger.conn, s, now=datetime.now(UTC))
     assert (report.files_seen, report.signals_written) == (2, 1) and other.exists()
     (sig,) = list_signals(ledger.conn, project_ids=[p.id])
-    assert sig.kind == "session" and sig.dedupe_key == f"codex_session:{SID}"
+    assert sig.kind == "session" and sig.dedupe_key == f"codex_session:{SID}:2026-01-05T10:00"
     assert sig.payload["backend"] == "codex" and sig.payload["session_id"] == SID
     assert sig.payload["title"] == "Fix the build script" and sig.payload["transcript_path"] == str(dest.absolute())
     assert session_signal(ledger.conn, SID).id == sig.id and session_signal(ledger.conn, "nope") is None
@@ -167,6 +168,43 @@ def test_live_by_mtime(ledger, human, settings, tmp_path):
     assert [x.session_id for x in scan_codex(ledger.conn, s, now=datetime.now(UTC)).live] == [SID]
     later = datetime.now(UTC).replace(year=datetime.now(UTC).year + 1)
     assert scan_codex(ledger.conn, s, now=later).live == []
+
+
+def _two_burst_rollout(root: Path, sid: str, cwd: str) -> Path:
+    t1, t2 = "2026-01-05T10:00:00.000Z", "2026-01-05T13:00:00.000Z"
+    day = root / "2026" / "01" / "05"
+    day.mkdir(parents=True, exist_ok=True)
+    path = day / f"rollout-2026-01-05T10-00-00-{sid}.jsonl"
+
+    def prompt(ts, text):
+        return {"timestamp": ts, "type": "event_msg", "payload": {
+            "type": "item_completed", "item": {"type": "UserMessage", "content": [{"type": "text", "text": text}]}}}
+
+    recs = [{"timestamp": t1, "type": "session_meta", "payload": {"id": sid, "cwd": cwd}}, prompt(t1, "one"), prompt(t2, "two")]
+    path.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+    return path
+
+
+def test_codex_rollout_splits_into_segments(ledger, human, settings, tmp_path):
+    s = settings.model_copy(update={"codex_sessions_root": tmp_path / "cs", "scan_since_days": 20000})
+    _two_burst_rollout(s.codex_sessions_root, SID, CWD)
+    p = project(ledger, human)
+    scan_codex(ledger.conn, s, now=datetime.now(UTC))
+    rows = list_signals(ledger.conn, project_ids=[p.id], kinds=["session"])
+    assert [r.dedupe_key for r in rows] == [f"codex_session:{SID}:2026-01-05T10:00", f"codex_session:{SID}:2026-01-05T13:00"]
+    assert [r.payload["first_prompt"] for r in rows] == ["one", "two"]
+
+
+def test_session_signal_resolves_a_segment_key(ledger, human, settings, tmp_path):
+    from trajectree.repo.signals import session_signals_for
+    s = settings.model_copy(update={"codex_sessions_root": tmp_path / "cs", "scan_since_days": 20000})
+    _two_burst_rollout(s.codex_sessions_root, SID, CWD)
+    project(ledger, human)
+    scan_codex(ledger.conn, s, now=datetime.now(UTC))
+    both = session_signals_for(ledger.conn, SID)
+    assert len(both) == 2 and both[0].t_start < both[1].t_start
+    assert session_signal(ledger.conn, SID).id == both[0].id
+    assert session_signals_for(ledger.conn, "nope") == []
 
 
 def test_digest_codex_caps_length():
@@ -290,7 +328,7 @@ def test_child_rollouts_are_not_sessions(ledger, human, settings, tmp_path):
     assert codex.count == 1 and codex.oldest == datetime(2026, 1, 3, 9, tzinfo=UTC)
     report = scan_codex(ledger.conn, s, now=now)
     (sig,) = list_signals(ledger.conn, project_ids=[p.id])
-    assert report.signals_written == 1 and sig.dedupe_key == f"codex_session:{PARENT}"
+    assert report.signals_written == 1 and sig.dedupe_key.startswith(f"codex_session:{PARENT}:")
     assert sig.t_start == sig.t_end == datetime(2026, 1, 3, 9, tzinfo=UTC)   # the parent's own dates
     text = session_history(s, [CWD], [CWD], starts={"codex": date(2026, 3, 1)}, budget_chars=5000)
     assert "parent prompt" in text and "subagent prompt" not in text

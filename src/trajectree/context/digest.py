@@ -31,6 +31,13 @@ def _line(s: Signal) -> str:
         return f"- {day} {_count(p, 'count')} commits: {'; '.join(_items(p.get('subjects')))}"
     if s.kind == "session":
         name = _one_line(p.get("title") or str(p.get("session_id") or "")[:8])
+        model = _one_line(p.get("model") or "unknown model")
+        if "segment" in p:
+            first = f': "{_one_line(p["first_prompt"])}"' if p.get("first_prompt") else ""
+            return (
+                f'- {day} session "{name}" segment {_count(p, "segment")}/{_count(p, "segments")}'
+                f' ({_count(p, "prompts")} prompts, {model}){first}'
+            )
         return f'- {day} session "{name}" ({_count(p, "prompts")} prompts, {_one_line(p.get("model") or "unknown model")})'
     if s.kind == "files_changed":
         return f"- {day} {_count(p, 'count')} files changed ({', '.join(_items(p.get('paths')))})"

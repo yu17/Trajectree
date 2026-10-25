@@ -9,7 +9,8 @@ import json
 import os
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from datetime import datetime, timezone
+import functools
+from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO
 
@@ -24,6 +25,24 @@ from trajectree.repo.projects import list_projects
 from trajectree.repo.resources import project_for_path
 from trajectree.repo.signals import upsert_signals
 from trajectree.repo.state import get_state, set_state
+
+
+DEFAULT_SEGMENT_GAP_S = 7200
+
+
+class Segment(BaseModel):
+    """A burst of conversation records with no idle gap longer than the segment gap."""
+
+    t_start: AwareDatetime
+    t_end: AwareDatetime
+    records: int = 0
+    prompts: int = 0
+    first_prompt: str | None = None
+
+
+def segment_key(source: str, session_id: str, t_start: datetime) -> str:
+    """The signal `dedupe_key` of a segment: stable while it grows, because it names the start minute."""
+    return f"{source}_session:{session_id}:{t_start.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M')}"
 
 
 class SessionSummary(BaseModel):
@@ -46,6 +65,11 @@ class SessionSummary(BaseModel):
     # later incremental scan, replace that message's contribution instead of adding to it.
     last_msg_id: str | None = None
     last_msg_usage: tuple[int, int] = (0, 0)
+    segments: list[Segment] = []
+    skip_until: AwareDatetime | None = None  # records at or before this belong to a session this one resumed
+    resumed_from: str | None = None
+    continued_in: str | None = None
+    first_uuid: str | None = None
 
 
 class LiveSession(BaseModel):
@@ -98,11 +122,40 @@ def _is_prompt(rec: dict[str, Any]) -> bool:
     )
 
 
-def _apply(acc: SessionSummary, rec: dict[str, Any]) -> None:
+def _first_text(rec: dict[str, Any]) -> str | None:
+    texts = _text_blocks(_dict(rec.get("message")).get("content"))
+    return " ".join(texts[0].split())[:200] if texts else None
+
+
+def add_to_segment(acc: SessionSummary, ts: datetime, *, gap_s: int, prompt: bool, first_prompt: str | None) -> None:
+    """Count one conversation record at `ts` into the work segment it belongs to, opening a new
+    segment when it lies more than `gap_s` after the last one's end. Out-of-order records widen
+    the last segment; they never reorder segments."""
+    last = acc.segments[-1] if acc.segments else None
+    if last is None or ts - last.t_end > timedelta(seconds=gap_s):
+        last = Segment(t_start=ts, t_end=ts)
+        acc.segments.append(last)
+    else:
+        last.t_end = max(last.t_end, ts)
+        last.t_start = min(last.t_start, ts)
+    last.records += 1
+    if prompt:
+        last.prompts += 1
+        last.first_prompt = last.first_prompt or first_prompt
+
+
+def _apply(acc: SessionSummary, rec: dict[str, Any], *, gap_s: int = DEFAULT_SEGMENT_GAP_S) -> None:
     kind = rec.get("type")
-    if kind == "user" and _is_prompt(rec):
+    ts = _timestamp(rec.get("timestamp"))
+    conversation = kind in ("user", "assistant")
+    if conversation and acc.first_uuid is None:
+        acc.first_uuid = _str(rec.get("uuid"))
+    # records at or before `skip_until` were already counted by the session this one resumed
+    counted = not (ts is not None and acc.skip_until is not None and ts <= acc.skip_until)
+    prompt = kind == "user" and _is_prompt(rec)
+    if prompt and counted:
         acc.prompts += 1
-    elif kind == "assistant":
+    elif kind == "assistant" and counted:
         message = _dict(rec.get("message"))
         usage = _dict(message.get("usage"))
         acc.model = _str(message.get("model")) or acc.model
@@ -127,17 +180,20 @@ def _apply(acc: SessionSummary, rec: dict[str, Any]) -> None:
         acc.title = _str(rec.get("aiTitle")) or acc.title
     elif kind == "summary" and acc.title is None:
         acc.title = _str(rec.get("summary"))
+    elif kind == "continued-in":
+        acc.continued_in = _str(rec.get("continuedInSessionId")) or acc.continued_in
     acc.cwd = acc.cwd or _str(rec.get("cwd"))
     acc.session_id = acc.session_id or _str(rec.get("sessionId"))
     acc.git_branch = acc.git_branch or _str(rec.get("gitBranch"))
     acc.version = acc.version or _str(rec.get("version"))
-    ts = _timestamp(rec.get("timestamp"))
     if ts is not None:
         acc.t_start = ts if acc.t_start is None else min(acc.t_start, ts)
         acc.t_end = ts if acc.t_end is None else max(acc.t_end, ts)
+        if conversation and counted:
+            add_to_segment(acc, ts, gap_s=gap_s, prompt=prompt, first_prompt=_first_text(rec) if prompt else None)
 
 
-def parse_lines(lines: Iterable[bytes], acc: SessionSummary) -> SessionSummary:
+def parse_lines(lines: Iterable[bytes], acc: SessionSummary, *, gap_s: int = DEFAULT_SEGMENT_GAP_S) -> SessionSummary:
     """Fold transcript lines into a copy of `acc`; malformed or unexpected lines are skipped."""
     out = acc.model_copy(deep=True)
     for line in lines:
@@ -146,7 +202,7 @@ def parse_lines(lines: Iterable[bytes], acc: SessionSummary) -> SessionSummary:
         except Exception:
             continue
         if isinstance(rec, dict):
-            _apply(out, rec)
+            _apply(out, rec, gap_s=gap_s)
     return out
 
 
@@ -422,7 +478,9 @@ def refresh_file(
     path: Path,
     st: os.stat_result,
     backend: str,
-    parse: Callable[[Iterable[bytes], SessionSummary], SessionSummary] = parse_lines,
+    parse: Callable[..., SessionSummary] = parse_lines,
+    *,
+    gap_s: int = DEFAULT_SEGMENT_GAP_S,
 ) -> tuple[SessionSummary, bool] | None:
     """The file's stored summary brought up to date, and whether any of it was read; `None` when
     unreadable. Resumes from the stored byte offset; a new, unreadable-state or shrunk file starts over."""
@@ -437,7 +495,7 @@ def refresh_file(
     else:  # new file, unreadable state, or truncated below what was read: start over
         offset, summary = 0, SessionSummary(transcript_path=abs_path, backend=backend)
     try:
-        summary, consumed = _read_from(path, offset, summary, parse)
+        summary, consumed = _read_from(path, offset, summary, functools.partial(parse, gap_s=gap_s))
     except OSError:
         return None
     set_state(
@@ -469,7 +527,7 @@ def _refresh_summaries(
             if cutoff is not None and st.st_mtime < cutoff:
                 continue
             files_seen += 1
-            refreshed = refresh_file(conn, path, st, backend)
+            refreshed = refresh_file(conn, path, st, backend, gap_s=settings.segment_gap_s)
             if refreshed is None:
                 continue
             files_read += refreshed[1]
@@ -507,28 +565,40 @@ def session_signals(
         if start is not None and (summary.t_end or seen) < start:
             continue
         running = (now - seen).total_seconds() < settings.live_window_s
-        signals.append(
-            SignalIn(
-                project_id=project.id,
-                kind="session",
-                t_start=summary.t_start or seen,
-                t_end=summary.t_end or seen,
-                dedupe_key=f"{source}_session:{session_id}",
-                payload={
-                    "session_id": session_id,
-                    "cwd": summary.cwd,
-                    "title": summary.title,
-                    "git_branch": summary.git_branch,
-                    "model": summary.model,
-                    "prompts": summary.prompts,
-                    "tokens_in": summary.tokens_in,
-                    "tokens_out": summary.tokens_out,
-                    "transcript_path": summary.transcript_path,
-                    "backend": summary.backend,
-                    "running": running,
-                },
+        # a summary with no conversation timestamps still yields one signal, so nothing is lost
+        segments = summary.segments or [
+            Segment(t_start=summary.t_start or seen, t_end=summary.t_end or seen, prompts=summary.prompts)
+        ]
+        for n, seg in enumerate(segments, 1):
+            if start is not None and seg.t_end < start:
+                continue
+            signals.append(
+                SignalIn(
+                    project_id=project.id,
+                    kind="session",
+                    t_start=seg.t_start,
+                    t_end=seg.t_end,
+                    dedupe_key=segment_key(source, session_id, seg.t_start),
+                    payload={
+                        "session_id": session_id,
+                        "cwd": summary.cwd,
+                        "title": summary.title,
+                        "git_branch": summary.git_branch,
+                        "model": summary.model,
+                        "prompts": seg.prompts,
+                        "tokens_in": summary.tokens_in,
+                        "tokens_out": summary.tokens_out,
+                        "transcript_path": summary.transcript_path,
+                        "backend": summary.backend,
+                        "running": running and n == len(segments),
+                        "segment": n,
+                        "segments": len(segments),
+                        "records": seg.records,
+                        "first_prompt": seg.first_prompt,
+                        "resumed_from": summary.resumed_from,
+                    },
+                )
             )
-        )
         if running:
             live.append(
                 LiveSession(

@@ -24,6 +24,9 @@ class Settings(BaseModel):
     live_window_s: int = 900
     stale_settle_h: int = 24
     scan_since_days: int = 365
+    segment_gap_s: int = 7200  # an idle gap longer than this starts a new work segment
+    session_idle_s: int | None = None  # None: use segment_gap_s
+    inspect_budget_chars: int = 40000
     cfg_dir: Path | None = None
     claude_bin: str = "claude"
     codex_bin: str = "codex"
@@ -46,6 +49,10 @@ class Settings(BaseModel):
     public_url: str | None = None  # where the owner reaches the daemon; only the ready line shows it
     marp_bin: str | None = None  # None: look up `marp` on PATH when exporting
     chrome_bin: str | None = None
+
+    @property
+    def idle_s(self) -> int:
+        return self.session_idle_s or self.segment_gap_s
 
     @property
     def connectors_dir(self) -> Path:
@@ -127,6 +134,9 @@ _INT_ENV = {
     "TRAJECTREE_LIVE_WINDOW": "live_window_s",
     "TRAJECTREE_STALE_SETTLE_H": "stale_settle_h",
     "TRAJECTREE_SCAN_SINCE_DAYS": "scan_since_days",
+    "TRAJECTREE_SEGMENT_GAP_S": "segment_gap_s",
+    "TRAJECTREE_SESSION_IDLE_S": "session_idle_s",
+    "TRAJECTREE_INSPECT_BUDGET_CHARS": "inspect_budget_chars",
     "TRAJECTREE_SCHEDULER_EVERY": "scheduler_interval_s",
     "TRAJECTREE_SCHEDULER_GRACE_S": "scheduler_grace_s",
     "TRAJECTREE_DIGEST_MAX_CHARS": "digest_max_chars",

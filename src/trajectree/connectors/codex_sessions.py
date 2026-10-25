@@ -21,6 +21,7 @@ from typing import Any
 import apsw
 from trajectree.config import Settings
 from trajectree.connectors.claude_sessions import (
+    DEFAULT_SEGMENT_GAP_S,
     MAX_TRANSCRIPT_FILES,
     ProjectTranscripts,
     ScanReport,
@@ -29,6 +30,7 @@ from trajectree.connectors.claude_sessions import (
     _int,
     _str,
     _timestamp,
+    add_to_segment,
     cwd_in_folder,
     digest_transcript,
     refresh_file,
@@ -38,7 +40,7 @@ from trajectree.connectors.claude_sessions import (
     transcript_cutoff,
 )
 from trajectree.models import Signal
-from trajectree.repo.signals import get_signal_by_key, upsert_signals
+from trajectree.repo.signals import session_signals_for, upsert_signals
 
 TITLE_CHARS = 80
 _ID_IN_NAME = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -88,9 +90,11 @@ def _user_prompts(rec: dict[str, Any]) -> list[str]:
     return []
 
 
-def _apply(acc: SessionSummary, rec: dict[str, Any]) -> None:
+def _apply(acc: SessionSummary, rec: dict[str, Any], *, gap_s: int = DEFAULT_SEGMENT_GAP_S) -> None:
     kind = rec.get("type")
     payload = _dict(rec.get("payload"))
+    ts = _timestamp(rec.get("timestamp"))
+    counted = not (ts is not None and acc.skip_until is not None and ts <= acc.skip_until)
     if kind == "session_meta":
         acc.session_id = _str(payload.get("id")) or acc.session_id
         acc.cwd = _str(payload.get("cwd")) or acc.cwd
@@ -106,16 +110,19 @@ def _apply(acc: SessionSummary, rec: dict[str, Any]) -> None:
         acc.tokens_in += _int(usage.get("input_tokens"))
         acc.tokens_out += _int(usage.get("output_tokens"))
     prompts = _user_prompts(rec)
-    if prompts:
+    if prompts and counted:
         acc.prompts += len(prompts)
         acc.title = acc.title or _shorten(prompts[0])
-    ts = _timestamp(rec.get("timestamp"))
     if ts is not None:
         acc.t_start = ts if acc.t_start is None else min(acc.t_start, ts)
         acc.t_end = ts if acc.t_end is None else max(acc.t_end, ts)
+        if kind in ("response_item", "event_msg") and counted:
+            add_to_segment(
+                acc, ts, gap_s=gap_s, prompt=bool(prompts), first_prompt=" ".join(prompts[0].split())[:200] if prompts else None
+            )
 
 
-def parse_codex_lines(lines: Iterable[bytes], acc: SessionSummary) -> SessionSummary:
+def parse_codex_lines(lines: Iterable[bytes], acc: SessionSummary, *, gap_s: int = DEFAULT_SEGMENT_GAP_S) -> SessionSummary:
     """Fold rollout lines into a copy of `acc`; malformed or unrecognized lines are skipped."""
     out = acc.model_copy(deep=True)
     for line in lines:
@@ -124,7 +131,7 @@ def parse_codex_lines(lines: Iterable[bytes], acc: SessionSummary) -> SessionSum
         except Exception:
             continue
         if isinstance(rec, dict):
-            _apply(out, rec)
+            _apply(out, rec, gap_s=gap_s)
     return out  # no session_id until the session_meta record is read: not a session (yet)
 
 
@@ -174,10 +181,9 @@ def digest_session(backend: str, path: Path, *, max_chars: int) -> str:
 
 
 def session_signal(conn: apsw.Connection, session_id: str) -> Signal | None:
-    """The `session` signal for `session_id`: a Claude-format session first, then a Codex one."""
-    return get_signal_by_key(conn, f"claude_session:{session_id}") or get_signal_by_key(
-        conn, f"codex_session:{session_id}"
-    )
+    """The earliest-segment `session` signal for `session_id` (Claude- or Codex-format), or None."""
+    found = session_signals_for(conn, session_id)
+    return found[0] if found else None
 
 
 _FIRST_LINE_BYTES = 64 * 1024
@@ -263,7 +269,7 @@ def scan_codex(conn: apsw.Connection, settings: Settings, *, now: datetime) -> S
             if cutoff is not None and st.st_mtime < cutoff:
                 continue
             files_seen += 1
-            refreshed = refresh_file(conn, path, st, "codex", parse_codex_lines)
+            refreshed = refresh_file(conn, path, st, "codex", parse_codex_lines, gap_s=settings.segment_gap_s)
             if refreshed is None:
                 continue
             files_read += refreshed[1]
