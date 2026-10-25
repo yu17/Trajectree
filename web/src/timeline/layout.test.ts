@@ -1,8 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { packLane, cullVisible, labelWidth, binStrip, type LaneItem } from "./layout";
+import { packLane, cullVisible, labelWidth, binStrip, laneItems, pillsVisible, type LaneItem } from "./layout";
+import type { Event } from "../api/types";
 
 const xz = (t: number) => t / 1000; // 1px per second
-const item = (id: string, start: number, title = "t", end: number | null = null): LaneItem => ({ id, start, end, title, kind: "note" });
+const item = (id: string, start: number, title = "t", end: number | null = null): LaneItem => ({ id, start, end, title, kind: "note", tier: "block" });
 
 describe("packLane", () => {
   it("places non-overlapping items in row 0 with labels", () => {
@@ -71,5 +72,29 @@ describe("binStrip", () => {
     expect(cells).toHaveLength(1);
     expect(cells[0].key).toBe("2026-01");
     expect(cells[0].level).toBe(5);
+  });
+});
+
+const ev = (id: string, tier: "block" | "pill", t_start: string, t_end: string | null = null): Event => ({
+  id, project_id: "p", kind: "note", title: id, body_md: "", t_start, t_end, status: "happened", source: "human",
+  props: {}, created_txn: null, created_at: t_start, updated_at: t_start, tier,
+});
+
+describe("laneItems", () => {
+  it("places a block at its end date and keeps pills only when visible", () => {
+    const evs = [ev("b", "block", "2026-01-01T00:00:00Z", "2026-01-20T00:00:00Z"), ev("p", "pill", "2026-01-05T00:00:00Z")];
+    const shown = laneItems(evs, true);
+    const b = shown.find(i => i.id === "b")!;
+    expect(b.start).toBe(Date.parse("2026-01-20T00:00:00Z"));
+    expect(b.end).toBeNull();
+    expect(shown.find(i => i.id === "p")!.start).toBe(Date.parse("2026-01-05T00:00:00Z"));
+    expect(laneItems(evs, false).map(i => i.id)).toEqual(["b"]);
+  });
+});
+
+describe("pillsVisible", () => {
+  it("flips at PILL_ZOOM_DAYS", () => {
+    expect(pillsVisible(10, 600)).toBe(true);
+    expect(pillsVisible(5, 600)).toBe(false);
   });
 });

@@ -23,7 +23,7 @@
 .block.k-milestone{--kc:var(--k-milestone)}
 .block.k-idea,.block.k-note{--kc:var(--k-idea)}
 .block rect.body{fill:var(--kc);fill-opacity:.16;stroke:var(--kc);stroke-width:1}
-.block.k-idea rect.body,.block.k-note rect.body{rx:11px;fill-opacity:.06}
+.block.tier-pill rect.body{rx:7px;fill-opacity:.06}
 .block.s-planned rect.body{fill-opacity:0;stroke-dasharray:4 3;stroke-width:1.2}
 .block.s-suggested rect.body{fill-opacity:0;stroke-dasharray:2 3;stroke-width:1.2}
 .block.s-dropped rect.body{fill-opacity:.08;stroke-opacity:.5}

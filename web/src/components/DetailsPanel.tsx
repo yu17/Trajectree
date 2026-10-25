@@ -88,6 +88,8 @@ export function DetailsPanel({ data, selected, onReview, onRevert, onOpenProject
     : txn.isError ? "unavailable"
     : "loading…";
   const wires = data.edges.filter(e => e.src_id === event.id || e.dst_id === event.id);
+  const pills = wires.filter(e => e.rel === "part_of" && e.dst_id === event.id);
+  const partOf = wires.find(e => e.rel === "part_of" && e.src_id === event.id);
 
   return (
     <aside className="details">
@@ -110,6 +112,15 @@ export function DetailsPanel({ data, selected, onReview, onRevert, onOpenProject
         <div className="actions">
           <button onClick={() => onOpenProject(event.project_id)}>Open project</button>
         </div>
+      )}
+      {partOf && <p className="part-of">Part of {titleOf(data, partOf.dst_id).title}</p>}
+      {pills.length > 0 && (
+        <>
+          <h2>Pills</h2>
+          <ul className="links">
+            {pills.map(w => <li key={w.id}>{titleOf(data, w.src_id).title}</li>)}
+          </ul>
+        </>
       )}
       <h2>Wires</h2>
       {wires.length ? (

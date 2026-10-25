@@ -1,6 +1,6 @@
 // Pure lane packing and culling for the timeline. No DOM, no d3.
 // Ported from docs/superpowers/specs/mockups/2026-10-21-timeline-lane-model-a.html.
-import type { StripBin } from "../api/types";
+import type { Event, StripBin } from "../api/types";
 
 export interface LaneItem {
   id: string;
@@ -8,6 +8,27 @@ export interface LaneItem {
   end: number | null; // epoch ms
   title: string;
   kind: string;
+  tier: "block" | "pill";
+}
+
+export const PILL_ZOOM_DAYS = 60;
+export const PILL_H = 14;
+
+// Pills show only while the plot spans at most `maxDays` days.
+export function pillsVisible(dayW: number, plotW: number, maxDays = PILL_ZOOM_DAYS): boolean {
+  return plotW / dayW <= maxDays;
+}
+
+// A block is a checkpoint drawn at its end date; a pill sits at its own timestamp.
+export function laneItems(events: Event[], showPills: boolean): LaneItem[] {
+  const out: LaneItem[] = [];
+  for (const e of events) {
+    const tier = e.tier ?? "block";
+    if (tier === "pill" && !showPills) continue;
+    const start = Date.parse(tier === "pill" ? e.t_start : (e.t_end ?? e.t_start));
+    out.push({ id: e.id, start, end: null, title: e.title, kind: e.kind, tier });
+  }
+  return out;
 }
 
 export interface PlacedItem extends LaneItem {

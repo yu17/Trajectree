@@ -83,7 +83,7 @@ describe("Timeline", () => {
     expect(container.querySelector("rect.strip-cell")!.classList.contains("l-2")).toBe(true);
     expect(container.querySelectorAll("circle.live").length).toBe(1);
     expect(container.querySelector("g.chip.running text")!.textContent).toBe("● running");
-    expect(container.querySelector("g.chip.stale text")!.textContent).toBe("stale");
+    expect(container.querySelector("g.chip.stale text")!.textContent).toBe("to inspect");
     fireEvent.click(container.querySelector("rect.strip-cell")!);
     expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ type: "bin", projectId: "p1" }));
   });
@@ -95,7 +95,7 @@ describe("Timeline", () => {
     fireEvent.click(container.querySelector("g.chip.stale")!);
     expect(onChip).toHaveBeenCalledWith("p1", "stale");
     expect(onSelect).not.toHaveBeenCalled();
-    expect(container.querySelector("g.chip.stale title")!.textContent).toBe("Regenerate summary");
+    expect(container.querySelector("g.chip.stale title")!.textContent).toBe("Inspect");
   });
   it("calls onLane when a lane label is clicked", () => {
     const onLane = vi.fn();
@@ -121,5 +121,48 @@ describe("Timeline", () => {
     };
     const { container } = render(<Timeline data={d} now={new Date("2026-01-10T00:00:00Z")} range={[new Date("2026-01-01T00:00:00Z"), new Date("2026-02-01T00:00:00Z")]} selected={null} onSelect={() => {}} />);
     expect(container.querySelector("path.todo-marker.pending")).not.toBeNull();
+  });
+  it("hides pills on a wide range and shows them on a narrow one", () => {
+    const d: TimelineResponse = {
+      ...data, edges: [],
+      events: [
+        { ...data.events[0], id: "b1", tier: "block" },
+        { ...data.events[0], id: "pl1", title: "Tick", tier: "pill", t_start: "2026-01-06T10:00:00Z" },
+      ],
+    };
+    const now = new Date("2026-01-10T00:00:00Z");
+    const wide = render(<Timeline data={d} now={now} range={[new Date("2026-01-01T00:00:00Z"), new Date("2027-01-01T00:00:00Z")]} selected={null} onSelect={() => {}} />);
+    expect(wide.container.querySelectorAll("g.block.tier-pill").length).toBe(0);
+    expect(wide.container.querySelectorAll("g.block.tier-block").length).toBe(1);
+    wide.unmount();
+    const narrow = render(<Timeline data={d} now={now} range={[new Date("2026-01-01T00:00:00Z"), new Date("2026-01-21T00:00:00Z")]} selected={null} onSelect={() => {}} />);
+    expect(narrow.container.querySelectorAll("g.block.tier-pill").length).toBe(1);
+  });
+  it("draws a block at its end date", () => {
+    const d: TimelineResponse = {
+      ...data, edges: [],
+      events: [
+        { ...data.events[0], id: "span", t_start: "2026-01-02T00:00:00Z", t_end: "2026-01-20T00:00:00Z", tier: "block" },
+        { ...data.events[0], id: "pt", t_start: "2026-01-20T00:00:00Z", t_end: null, tier: "block" },
+      ],
+    };
+    const { container } = render(<Timeline data={d} now={new Date("2026-01-10T00:00:00Z")} range={[new Date("2026-01-01T00:00:00Z"), new Date("2026-02-01T00:00:00Z")]} selected={null} onSelect={() => {}} />);
+    const xs = [...container.querySelectorAll("g.block")].map(g => /translate\(([-\d.]+),/.exec(g.getAttribute("transform")!)![1]);
+    expect(xs.length).toBe(2);
+    expect(xs[0]).toBe(xs[1]);
+  });
+  it("does not draw part_of as a wire", () => {
+    const d: TimelineResponse = {
+      ...data,
+      edges: [{ ...data.edges[0], rel: "part_of" }],
+    };
+    const { container } = render(<Timeline data={d} now={new Date("2026-01-10T00:00:00Z")} range={[new Date("2026-01-01T00:00:00Z"), new Date("2026-02-01T00:00:00Z")]} selected={{ type: "event", id: "e1" }} onSelect={() => {}} />);
+    expect(container.querySelectorAll("path.wire").length).toBe(0);
+  });
+  it("shows the inspect count on the chip", () => {
+    const d = { ...data, stale: ["p1"], due: { p1: 3 } };
+    const { container } = render(<Timeline data={d} now={new Date("2026-01-10T00:00:00Z")} range={[new Date("2026-01-01T00:00:00Z"), new Date("2026-02-01T00:00:00Z")]} selected={null} onSelect={() => {}} />);
+    expect(container.querySelector("g.chip.stale text")!.textContent).toBe("3 to inspect");
+    expect(container.querySelector("g.chip.stale title")!.textContent).toBe("Inspect");
   });
 });

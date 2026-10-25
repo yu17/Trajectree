@@ -5,7 +5,7 @@
 import * as d3 from "d3";
 import type { Edge, Event, TimelineResponse, Todo } from "../api/types";
 import {
-  binKey, binStrip, cullVisible, labelWidth, packLane, type LaneItem, type PlacedItem, type StripCell,
+  binKey, binStrip, cullVisible, labelWidth, laneItems, packLane, pillsVisible, PILL_H, type LaneItem, type PlacedItem, type StripCell,
 } from "./layout";
 import type { Selection } from "./Timeline";
 
@@ -30,7 +30,9 @@ const DAY_MS = 86_400_000;
 const STRIP_H = STRIP_SLOT - 8;
 
 export function fmtWhen(start: Date, end: Date | null): string {
-  return fmtLong(start) + (end ? " → " + fmtTime(end) : "");
+  if (!end) return fmtLong(start);
+  const sameDay = start.toDateString() === end.toDateString();
+  return fmtLong(start) + " → " + (sameDay ? fmtTime(end) : fmtLong(end));
 }
 
 export function trunc(t: string, w: number): string {
@@ -73,7 +75,7 @@ export interface RenderInput {
 
 interface Lane {
   id: string; title: string; kind: string; y: number; h: number; blocks: PlacedBlock[];
-  stripTop: number; cells: StripCell[]; live: boolean; stale: boolean;
+  stripTop: number; cells: StripCell[]; live: boolean; stale: boolean; due: number;
 }
 interface PlacedCell extends StripCell { id: string; laneId: string; y: number }
 interface Chip { kind: "running" | "stale"; projectId: string; text: string; x: number; w: number }
@@ -130,21 +132,21 @@ export function renderTimeline(
   // ---- lane layout ----
   const pending = new Set(Object.keys(data.pending.event ?? {}));
   const evById = new Map(data.events.map(e => [e.id, e]));
-  const itemsByProject = new Map<string, LaneItem[]>();
+  const eventsByProject = new Map<string, Event[]>();
   for (const e of data.events) {
-    const list = itemsByProject.get(e.project_id) ?? [];
-    list.push({
-      id: e.id, start: Date.parse(e.t_start), end: e.t_end ? Date.parse(e.t_end) : null,
-      title: e.title, kind: e.kind,
-    });
-    itemsByProject.set(e.project_id, list);
+    const list = eventsByProject.get(e.project_id) ?? [];
+    list.push(e);
+    eventsByProject.set(e.project_id, list);
   }
-  const mode = binKey(0, xn(DAY_MS) - xn(0)); // pixel width of one day under the current zoom
+  const dayW = xn(DAY_MS) - xn(0); // pixel width of one day under the current zoom
+  const showPills = pillsVisible(dayW, plotW);
+  const mode = binKey(0, dayW);
   const liveIds = new Set(data.live.map(s => s.project_id));
   const staleIds = new Set(data.stale);
+  const due = data.due ?? {};
   let y = 0;
   const lanes: Lane[] = data.projects.map(p => {
-    const vis = cullVisible(itemsByProject.get(p.id) ?? [], xn, plotW);
+    const vis = cullVisible(laneItems(eventsByProject.get(p.id) ?? [], showPills), xn, plotW);
     const lay = packLane(vis, xn, MAX_ROWS, MIN_W);
     const h = PAD + lay.rows * ROW_H + STRIP_SLOT + PAD;
     const laneY = y;
@@ -155,7 +157,7 @@ export function renderTimeline(
     const cells = cullVisible(binStrip(data.strip.filter(b => b.project_id === p.id), mode), xn, plotW);
     return {
       id: p.id, title: p.title, kind: p.kind, y: laneY, h, blocks,
-      stripTop: laneY + PAD + lay.rows * ROW_H + 3, cells, live: liveIds.has(p.id), stale: staleIds.has(p.id),
+      stripTop: laneY + PAD + lay.rows * ROW_H + 3, cells, live: liveIds.has(p.id), stale: staleIds.has(p.id), due: due[p.id] ?? 0,
     };
   });
   const plotH = y;
@@ -199,7 +201,7 @@ export function renderTimeline(
       out.push({ kind, projectId: d.id, text, x: prev ? prev.x + prev.w + 6 : 0, w: text.length * 6 + 12 });
     };
     if (d.live) add("running", "● running");
-    if (d.stale) add("stale", "stale");
+    if (d.stale) add("stale", d.due > 0 ? `${d.due} to inspect` : "to inspect");
     return out;
   };
   const chip = lab.selectAll<SVGGElement, Chip>("g.chip").data(chipsOf, (c: Chip) => c.kind).join((enter: Sel) => {
@@ -211,7 +213,7 @@ export function renderTimeline(
   chip.attr("class", (c: Chip) => `chip ${c.kind}`).attr("transform", (c: Chip) => `translate(${c.x},0)`);
   chip.select("rect").attr("width", (c: Chip) => c.w);
   chip.select("text").text((c: Chip) => c.text);
-  chip.selectAll("title").data((c: Chip) => (c.kind === "stale" ? [c] : [])).join("title").text("Regenerate summary");
+  chip.selectAll("title").data((c: Chip) => (c.kind === "stale" ? [c] : [])).join("title").text("Inspect");
   chip.on("click", (ev: MouseEvent, c: Chip) => {
     ev.stopPropagation();
     onChip?.(c.projectId, c.kind);
@@ -272,7 +274,7 @@ export function renderTimeline(
   if (hovered !== null && hoverLive === null) hideTip();
   const focus = hoverLive ?? selEvent;
   const visEdges = data.edges.filter(e =>
-    e.src_type === "event" && e.dst_type === "event" && pos.has(e.src_id) && pos.has(e.dst_id)
+    e.src_type === "event" && e.dst_type === "event" && e.rel !== "part_of" && pos.has(e.src_id) && pos.has(e.dst_id)
     && (showAllWires || e.src_id === focus || e.dst_id === focus));
   const linked = new Set<string>();
   for (const e of visEdges) { linked.add(e.src_id); linked.add(e.dst_id); }
@@ -285,7 +287,7 @@ export function renderTimeline(
     t.append("tspan").attr("class", "t");
     return g;
   });
-  blk.attr("class", (d: PlacedBlock) => `block k-${d.kind} s-${d.ev.status}`
+  blk.attr("class", (d: PlacedBlock) => `block k-${d.kind} tier-${d.tier} s-${d.ev.status}`
       + (d.id === selEvent ? " sel" : "") + (d.id === hovered ? " hover" : "")
       + (linked.has(d.id) ? " linked" : ""))
     .attr("transform", (d: PlacedBlock) => `translate(${d.px},${d.y})`)
@@ -294,7 +296,9 @@ export function renderTimeline(
       showTip(ev, d.title, `${fmtWhen(new Date(d.start), d.end ? new Date(d.end) : null)} · ${d.kind}`))
     .on("mouseleave", () => { hideTip(); onHover(null); })
     .on("click", (ev: MouseEvent, d: PlacedBlock) => { ev.stopPropagation(); onSelect({ type: "event", id: d.id }); });
-  blk.select("rect.body").attr("width", (d: PlacedBlock) => d.w);
+  blk.select("rect.body").attr("width", (d: PlacedBlock) => d.w)
+    .attr("height", (d: PlacedBlock) => (d.tier === "pill" ? PILL_H : BLOCK_H))
+    .attr("y", (d: PlacedBlock) => (d.tier === "pill" ? (BLOCK_H - PILL_H) / 2 : 0));
   const txt = blk.select("text")
     .attr("x", (d: PlacedBlock) => (d.inside ? 6 : d.w + 5))
     .style("display", (d: PlacedBlock) => (d.label ? null : "none"));

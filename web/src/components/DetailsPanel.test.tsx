@@ -46,6 +46,29 @@ afterEach(() => {
 const wrap = (ui: ReactNode) => render(<QueryClientProvider client={new QueryClient()}>{ui}</QueryClientProvider>);
 
 describe("DetailsPanel", () => {
+  it("lists a block's pills and a pill's block", () => {
+    const d: TimelineResponse = {
+      ...data,
+      events: [{ ...data.events[0], tier: "block" }, { ...data.events[1], title: "Tick", tier: "pill" }],
+      edges: [{ id: "po", src_type: "event", src_id: "e2", dst_type: "event", dst_id: "e1", rel: "part_of", props: {}, valid_from: null, valid_to: null, created_at: "2026-01-08T10:00:00Z" }],
+    };
+    const a = wrap(<DetailsPanel data={d} selected={{ type: "event", id: "e1" }} onReview={() => {}} onRevert={() => {}} />);
+    expect(screen.getByText("Pills")).toBeTruthy();
+    expect(screen.getByText("Tick")).toBeTruthy();
+    a.unmount();
+    wrap(<DetailsPanel data={d} selected={{ type: "event", id: "e2" }} onReview={() => {}} onRevert={() => {}} />);
+    expect(screen.getByText(/Part of Freeze/)).toBeTruthy();
+  });
+  it("shows the full span", () => {
+    const d: TimelineResponse = {
+      ...data,
+      events: [{ ...data.events[0], t_start: "2026-01-05T10:00:00", t_end: "2026-01-07T12:00:00", tier: "block" }, data.events[1]],
+    };
+    wrap(<DetailsPanel data={d} selected={{ type: "event", id: "e1" }} onReview={() => {}} onRevert={() => {}} />);
+    const when = screen.getByText(/05 Jan 2026, 10:00/).textContent!;
+    expect(when).toContain("05 Jan 2026");
+    expect(when).toContain("07 Jan 2026");
+  });
   it("shows a pending event with author from its transaction and review buttons", async () => {
     const onReview = vi.fn();
     const onRevert = vi.fn();

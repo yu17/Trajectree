@@ -34,6 +34,8 @@ export interface Event {
   t_end: string | null;
   status: EventStatus;
   source: Source;
+  // A block is a checkpoint drawn at its end date; a pill is a moment. Absent means block.
+  tier?: "block" | "pill";
   props: Record<string, unknown>;
   created_txn: string | null;
   created_at: string;
@@ -156,7 +158,10 @@ export interface TimelineResponse {
   pending: Record<string, Record<string, string>>;
   strip: StripBin[];
   live: LiveSession[];
+  // Project ids with settled uninspected stretches.
   stale: string[];
+  // Project id -> number of settled uninspected stretches.
+  due?: Record<string, number>;
 }
 
 export interface ScanReport {
