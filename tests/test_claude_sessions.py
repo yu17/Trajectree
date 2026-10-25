@@ -340,3 +340,98 @@ def test_settings_read_segment_gap_and_idle(monkeypatch, tmp_path):
     assert s.segment_gap_s == 600 and s.idle_s == 600 and s.inspect_budget_chars == 40000
     monkeypatch.setenv("TRAJECTREE_SESSION_IDLE_S", "90")
     assert load_settings().idle_s == 90
+
+
+FIXTURES = Path(__file__).parent / "fixtures" / "claude"
+ORIG = "3f2b8c1e-5d4a-4e7b-9a10-2c6d8e4f1a01"
+CONT = "7a9d0e52-1b3c-4f68-8d2e-5c0b7a4e9f02"
+THIRD = "c4e1f7a3-9b2d-4a56-8e0f-1d3b5c7e9a03"
+
+
+def _install(home, sid, source):
+    import shutil
+    d = home / "projects" / encode_project_dir(CWD)
+    d.mkdir(parents=True, exist_ok=True)
+    shutil.copy(source, d / f"{sid}.jsonl")
+    return d / f"{sid}.jsonl"
+
+
+def _continuation_setup(ledger, human, settings, tmp_path, *, marker=True):
+    home, s, p = setup_with_import(ledger, human, settings, tmp_path, claude={"picked": True, "since": "all"})
+    orig = _install(home, ORIG, FIXTURES / "continued_original.jsonl")
+    _install(home, CONT, FIXTURES / "continued_continuation.jsonl")
+    if not marker:
+        kept = [l for l in orig.read_text().splitlines() if '"continued-in"' not in l]
+        orig.write_text("\n".join(kept) + "\n")
+    return home, s, p
+
+
+def _by_session(ledger):
+    out = {}
+    for row in list_signals(ledger.conn, kinds=["session"]):
+        out.setdefault(row.payload["session_id"], []).append(row)
+    return out
+
+
+def _assert_split(ledger):
+    by = _by_session(ledger)
+    assert sum(len(v) for v in by.values()) == 3
+    (cont,) = by[CONT]
+    assert cont.t_start == datetime(2026, 9, 29, 16, 9, 30, tzinfo=UTC) and cont.t_end == datetime(2026, 9, 29, 16, 13, tzinfo=UTC)
+    assert (cont.payload["prompts"], cont.payload["records"], cont.payload["resumed_from"]) == (2, 4, ORIG)
+    assert [(r.t_start.day, r.payload["resumed_from"]) for r in by[ORIG]] == [(30, None), (22, None)]
+
+
+def test_continuation_skips_copied_records_via_marker(ledger, human, settings, tmp_path):
+    from trajectree.ingest.job import run_ingest
+    home, s, p = _continuation_setup(ledger, human, settings, tmp_path)
+    run_ingest(ledger, s, now=datetime(2026, 10, 25, tzinfo=UTC))
+    _assert_split(ledger)
+
+
+def test_continuation_detected_without_marker_by_first_uuid(ledger, human, settings, tmp_path):
+    from trajectree.ingest.job import run_ingest
+    home, s, p = _continuation_setup(ledger, human, settings, tmp_path, marker=False)
+    run_ingest(ledger, s, now=datetime(2026, 10, 25, tzinfo=UTC))
+    _assert_split(ledger)
+
+
+def test_chain_of_continuations_counts_each_record_once(ledger, human, settings, tmp_path):
+    from trajectree.ingest.job import run_ingest
+    home, s, p = _continuation_setup(ledger, human, settings, tmp_path)
+    cont_path = home / "projects" / encode_project_dir(CWD) / f"{CONT}.jsonl"
+    lines = cont_path.read_text().splitlines()
+    marker = {"type": "continued-in", "timestamp": "2026-09-29T16:13:30.000Z", "sessionId": CONT, "continuedInSessionId": THIRD}
+    cont_path.write_text("\n".join(lines + [json.dumps(marker)]) + "\n")
+    copied = [l.replace(CONT, THIRD) for l in lines if '"uuid"' in l]
+    own = [dict(rec_user("2026-10-01T09:00:00.000Z", sid=THIRD), uuid="u15"), dict(rec_assistant("2026-10-01T09:01:00.000Z", sid=THIRD), uuid="u16")]
+    (cont_path.parent / f"{THIRD}.jsonl").write_text("\n".join(copied + [json.dumps(r) for r in own]) + "\n")
+    run_ingest(ledger, s, now=datetime(2026, 10, 25, tzinfo=UTC))
+    by = _by_session(ledger)
+    (third,) = by[THIRD]
+    assert (third.payload["records"], third.payload["resumed_from"]) == (2, CONT)
+    assert [r.payload["resumed_from"] for r in by[CONT]] == [ORIG]
+    # distinct prompt records: u1 u3 u6 u8 (original), u11 u13 (continuation), u15 (third)
+    assert sum(r.payload["prompts"] for rows in by.values() for r in rows) == 7
+
+
+def test_continuation_state_survives_a_restart(ledger, human, settings, tmp_path):
+    from trajectree.ingest.job import run_ingest
+    home, s, p = _continuation_setup(ledger, human, settings, tmp_path)
+    now = datetime(2026, 10, 25, tzinfo=UTC)
+    run_ingest(ledger, s, now=now)
+    before = [(r.dedupe_key, r.payload) for r in list_signals(ledger.conn, kinds=["session"])]
+    report = run_ingest(ledger, s, now=now)
+    assert report.scan.files_read == 0
+    assert [(r.dedupe_key, r.payload) for r in list_signals(ledger.conn, kinds=["session"])] == before
+
+
+def test_resolve_continuations_is_pure_and_maps_by_marker_or_first_uuid():
+    from trajectree.connectors.claude_sessions import resolve_continuations
+    def sm(sid, end, **kw):
+        return SessionSummary(transcript_path=f"/x/{sid}.jsonl", backend="claude", session_id=sid, t_end=datetime(2026, 9, end, tzinfo=UTC), **kw)
+    a, b, c = sm("a", 1, continued_in="b", first_uuid="u1"), sm("b", 2, first_uuid="u1"), sm("c", 3, first_uuid="u1")
+    got = resolve_continuations([a, b, c])
+    assert got == {"/x/b.jsonl": ("a", a.t_end), "/x/c.jsonl": ("b", b.t_end)}
+    other_dir = SessionSummary(transcript_path="/y/d.jsonl", backend="claude", session_id="d", t_end=a.t_end, first_uuid="u1")
+    assert resolve_continuations([a, other_dir]) == {}

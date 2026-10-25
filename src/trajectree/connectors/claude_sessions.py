@@ -511,6 +511,72 @@ def refresh_file(
     return summary, True
 
 
+def resolve_continuations(summaries: Sequence[SessionSummary]) -> dict[str, tuple[str, datetime]]:
+    """Transcript path -> (original session id, original `t_end`) for each continuation among `summaries`.
+
+    Only transcripts in the same directory are related. A `continued-in` marker in the original
+    names its continuation; without one, transcripts that begin with the same record `uuid` are
+    ordered by `t_end`, each continuing the one before it. Pure: no I/O."""
+    mapping: dict[str, tuple[str, datetime]] = {}
+    groups: dict[Path, list[SessionSummary]] = {}
+    for sm in summaries:
+        groups.setdefault(Path(sm.transcript_path).parent, []).append(sm)
+    for group in groups.values():
+        ids = {sm.session_id or Path(sm.transcript_path).stem: sm for sm in group}
+        for sm in group:
+            cont = ids.get(sm.continued_in) if sm.continued_in else None
+            if cont is not None and cont is not sm and sm.t_end is not None:
+                mapping[cont.transcript_path] = (sm.session_id or Path(sm.transcript_path).stem, sm.t_end)
+        by_uuid: dict[str, list[SessionSummary]] = {}
+        for sm in group:
+            if sm.first_uuid is not None and sm.t_end is not None:
+                by_uuid.setdefault(sm.first_uuid, []).append(sm)
+        for same in by_uuid.values():
+            same.sort(key=lambda sm: sm.t_end or datetime.min.replace(tzinfo=timezone.utc))
+            for prev, nxt in zip(same, same[1:]):
+                if nxt.transcript_path not in mapping and prev.t_end != nxt.t_end and prev.t_end is not None:
+                    mapping[nxt.transcript_path] = (prev.session_id or Path(prev.transcript_path).stem, prev.t_end)
+    return mapping
+
+
+def reparse_continuations(
+    conn: apsw.Connection,
+    settings: Settings,
+    summaries: list[tuple[SessionSummary, float]],
+    *,
+    parse: Callable[..., SessionSummary] = parse_lines,
+) -> list[tuple[SessionSummary, float]]:
+    """Re-read, once, each continuation whose stored summary does not yet skip its original's records.
+
+    The re-read starts at offset 0 with `skip_until`/`resumed_from` set and the scan state is stored
+    like `refresh_file` does, so later passes resume from there and read nothing while the file is unchanged."""
+    mapping = resolve_continuations([sm for sm, _ in summaries])
+    out: list[tuple[SessionSummary, float]] = []
+    for summary, mtime in summaries:
+        target = mapping.get(summary.transcript_path)
+        if target is None or (summary.resumed_from, summary.skip_until) == target:
+            out.append((summary, mtime))
+            continue
+        original_id, original_end = target
+        path = Path(summary.transcript_path)
+        fresh = SessionSummary(
+            transcript_path=summary.transcript_path, backend=summary.backend, skip_until=original_end, resumed_from=original_id
+        )
+        try:
+            st = path.stat()
+            reread, consumed = _read_from(path, 0, fresh, functools.partial(parse, gap_s=settings.segment_gap_s))
+        except OSError:
+            out.append((summary, mtime))
+            continue
+        set_state(
+            conn,
+            f"scan:{summary.transcript_path}",
+            {"offset": consumed, "size": st.st_size, "mtime": st.st_mtime, "summary": reread.model_dump(mode="json")},
+        )
+        out.append((reread, mtime))
+    return out
+
+
 def _refresh_summaries(
     conn: apsw.Connection, settings: Settings, now: datetime
 ) -> tuple[int, int, list[tuple[SessionSummary, float]]]:
@@ -532,7 +598,7 @@ def _refresh_summaries(
                 continue
             files_read += refreshed[1]
             summaries.append((refreshed[0], st.st_mtime))
-    return files_seen, files_read, summaries
+    return files_seen, files_read, reparse_continuations(conn, settings, summaries)
 
 
 def session_signals(

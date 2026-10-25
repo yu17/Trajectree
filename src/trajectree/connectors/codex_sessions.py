@@ -35,6 +35,7 @@ from trajectree.connectors.claude_sessions import (
     digest_transcript,
     refresh_file,
     render_digest,
+    reparse_continuations,
     select_in_folder,
     session_signals,
     transcript_cutoff,
@@ -103,9 +104,9 @@ def _apply(acc: SessionSummary, rec: dict[str, Any], *, gap_s: int = DEFAULT_SEG
         acc.model = _str(payload.get("model")) or acc.model
         acc.cwd = _str(payload.get("cwd")) or acc.cwd
     elif kind == "response_item":
-        if payload.get("type") == "message" and payload.get("role") == "assistant" and _blocks(payload.get("content")):
+        if counted and payload.get("type") == "message" and payload.get("role") == "assistant" and _blocks(payload.get("content")):
             acc.assistant_msgs += 1
-    elif kind == "token_usage_record":
+    elif kind == "token_usage_record" and counted:
         usage = _dict(payload.get("usage"))
         acc.tokens_in += _int(usage.get("input_tokens"))
         acc.tokens_out += _int(usage.get("output_tokens"))
@@ -276,6 +277,7 @@ def scan_codex(conn: apsw.Connection, settings: Settings, *, now: datetime) -> S
             if not is_own_session(refreshed[0]):
                 continue  # a child rollout (or one whose session_meta is not written yet)
             summaries.append((refreshed[0], st.st_mtime))
+        summaries = reparse_continuations(conn, settings, summaries, parse=parse_codex_lines)
         signals, live = session_signals(conn, settings, summaries, now)
         written = upsert_signals(conn, signals)
     return ScanReport(files_seen=files_seen, files_read=files_read, signals_written=written, live=live)
