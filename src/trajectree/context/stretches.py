@@ -1,5 +1,6 @@
 """Group a project's activity signals into stretches (pure)."""
 
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -7,8 +8,24 @@ from pydantic import BaseModel
 
 from trajectree.config import Settings
 from trajectree.connectors.codex_sessions import digest_session
-from trajectree.context.digest import _line, _one_line
+from trajectree.context.digest import _line as _raw_line
+from trajectree.context.digest import _one_line as _raw_one_line
 from trajectree.models import Edge, Event, Signal, Stretch
+
+_DATA_TAG = re.compile(r"<(/?data)", re.IGNORECASE)
+
+
+def fence_safe(text: str) -> str:
+    """Neutralise any `<data` / `</data` in transcript- or event-derived text so it cannot close a data fence."""
+    return _DATA_TAG.sub(r"&lt;\1", text)
+
+
+def _one_line(value: object, limit: int = 120) -> str:
+    return fence_safe(_raw_one_line(value, limit))
+
+
+def _line(s: Signal) -> str:
+    return fence_safe(_raw_line(s))
 
 _COUNTED = {"session": "sessions", "commits": "commits", "files_changed": "file_days"}
 
@@ -70,10 +87,10 @@ def _session_digest(s: Signal, settings: Settings) -> str:
     if not path:
         return ""
     try:
-        return digest_session(
+        return fence_safe(digest_session(
             str(s.payload.get("backend") or "claude"), Path(path),
             max_chars=settings.digest_max_chars, window=(s.t_start, s.t_end or s.t_start),
-        )
+        ))
     except (OSError, ValueError):
         return ""
 
@@ -107,7 +124,7 @@ def render_segment_lines(
             p = s.payload
             name = _one_line(p.get("title") or str(p.get("session_id") or "")[:8])
             lines.append(
-                f"- {_day(s.t_start)} {_span(s)} {p.get('backend') or 'claude'} session \"{name}\""
+                f"- {_day(s.t_start)} {_span(s)} {_one_line(p.get('backend') or 'claude')} session \"{name}\""
                 f" {_count(p, 'prompts')} prompts (~{sizes.get(sid, 0)} chars): \"{_one_line(p.get('first_prompt') or '')}\""
             )
     return "\n".join(lines)
@@ -138,7 +155,7 @@ def render_blocks(blocks: list[Event], edges: list[Edge], events_by_id: dict[str
             key=lambda x: (x.t_start, x.id),
         )
         tail = f" pills: {'; '.join(f'{_one_line(p.title)} ({p.id})' for p in pills)}" if pills else ""
-        lines.append(f"- {_day(b.t_end or b.t_start)} {_one_line(b.title)} ({b.id}) [{b.kind}/{b.tier}]{tail}")
+        lines.append(f"- {_day(b.t_end or b.t_start)} {_one_line(b.title)} ({b.id}) [{fence_safe(b.kind)}/{b.tier}]{tail}")
     return "\n".join(lines)
 
 
@@ -179,7 +196,7 @@ def render_stretches(
             p = s.payload
             name = _one_line(p.get("title") or str(p.get("session_id") or "")[:8])
             line = (
-                f"- {_day(s.t_start)} {_span(s)} {p.get('backend') or 'claude'} session \"{name}\""
+                f"- {_day(s.t_start)} {_span(s)} {_one_line(p.get('backend') or 'claude')} session \"{name}\""
                 f" segment {_count(p, 'segment')}/{_count(p, 'segments')}, {_count(p, 'prompts')} prompts,"
                 f" {_one_line(p.get('model') or 'unknown model')}"
             )
