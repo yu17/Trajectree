@@ -110,3 +110,26 @@ def test_run_env_sets_unix_socket_for_ccx(settings, tmp_path):
         assert run_env(ccx, s, base=base, oauth_token=None)["ANTHROPIC_UNIX_SOCKET"] == str(d / "lmstudio.sock")
         assert "ANTHROPIC_UNIX_SOCKET" not in run_env(spec(), s, base=base, oauth_token="oat")
         assert "ANTHROPIC_UNIX_SOCKET" not in run_env(spec(runner="codex", backend="codex"), s, base=base, oauth_token=None)
+
+
+def test_run_env_exports_the_profile_env_with_a_socket(settings, tmp_path):
+    # With a socket set, Claude Code ignores the profile's settings.json env ("Not logged in").
+    import socket
+    prof = settings.backends_cfg_dir / "lmstudio"
+    prof.mkdir(parents=True)
+    (prof / "settings.json").write_text(json.dumps({"env": {
+        "ANTHROPIC_AUTH_TOKEN": "k", "ANTHROPIC_BASE_URL": "http://127.0.0.1:40090", "ANTHROPIC_MODEL": "qwen",
+        "PATH": "/evil", "CLAUDE_CONFIG_DIR": "/x", "ANTHROPIC_UNIX_SOCKET": "/y.sock", "TRAJECTREE_RUN_TOKEN": "t",
+        "MAX_TOKENS": 5}}))
+    d = tmp_path / "sockets"
+    d.mkdir()
+    s = settings.model_copy(update={"sockets_dir": d})
+    ccx = spec(runner="ccx:lmstudio", backend="lmstudio")
+    assert "ANTHROPIC_AUTH_TOKEN" not in run_env(ccx, s, base={"PATH": "/bin"}, oauth_token=None)  # settings.json serves it
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.bind(str(d / "lmstudio.sock"))
+        env = run_env(ccx, s, base={"PATH": "/bin"}, oauth_token=None)
+    assert (env["ANTHROPIC_AUTH_TOKEN"], env["ANTHROPIC_BASE_URL"], env["ANTHROPIC_MODEL"]) == ("k", "http://127.0.0.1:40090", "qwen")
+    assert env["PATH"] == "/bin" and env["CLAUDE_CONFIG_DIR"] == str(prof)
+    assert env["ANTHROPIC_UNIX_SOCKET"] == str(d / "lmstudio.sock") and "TRAJECTREE_RUN_TOKEN" not in env
+    assert "MAX_TOKENS" not in env

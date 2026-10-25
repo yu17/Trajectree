@@ -862,6 +862,25 @@ def test_model_with_suffix_passes_verbatim(ledger, settings):
     assert argv[argv.index("--model") + 1] == "deepseek-flash[1m]"
 
 
+def test_socket_run_masks_the_exported_profile_key(ledger, settings, tmp_path):
+    import socket
+    profile = settings.backends_cfg_dir / "ds"
+    profile.mkdir(parents=True)
+    (profile / "settings.json").write_text(json.dumps({"env": {"ANTHROPIC_AUTH_TOKEN": "lm-secret", "ANTHROPIC_API_KEY": "lm-key"}}))
+    d = tmp_path / "sockets"
+    d.mkdir()
+    s_settings = settings.model_copy(update={"sockets_dir": d})
+    seen = {}
+    def capture(argv, *, log_path, secrets, **kw):
+        seen["secrets"] = secrets
+        return RunOutcome(exit_code=0, timed_out=False, stdout="{}", stderr_tail="", log_path=str(log_path), duration_ms=1)
+    s = RunService(ledger, s_settings, launch=capture, base_env={"PATH": os.environ["PATH"]})
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.bind(str(d / "ds.sock"))
+        s.execute(s.enqueue(AskRequest(question="q", runner="ccx:ds")).id)
+    assert {"lm-secret", "lm-key"} <= set(seen["secrets"])
+
+
 # -- files a confined run may replace (S1) ----------------------------------------------------
 
 

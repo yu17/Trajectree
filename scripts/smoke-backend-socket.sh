@@ -3,7 +3,8 @@
 # trajectree.runner.confine inside the hardened container (read-only root, non-root, no
 # capabilities, no-new-privileges), must send its API requests to ANTHROPIC_UNIX_SOCKET.
 #
-# A stdlib HTTP server on a Unix socket records each request line and answers 500. The socket
+# The run env comes from run_env with a ccx profile in settings.json, as in a real run. A stdlib
+# HTTP server on a Unix socket records each request line and answers 500. The socket
 # sits outside every Landlock rule, as /host/sockets does in a real run, and ANTHROPIC_BASE_URL
 # names a closed port, so a request can only arrive through the socket.
 #
@@ -31,17 +32,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-socketserver.UnixStreamServer(\"/tmp/sock/backend.sock\", Handler).serve_forever()
+socketserver.UnixStreamServer(\"/tmp/sock/smoke.sock\", Handler).serve_forever()
 " &
-for _ in $(seq 50); do [ -S /tmp/sock/backend.sock ] && break; sleep 0.1; done
+for _ in $(seq 50); do [ -S /tmp/sock/smoke.sock ] && break; sleep 0.1; done
 cd /tmp/run
-HOME=/tmp/run/home CLAUDE_CONFIG_DIR=/tmp/run/config TMPDIR=/tmp/run \
-ANTHROPIC_UNIX_SOCKET=/tmp/sock/backend.sock ANTHROPIC_BASE_URL=http://127.0.0.1:9 \
-ANTHROPIC_AUTH_TOKEN=smoke-dummy-token CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
-python -I -m trajectree.runner.confine \
-    --ro /usr /lib /lib64 /bin /sbin /etc /opt /app /proc /sys \
-    --rw /dev /tmp/run \
-    -- claude -p hi >/tmp/run/claude.log 2>&1 &
+mkdir -p /tmp/run/cfg/backends/smoke
+echo "{\"env\": {\"ANTHROPIC_AUTH_TOKEN\": \"smoke-dummy-token\", \"ANTHROPIC_BASE_URL\": \"http://127.0.0.1:9\",
+  \"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC\": \"1\"}}" >/tmp/run/cfg/backends/smoke/settings.json
+# The run env comes from run_env, as in a real ccx run: the profile sits in settings.json only.
+python -I -c "
+import os
+from pathlib import Path
+from trajectree.config import Settings
+from trajectree.runner.argv import run_env
+from trajectree.runner.spec import RunSpec, ToolPolicy
+
+settings = Settings(data_dir=Path(\"/tmp/run/data\"), cfg_dir=Path(\"/tmp/run/cfg\"), sockets_dir=Path(\"/tmp/sock\"))
+spec = RunSpec(run_id=\"smoke\", kind=\"ask\", runner=\"ccx:smoke\", backend=\"smoke\", model=None, prompt=\"hi\",
+               system_prompt=None, cwd=Path(\"/tmp/run\"), tools=ToolPolicy(tools=[], allowed=[]), usd_cap=0.1,
+               timeout_s=60, mcp_url=\"http://127.0.0.1:9/mcp\", mcp_token=\"smoke\", json_schema=None)
+env = {**run_env(spec, settings, base=os.environ, oauth_token=None), \"HOME\": \"/tmp/run/home\", \"TMPDIR\": \"/tmp/run\"}
+argv = [\"python\", \"-I\", \"-m\", \"trajectree.runner.confine\",
+        \"--ro\", \"/usr\", \"/lib\", \"/lib64\", \"/bin\", \"/sbin\", \"/etc\", \"/opt\", \"/app\", \"/proc\", \"/sys\",
+        \"--rw\", \"/dev\", \"/tmp/run\", \"--\", \"claude\", \"-p\", \"hi\"]
+os.execvpe(argv[0], argv, env)
+" >/tmp/run/claude.log 2>&1 &
 claude=$!
 # Claude Code retries a 500 with backoff; the first request is all this test needs.
 for _ in $(seq 600); do grep -q "^POST /v1/messages" /tmp/sock/seen 2>/dev/null && break; sleep 0.1; done

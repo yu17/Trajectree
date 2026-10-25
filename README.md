@@ -66,10 +66,15 @@ mkdir -p sockets && chmod 700 sockets
 # 4. Recreate the container: a changed network needs down, not only up.
 docker compose down && docker compose up -d --build
 
-# 5. Rewrite the URL file (the step 3 command above).
+# 5. Upgrade the host CLI to the same ref (TRAJECTREE_REF). --reinstall
+#    re-fetches the branch; an older CLI ignores the URL file and keeps
+#    calling 127.0.0.1:8742.
+uv tool install --reinstall git+https://github.com/yu17/Trajectree@main
+
+# 6. Rewrite the URL file (the step 3 command above).
 echo "http://$(docker compose port trajectree 8742)" > ~/.config/trajectree/url
 
-# 6. Check the bridge and the mount.
+# 7. Check the bridge and the mount.
 ip link show trajectree0
 docker compose exec trajectree ls -ld /host/sockets
 ```
@@ -345,7 +350,9 @@ forwards one Unix socket per profile to that port instead. When
 `<instance>/sockets/<profile>.sock` exists, `ccx:<profile>` runs get
 `ANTHROPIC_UNIX_SOCKET` pointing at it (Claude Code then sends its API
 requests through the socket, keeping the URL's host and path), and the model
-catalog asks the models endpoint through it too. The host profile is
+catalog asks the models endpoint through it too. Such a run also gets the
+profile's `env` values as process variables: with a socket set, Claude Code
+ignores the `env` block in `settings.json` and reports "Not logged in". The host profile is
 unchanged, so `ccx <profile>` on the host still uses its TCP URL.
 
 The units assume the instance directory `~/.local/share/trajectree`; step 3
