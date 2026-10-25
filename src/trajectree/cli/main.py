@@ -118,6 +118,14 @@ def _parser() -> argparse.ArgumentParser:
     summ.add_argument("--session", help="summarize this Claude Code session id instead of a project")
     run_opts(summ)
 
+    sub.add_parser("inspections", help="list the projects with history waiting to be inspected")
+
+    insp = sub.add_parser("inspect", help="inspect a project's uninspected history with the runner")
+    insp.add_argument("project", nargs="?")
+    insp.add_argument("--all", action="store_true", help="inspect every active project that has something due")
+    insp.add_argument("--since", metavar="YYYY-MM-DD", help="re-inspect from this local date")
+    run_opts(insp)
+
     ask = sub.add_parser("ask", help="ask a question over project context")
     ask.add_argument("question")
     ask.add_argument("--projects", help="comma-separated slugs")
@@ -367,6 +375,81 @@ def _cmd_summarize(args: argparse.Namespace, api: _Api) -> None:
     _launch(api, args, f"/api/projects/{pid}/summarize", {})
 
 
+def _cmd_inspections(args: argparse.Namespace, api: _Api) -> None:
+    due = api.get("/api/inspections")
+    if not due:
+        print("nothing to inspect")
+        return
+    for d in due:
+        line = (
+            f"{d['slug']}  {d['stretches']} stretches  {d['first_day']}..{d['last_day']}"
+            f"  {d['sessions']} sessions, {d['commits']} commits, {d['file_days']} file days"
+        )
+        if d.get("active_run"):
+            line += f"  running episode {d['episode'] or 0}/{d['episodes'] or 0} ({d['active_run']})"
+        print(line)
+
+
+SERIES_RETRIES = 50  # a finished run's successor is queued just after the run is stored
+
+
+def _next_in_series(api: _Api, slug: str, finished: dict[str, Any]) -> str | None:
+    props = finished.get("props") or {}
+    more = finished["kind"] == "inspect_boundaries" or (props.get("episode_no") or 0) < (props.get("episodes") or 0)
+    for _ in range(SERIES_RETRIES if more else 1):
+        for d in api.get("/api/inspections"):
+            if d["slug"] == slug and d.get("active_run") and d["active_run"] != finished["id"]:
+                return d["active_run"]
+        if more:
+            _sleep(POLL_S)
+    return None
+
+
+def _cmd_inspect(args: argparse.Namespace, api: _Api) -> None:
+    body: dict[str, Any] = {}
+    for key in ("runner", "model"):
+        if getattr(args, key, None):
+            body[key] = getattr(args, key)
+    if args.all:
+        if args.project or args.since:
+            raise _Fail("--all takes no project and no --since", 2)
+        res = api.post("/api/inspect", {"projects": "all", **body})
+        slugs = {p["id"]: p["slug"] for p in api.get("/api/projects")}
+        for run in res["runs"]:
+            print(f"run {run['id']} queued ({slugs.get(run['project_id'], run['project_id'])})")
+            _print_warning(run)
+        if res["skipped"]:
+            print("skipped: " + ", ".join(res["skipped"]))
+        return
+    if not args.project:
+        raise _Fail("give a project or --all", 2)
+    if args.since:
+        try:
+            datetime.strptime(args.since, "%Y-%m-%d")
+        except ValueError:
+            raise _Fail(f"invalid --since {args.since!r}; use YYYY-MM-DD", 2)
+        body["since"] = args.since
+    run = api.post(f"/api/projects/{api.project_id(args.project)}/inspect", body)
+    print(f"run {run['id']} queued")
+    if args.no_wait:
+        _print_warning(run)
+        return
+    while True:
+        props = run.get("props") or {}
+        if run["kind"] == "inspect" and (props.get("episodes") or 0) > 1:
+            print(f"episode {props.get('episode_no')}/{props['episodes']}")
+        detail = _wait_run(api, run["id"])
+        _print_run(detail, sys.stdout)
+        if detail["run"]["status"] in ("failed", "capped"):
+            raise _Fail("", 1)
+        if detail["run"]["status"] != "ok":
+            return
+        nxt = _next_in_series(api, args.project, detail["run"])
+        if nxt is None:
+            return
+        run = api.get(f"/api/runs/{nxt}")["run"]
+
+
 def _cmd_ask(args: argparse.Namespace, api: _Api) -> None:
     now = utcnow()
     body: dict[str, Any] = {
@@ -487,7 +570,7 @@ def _cmd_caps(args: argparse.Namespace, api: _Api) -> None:
 
 
 ROUTINE_ALIASES = {"review": "cross-project-review", "prep": "meeting-prep"}
-MODEL_REQUIRED = ("summarize", "ask", "add")  # and `report draft` and `routine set`; routine runs may use the stored choice
+MODEL_REQUIRED = ("summarize", "ask", "add", "inspect")  # and `report draft` and `routine set`; routine runs may use the stored choice
 
 
 def _model_label(runner: str | None, model: str | None) -> str:
@@ -624,6 +707,7 @@ def _run(
         if not (args.model or args.runner):
             raise _Fail(f"{NO_MODEL_CHOSEN}; pass --runner or --model (see: trajectree models)", 2)
     simple: dict[str, Callable[[argparse.Namespace, _Api], None]] = {
+        "inspections": _cmd_inspections, "inspect": _cmd_inspect,
         "summarize": _cmd_summarize, "ask": _cmd_ask, "add": _cmd_add, "accept": _cmd_accept,
         "runs": _cmd_runs, "usage": _cmd_usage, "caps": _cmd_caps,
         "routines": _cmd_routines, "routine": _cmd_routine, "run": _cmd_run_routine,
