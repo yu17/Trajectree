@@ -236,7 +236,7 @@ class RunService:
             project_events = events.list_events(conn, project_ids=[project.id])  # blocks and pills
             edges = list_edges(conn, event_ids=[e.id for e in project_events])
         sizes = estimate_sizes(stretches, signals, self.settings)
-        _, size = render_stretches(
+        _, size, _ = render_stretches(
             stretches, signals, blocks=project_events, edges=edges, settings=self.settings, budget_chars=10**9
         )
         budget = self.settings.inspect_budget_chars
@@ -258,8 +258,9 @@ class RunService:
 
     def _collect_inspection(self, run: Run) -> dict[str, Any] | None:
         """For a queued `inspect` run: the stretches inside its episode, rendered with no lock held.
-        What the material covers (signal key -> end, and the last stretch's end) is stored on the
-        run as read now, so the watermark later advances by exactly what the run was shown."""
+        What the material covers (signal key -> end as read now, and the last stretch's end) is then
+        stored on the run, so the watermark later advances by exactly what the run was shown: a
+        segment cut from an over-budget render, or ingested after this read, is not covered."""
         request = request_from_props(run.kind, run.props["request"])
         assert isinstance(request, InspectRequest)
         if run.project_id is None:
@@ -270,19 +271,9 @@ class RunService:
             )
             project_events = events.list_events(conn, project_ids=[run.project_id])
             edges = list_edges(conn, event_ids=[e.id for e in project_events])
-            current = get_run(conn, run.id) or run
-            update_run(
-                conn,
-                run.id,
-                props={
-                    **current.props,
-                    "covered": covered_map(list(signals.values())),
-                    "material_end": to_db(stretches[-1].t_end) if stretches else None,
-                },
-            )
         if not stretches:
             return None  # the planner fails the run: inspection material missing
-        stretches_md, _ = render_stretches(
+        stretches_md, _, rendered = render_stretches(
             stretches,
             signals,
             blocks=project_events,
@@ -292,6 +283,17 @@ class RunService:
         )
         blocks = sorted((e for e in project_events if e.tier == "block"), key=lambda e: (e.t_end or e.t_start, e.id))
         blocks_md = render_blocks(blocks[-RECENT_BLOCKS:], edges, {e.id: e for e in project_events})
+        with self.ledger.locked() as conn:
+            current = get_run(conn, run.id) or run
+            update_run(
+                conn,
+                run.id,
+                props={
+                    **current.props,
+                    "covered": covered_map([s for sid, s in signals.items() if sid in rendered]),
+                    "material_end": to_db(stretches[-1].t_end),
+                },
+            )
         return {"stretches_md": stretches_md, "blocks_md": blocks_md or "- (none)"}
 
     def _after_inspect(self, done: Run) -> Run:

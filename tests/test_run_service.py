@@ -1117,6 +1117,23 @@ def _three_stretches(ledger, p):
     ])
 
 
+def _render_size(ledger, settings, stretches):
+    """The un-cut size of the inspection material for `stretches` (no events in these tests)."""
+    from trajectree.context.stretches import render_stretches
+    from trajectree.repo.signals import list_signals
+    signals = {sig.id: sig for sig in list_signals(ledger.conn)}
+    return render_stretches(stretches, signals, blocks=[], edges=[], settings=settings, budget_chars=10**9)[1]
+
+
+def _episode_budget(ledger, settings, p):
+    """A budget that fits episode 1 (stretches 1-2) and episode 2 (stretch 3), but not all three."""
+    st1, st2, st3 = _stretches(ledger, settings, p)
+    budget = max(_render_size(ledger, settings, [st1, st2]), _render_size(ledger, settings, [st3]))
+    assert _render_size(ledger, settings, [st1, st2, st3]) > budget
+    settings.inspect_budget_chars = budget
+    return st1, st2, st3
+
+
 TWO_EPISODES = json.dumps({"answer": "two", "episodes": [
     {"start": "2026-01-05", "end": "2026-01-10", "label": "first"},
     {"start": "2026-01-20", "end": "2026-01-20", "label": "second"},
@@ -1124,10 +1141,9 @@ TWO_EPISODES = json.dumps({"answer": "two", "episodes": [
 
 
 def test_inspect_large_material_runs_boundaries_then_episodes_in_order(ledger, human, settings, logged_in, tmp_path):
-    settings.inspect_budget_chars = 200
     p = _inspect_project(ledger, human, tmp_path)
     _three_stretches(ledger, p)
-    st1, st2, st3 = _stretches(ledger, settings, p)
+    st1, st2, st3 = _episode_budget(ledger, settings, p)  # each episode renders whole
     s = isvc(ledger, settings, structured=TWO_EPISODES)
     b = s.inspect(InspectRequest(project="a", model=MODEL))
     assert b.kind == "inspect_boundaries" and b.project_id == p.id
@@ -1191,6 +1207,50 @@ def test_bad_boundaries_fail_the_series_and_keep_the_watermark(ledger, human, se
     assert _queued_inspect_runs(ledger) == []
     assert get_watermark(ledger.conn, p.id).inspected_at is None
     assert "a" in _due_slugs(ledger, settings)
+
+
+ONE_EPISODE = json.dumps({"answer": "one", "episodes": [{"start": "2026-01-05", "end": "2026-01-20", "label": "all"}]})
+
+
+def test_segments_cut_from_an_over_budget_episode_stay_due(ledger, human, settings, logged_in, tmp_path):
+    p = _inspect_project(ledger, human, tmp_path)
+    _three_stretches(ledger, p)
+    # Just under the whole material: the one episode's render loses its last segment (s4).
+    settings.inspect_budget_chars = _render_size(ledger, settings, _stretches(ledger, settings, p)) - 5
+    s = isvc(ledger, settings, structured=ONE_EPISODE)
+    s.execute(s.inspect(InspectRequest(project="a", model=MODEL)).id)
+    [ep] = _queued_inspect_runs(ledger)
+    _set_structured(s, PROPOSALS_ANSWER)
+    assert s.execute(ep.id).status == "ok"
+    wm = get_watermark(ledger.conn, p.id)
+    assert wm.inspected_at == _at(20, 15)
+    assert set(wm.covered) == {"s1", "s2", "s3"}  # the cut segment was never shown, so not covered
+    assert "a" in _due_slugs(ledger, settings)
+    from trajectree.repo.signals import list_signals
+    key_of = {sig.id: sig.dedupe_key for sig in list_signals(ledger.conn, project_ids=[p.id])}
+    [st] = _stretches(ledger, settings, p)
+    assert [key_of[sid] for sid in st.signal_ids] == ["s4"]  # its stretch is only the cut segment
+
+
+def test_signal_ingested_during_inspection_stays_due(ledger, human, settings, logged_in, tmp_path):
+    p = _inspect_project(ledger, human, tmp_path)
+    upsert_signals(ledger.conn, [_seg(p.id, 5, 10, 11, "s1"), _seg(p.id, 5, 12, 13, "s2")])
+    s = isvc(ledger, settings)
+    real_launch = s.launch
+    def launch_and_ingest(argv, **kw):
+        # Ingest lands a segment inside the episode while the agent runs (no lock held here).
+        late = SignalIn(project_id=p.id, kind="session", t_start=_at(5, 11, 20), t_end=_at(5, 11, 40),
+                        payload={"title": "late"}, dedupe_key="late")
+        upsert_signals(ledger.conn, [late])
+        return real_launch(argv, **kw)
+    s.launch = launch_and_ingest
+    run = s.inspect(InspectRequest(project="a", model=MODEL))
+    assert s.execute(run.id).status == "ok"
+    wm = get_watermark(ledger.conn, p.id)
+    assert wm.inspected_at == _at(5, 13) and set(wm.covered) == {"s1", "s2"}
+    assert "a" in _due_slugs(ledger, settings)
+    [st] = _stretches(ledger, settings, p)
+    assert (st.t_start, st.t_end, st.segments) == (_at(5, 11, 20), _at(5, 11, 40), 1)
 
 
 def test_series_that_cannot_queue_its_next_episode_records_why(ledger, human, settings, logged_in, tmp_path):

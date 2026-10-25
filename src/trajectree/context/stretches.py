@@ -167,14 +167,16 @@ def render_stretches(
     edges: list[Edge],
     settings: Settings,
     budget_chars: int,
-) -> tuple[str, int]:
-    """Markdown for the stretches, cut at `budget_chars` with a marker; also the un-truncated size.
+) -> tuple[str, int, set[str]]:
+    """Markdown for the stretches, cut at `budget_chars` with a marker; also the un-truncated size
+    and the ids of the signals whose segment line made it into the markdown (a cut one did not,
+    so an inspection must not count it as covered).
 
     `blocks` is the project's events (blocks and pills; pills are looked up for their blocks).
     Reads transcripts: call outside the ledger lock.
     """
     events_by_id = {e.id: e for e in blocks}
-    chunks: list[tuple[str, bool]] = []  # (text, is a segment)
+    chunks: list[tuple[str, str | None]] = []  # (text, the segment's signal id; None for a header)
     for k, st in enumerate(stretches, 1):
         head = [f"### Stretch {k}: {_day(st.t_start)} → {_day(st.t_end)}"]
         if st.inspected_up_to is not None:
@@ -185,13 +187,13 @@ def render_stretches(
         head.append("Overlapping blocks:")
         head.append(render_blocks(near, edges, events_by_id) if near else "- (none)")
         head.append("Segments:")
-        chunks.append(("\n".join(head), False))
+        chunks.append(("\n".join(head), None))
         for sid in st.signal_ids:
             s = signals_by_id.get(sid)
             if s is None:
                 continue
             if s.kind != "session":
-                chunks.append((_line(s), True))
+                chunks.append((_line(s), sid))
                 continue
             p = s.payload
             name = _one_line(p.get("title") or str(p.get("session_id") or "")[:8])
@@ -200,20 +202,23 @@ def render_stretches(
                 f" segment {_count(p, 'segment')}/{_count(p, 'segments')}, {_count(p, 'prompts')} prompts,"
                 f" {_one_line(p.get('model') or 'unknown model')}"
             )
-            chunks.append((f'{line}\n<data name="digest {s.id}">\n{_session_digest(s, settings)}\n</data>', True))
+            chunks.append((f'{line}\n<data name="digest {s.id}">\n{_session_digest(s, settings)}\n</data>', sid))
     full = "\n".join(c for c, _ in chunks)
     if len(full) <= budget_chars:
-        return full, len(full)
+        return full, len(full), {sid for _, sid in chunks if sid is not None}
     kept: list[str] = []
+    rendered: set[str] = set()
     used = 0
     skipped = 0
     cut = False
-    for text, is_segment in chunks:
+    for text, sid in chunks:
         if not cut and used + len(text) + 1 <= budget_chars:
             kept.append(text)
             used += len(text) + 1
+            if sid is not None:
+                rendered.add(sid)
             continue
         cut = True
-        skipped += is_segment
+        skipped += sid is not None
     kept.append(f"(… {skipped} more segments not shown)")
-    return "\n".join(kept), len(full)
+    return "\n".join(kept), len(full), rendered
