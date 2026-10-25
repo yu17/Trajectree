@@ -12,7 +12,13 @@ services:
       - ${HOME}/.claude/projects:/host/claude/projects:ro
       - ${HOME}/.config/claude-backends:/host/claude-backends:ro
       - ${HOME}/.codex/sessions:/host/codex/sessions:ro
-      - ${TRAJECTREE_PROJECTS_ROOT:?set TRAJECTREE_PROJECTS_ROOT to the folder that holds your project folders}:/projects:ro
+      # A path that does not exist stops compose, instead of mounting an empty folder Docker made.
+      - type: bind
+        source: ${TRAJECTREE_PROJECTS_ROOT:?set TRAJECTREE_PROJECTS_ROOT to the folder that holds your project folders}
+        target: /projects
+        read_only: true
+        bind:
+          create_host_path: false
     environment:
       TRAJECTREE_CLAUDE_HOME: /host/claude
       TRAJECTREE_BACKENDS_ROOT: /host/claude-backends

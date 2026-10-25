@@ -51,7 +51,7 @@ def test_dev_state_lives_outside_the_checkout():
     volumes = _load("compose.yaml")["services"]["trajectree"]["volumes"]
     state = "${TRAJECTREE_DEV_STATE:-${HOME}/.local/share/trajectree-dev}"
     assert f"{state}/data:/data" in volumes and f"{state}/cfg:/cfg" in volumes
-    assert not any(v.startswith(".") for v in volumes)
+    assert not any(isinstance(v, str) and v.startswith(".") for v in volumes)
 
 
 def test_env_example_names_every_template_variable():
@@ -69,4 +69,21 @@ def test_template_mounts_codex_sessions(path):
     assert "${HOME}/.codex/sessions:/host/codex/sessions:ro" in svc["volumes"]
     assert svc["environment"]["TRAJECTREE_CODEX_SESSIONS"] == "/host/codex/sessions"
     # only the transcripts: never the Codex home with auth.json and config.toml
-    assert not any(v.startswith("${HOME}/.codex:") or v.startswith("${HOME}/.codex/auth") for v in svc["volumes"])
+    strs = [v for v in svc["volumes"] if isinstance(v, str)]
+    assert not any(v.startswith("${HOME}/.codex:") or v.startswith("${HOME}/.codex/auth") for v in strs)
+
+
+@pytest.mark.parametrize("path", ["compose.yaml", "deploy/compose.yaml"])
+def test_projects_root_must_exist(path):
+    # A wrong path must stop compose, not mount an empty root-owned folder Docker made for it.
+    svc = _load(path)["services"]["trajectree"]
+    [mount] = [v for v in svc["volumes"] if isinstance(v, dict) and v["target"] == "/projects"]
+    assert mount["type"] == "bind" and mount["read_only"] is True
+    assert mount["bind"] == {"create_host_path": False}
+    assert mount["source"].startswith("${TRAJECTREE_PROJECTS_ROOT:?")
+
+
+def test_env_example_leaves_projects_root_empty():
+    # Empty, so compose's ${TRAJECTREE_PROJECTS_ROOT:?...} stops an install that never set it.
+    example = (ROOT / "deploy/env.example").read_text()
+    assert re.search(r"^TRAJECTREE_PROJECTS_ROOT=$", example, re.MULTILINE)
