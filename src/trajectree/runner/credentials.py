@@ -128,6 +128,12 @@ def read_profile(settings_json: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def profile_env(settings_json: Path) -> dict[str, str]:
+    """A synced backend profile's string `env` values."""
+    env = (read_profile(settings_json) or {}).get("env")
+    return {k: v for k, v in env.items() if isinstance(k, str) and isinstance(v, str)} if isinstance(env, dict) else {}
+
+
 def profile_has_credentials(settings_json: Path) -> bool:
     data = read_profile(settings_json)
     if data is None:

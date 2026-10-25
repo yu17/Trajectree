@@ -25,7 +25,7 @@ from trajectree.config import Settings
 from trajectree.db.ledger import Ledger
 from trajectree.models import NO_MODEL_CHOSEN
 from trajectree.repo.state import get_state, set_state
-from trajectree.runner.credentials import load_oauth_token, profile_has_credentials, read_profile
+from trajectree.runner.credentials import load_oauth_token, profile_env, profile_has_credentials
 from trajectree.runner.safe_io import MiB, read_regular
 from trajectree.runner.sockets import backend_socket
 from trajectree.timeutil import utcnow
@@ -127,11 +127,6 @@ def _codex(settings: Settings, now: datetime, which) -> RunnerCatalog:
     return result(models, None)
 
 
-def _profile_env(settings: Settings, name: str) -> dict[str, str]:
-    env = (read_profile(settings.backends_cfg_dir / name / "settings.json") or {}).get("env")
-    return {k: v for k, v in env.items() if isinstance(v, str)} if isinstance(env, dict) else {}
-
-
 def _ccx(
     settings: Settings,
     name: str,
@@ -153,7 +148,7 @@ def _ccx(
             "the profile has no API key or token; add one to "
             f"~/.config/claude-backends/{name}/settings.json, then run: trajectree backends sync"
         )
-    env = _profile_env(settings, name)
+    env = profile_env(settings.backends_cfg_dir / name / "settings.json")
     seen: dict[str, CatalogModel] = {}
     for key in sorted(env):
         if _PROFILE_KEY.match(key) and env[key] and env[key] not in seen:
@@ -192,7 +187,8 @@ def _ccx(
             if sock is None and host in ("127.0.0.1", "localhost", "::1"):
                 error += "; or reach it through a host socket (README: Local backends through a socket)"
         for e in entries:
-            if e["id"] not in seen:
+            # An embedding model cannot serve a run; the endpoint marks neither kind.
+            if e["id"] not in seen and "embed" not in e["id"].lower():
                 seen[e["id"]] = CatalogModel(runner=runner, model=e["id"], display=e.get("display_name"), source="api")
     return RunnerCatalog(runner=runner, available=True, models=list(seen.values()), refreshed_at=now, error=error)
 

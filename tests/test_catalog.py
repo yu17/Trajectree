@@ -144,6 +144,15 @@ def test_ccx_endpoint_adds_models(settings):
     assert seen[0].headers["x-api-key"] == "sk-secret" and seen[0].headers["anthropic-version"] == "2023-06-01"
 
 
+def test_ccx_endpoint_skips_embedding_models(settings):
+    # LM Studio lists its embedding models with the chat ones and marks neither.
+    write_profile(settings, "lm", {"ANTHROPIC_AUTH_TOKEN": "k", "ANTHROPIC_BASE_URL": "http://lm.example"})
+    data = [{"id": "qwen/qwen3-4b-2507"}, {"id": "text-embedding-qwen3-embedding-0.6b"},
+            {"id": "text-embedding-nomic-embed-text-v1.5"}, {"id": "Nomic-Embed-Code"}]
+    r = runner(discover_with(settings, lambda request: httpx.Response(200, json={"data": data})), "ccx:lm")
+    assert [m.model for m in r.models] == ["qwen/qwen3-4b-2507"] and r.error is None
+
+
 def test_unreachable_backend_keeps_profile_models(settings):
     write_profile(settings, "slow", {"ANTHROPIC_API_KEY": "sk-secret", "ANTHROPIC_BASE_URL": "http://127.0.0.1:40090", "ANTHROPIC_MODEL": "m1"})
     write_profile(settings, "fine", {"ANTHROPIC_API_KEY": "k2", "ANTHROPIC_BASE_URL": "http://fine.example", "ANTHROPIC_MODEL": "m2"})

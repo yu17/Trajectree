@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from trajectree.config import Settings
-from trajectree.runner.credentials import profile_has_credentials, read_profile
+from trajectree.runner.credentials import profile_env, profile_has_credentials
 from trajectree.runner.sockets import backend_socket
 from trajectree.runner.spec import MissingCredentials, RunSpec
 
@@ -93,7 +93,10 @@ def run_env(spec: RunSpec, settings: Settings, *, base: Mapping[str, str], oauth
         if (sock := backend_socket(settings, spec.backend)) is not None:
             # With a socket set, Claude Code 2.1.310 ignores the settings.json env ("Not logged in"),
             # so the profile's variables go in the process env.
-            env.update(_profile_env(profile / "settings.json"))
+            env.update({
+                k: v for k, v in profile_env(profile / "settings.json").items()
+                if k not in _RUNNER_OWNED and not k.startswith("TRAJECTREE_")
+            })
             env["ANTHROPIC_UNIX_SOCKET"] = str(sock)
     elif spec.runner == "codex":
         env["CODEX_HOME"] = str(settings.codex_home)
@@ -102,18 +105,6 @@ def run_env(spec: RunSpec, settings: Settings, *, base: Mapping[str, str], oauth
         if name in base and not name.startswith("TRAJECTREE_") and name not in _NEVER_PASSTHROUGH:
             env[name] = base[name]
     return env
-
-
-def _profile_env(settings_json: Path) -> dict[str, str]:
-    """A backend profile's string env values, minus the ones the runner sets itself."""
-    data = read_profile(settings_json) or {}
-    env = data.get("env")
-    if not isinstance(env, dict):
-        return {}
-    return {
-        k: v for k, v in env.items()
-        if isinstance(k, str) and isinstance(v, str) and k not in _RUNNER_OWNED and not k.startswith("TRAJECTREE_")
-    }
 
 
 def mask_text(text: str, secrets: list[str]) -> str:
