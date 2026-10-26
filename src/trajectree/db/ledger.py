@@ -284,7 +284,8 @@ class Ledger:
 
         Reviewing again with the same state returns the transaction unchanged.
         Accepting a reverted transaction raises `AlreadyReverted`; rejecting runs
-        the revert and the review update as one transaction.
+        the revert and the review update as one transaction, or, for one already
+        reverted whose review is still pending, only marks it rejected.
         """
         with self._lock:
             txn = self.get_txn(txn_id)
@@ -294,7 +295,12 @@ class Ledger:
                 raise AlreadyReverted(txn_id)
             if txn.review == state:
                 return txn
-            if state == "rejected":
+            if state == "rejected" and txn.reverted_by is not None and txn.review == "pending":
+                # Already undone, still awaiting review: rejecting it only records the review.
+                self.conn.execute(
+                    "UPDATE txn SET review = ?, review_ts = ? WHERE id = ?", (state, to_db(utcnow()), txn_id)
+                )
+            elif state == "rejected":
                 self.revert(txn_id, actor, mark_review="rejected")
             else:
                 self.conn.execute(

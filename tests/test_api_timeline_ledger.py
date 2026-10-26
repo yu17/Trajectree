@@ -139,6 +139,18 @@ def test_review_many_treats_already_rejected_as_done(client, app):
     assert r.json() == {"done": [b, a], "failed": None, "conflicts": []}
 
 
+def test_review_many_marks_a_reverted_but_pending_write_rejected(client, app):
+    ev, rows = _agent_create_then_update(client, app)
+    b = rows[0]["id"]
+    assert client.post(f"/api/ledger/txns/{b}/revert").status_code == 200
+    # Reverted while its review stayed pending (as a revert made outside the review flow leaves it).
+    app.state.ledger.conn.execute("UPDATE txn SET review = 'pending', review_ts = NULL WHERE id = ?", (b,))
+    r = client.post("/api/ledger/review-many", json={"ids": [b], "state": "rejected"})
+    assert r.json() == {"done": [b], "failed": None, "conflicts": []}
+    assert client.get(f"/api/ledger/txns/{b}").json()["txn"]["review"] == "rejected"
+    assert b not in [t["id"] for t in client.get("/api/ledger/txns", params={"review": "pending"}).json()]
+
+
 def test_txns_filter_by_run_id(client, app):
     ev, rows = _agent_create_then_update(client, app, "run_a")
     assert len(rows) == 2 and {r["run_id"] for r in rows} == {"run_a"}

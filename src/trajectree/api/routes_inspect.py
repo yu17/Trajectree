@@ -10,7 +10,7 @@ from trajectree.api.deps import get_ledger
 from trajectree.db.ledger import Ledger
 from trajectree.models import InspectionDue, Run
 from trajectree.repo.inspections import due_projects
-from trajectree.repo.projects import list_projects, resolve_project_ref
+from trajectree.repo.projects import resolve_project_ref
 from trajectree.runner.kinds import InspectRequest
 from trajectree.runner.service import RunService
 from trajectree.runner.spec import InspectionActive, NothingToInspect
@@ -34,7 +34,7 @@ class InspectAllBody(BaseModel):
 
 class InspectAllResult(BaseModel):
     runs: list[Run]
-    skipped: list[str]  # slugs with nothing to inspect, or an inspection already running
+    skipped: list[str]  # slugs with nothing to inspect (or live), or an inspection already running
 
 
 @router.get("/inspections", response_model=list[InspectionDue])
@@ -63,7 +63,8 @@ def inspect_project(project_id: str, request: Request, body: InspectBody | None 
 def inspect_all(body: InspectAllBody, request: Request, ledger: Ledger = Depends(get_ledger)):
     with ledger.locked() as conn:
         if body.projects == "all":
-            refs = [p.id for p in list_projects(conn, status="active")]
+            # Only the due projects: `skipped` then names those that could not start.
+            refs = [d.project_id for d in due_projects(conn, request.app.state.settings, now=utcnow())]
         else:
             # An unknown project refuses the whole request before any run is queued.
             refs = [resolve_project_ref(conn, ref).id for ref in body.projects]

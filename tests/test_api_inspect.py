@@ -56,11 +56,34 @@ def test_post_inspect_all_skips_projects_with_nothing_due(client, app, ledger, h
     body = r.json()
     assert [run["project_id"] for run in body["runs"]] == [a.id] and body["skipped"] == ["b"]
     assert client.post("/api/inspect", json={"projects": ["b", "nope"], "model": MODEL}).status_code == 422
-    # "all" covers every active project; the one already running is skipped too.
+    # "all" covers the due projects: the one already running is skipped, one with nothing due is not listed.
     c = _due(ledger, human, "c")
     body = client.post("/api/inspect", json={"projects": "all", "model": MODEL}).json()
     assert [run["project_id"] for run in body["runs"]] == [c.id]
-    assert "a" in body["skipped"] and "b" in body["skipped"]
+    assert body["skipped"] == ["a"]
+
+
+def test_post_inspect_on_a_live_project_says_so(client, app, ledger, human, monkeypatch):
+    from trajectree.repo.sessions import start_session
+    _hold_queue(monkeypatch, app)
+    p = _due(ledger, human, "a")
+    with ledger.locked() as conn:
+        start_session(conn, session_id="x", cwd="/w/a", transcript_path=None, project_id=p.id, source="hook", now=datetime.now(UTC))
+    r = client.post("/api/projects/a/inspect", json={"model": MODEL})
+    assert r.status_code == 409
+    assert r.json()["detail"] == "a session is live in a; inspect once it has been quiet for 120 minutes"
+
+
+def test_runs_filter_by_series_in_sql(client, ledger):
+    from trajectree.repo.runs import create_run
+    with ledger.locked() as conn:
+        mine = [create_run(conn, kind="inspect", runner="claude", backend="claude", model=MODEL, project_id=None,
+                           props={"series_id": "S1", "episode_no": n}).id for n in (1, 2)]
+        for _ in range(60):  # newer runs that would push the series past a limit applied first
+            create_run(conn, kind="ask", runner="claude", backend="claude", model=MODEL, project_id=None, props={"series_id": "S2"})
+    got = client.get("/api/runs", params={"series_id": "S1", "limit": 50}).json()
+    assert sorted(r["id"] for r in got) == sorted(mine)
+    assert client.get("/api/runs", params={"series_id": "nope"}).json() == []
 
 
 def test_inspections_lists_active_run_and_episode(client, app, ledger, human, monkeypatch):

@@ -90,12 +90,19 @@ def runs_list(
     status: RunStatus | None = None,
     open_proposals: bool = False,
     routine: str | None = None,
+    series_id: str | None = None,
     ledger: Ledger = Depends(get_ledger),
 ):
     with ledger.locked() as conn:
         routine_id = resolve_routine_ref(conn, routine).id if routine else None
         return list_runs(
-            conn, limit=limit, kind=kind, status=status, with_open_proposals=open_proposals, routine_id=routine_id
+            conn,
+            limit=limit,
+            kind=kind,
+            status=status,
+            with_open_proposals=open_proposals,
+            routine_id=routine_id,
+            series_id=series_id,
         )
 
 

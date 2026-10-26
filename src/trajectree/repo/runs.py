@@ -82,12 +82,17 @@ def list_runs(
     status: str | None = None,
     with_open_proposals: bool = False,
     routine_id: str | None = None,
+    series_id: str | None = None,
 ) -> list[Run]:
+    """Newest first. `series_id` keeps the runs of one inspection series (`props.series_id`)."""
     where: list[str] = []
     params: list[Any] = []
     if routine_id is not None:
         where.append("routine_id = ?")
         params.append(routine_id)
+    if series_id is not None:
+        where.append("json_extract(props, '$.series_id') = ?")
+        params.append(series_id)
     if kind is not None:
         where.append("kind = ?")
         params.append(kind)
