@@ -24,8 +24,7 @@ require_hook_token = scoped_or_owner(HOOK_TOOL)
 router = APIRouter(prefix="/api/hooks", dependencies=[Depends(require_hook_token)])
 
 
-@router.post("/claude")
-async def claude_hook(request: Request) -> dict:
+async def _receive(request: Request, backend: str) -> dict:
     body = await request.body()
     payload: Any = None
     if len(body) <= MAX_BODY_BYTES:
@@ -37,13 +36,23 @@ async def claude_hook(request: Request) -> dict:
 
     def work():
         with ledger.locked() as conn:
-            return handle_hook(conn, payload, now=utcnow())
+            return handle_hook(conn, payload, now=utcnow(), backend=backend)
 
     try:
         handled = await anyio.to_thread.run_sync(work)
     except Exception:
-        log.exception("Claude Code hook failed")
+        log.exception("%s hook failed", backend)
         return {}
     if handled is None:
-        log.warning("ignored Claude Code hook payload")
+        log.warning("ignored %s hook payload", backend)
     return {}
+
+
+@router.post("/claude")
+async def claude_hook(request: Request) -> dict:
+    return await _receive(request, "claude")
+
+
+@router.post("/codex")
+async def codex_hook(request: Request) -> dict:
+    return await _receive(request, "codex")

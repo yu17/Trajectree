@@ -49,16 +49,22 @@ def start_session(
 
 
 def touch_session(
-    conn: apsw.Connection, *, session_id: str, cwd: str, project_id: str | None, now: datetime
+    conn: apsw.Connection,
+    *,
+    session_id: str,
+    cwd: str,
+    project_id: str | None,
+    now: datetime,
+    backend: str = "claude",
 ) -> SessionRow:
     """Record activity; a session never seen before is created with source 'stop'."""
     ts = to_db(now)
     conn.execute(
-        "INSERT INTO session (id, cwd, project_id, started_at, last_seen, source)"
-        " VALUES (?, ?, ?, ?, ?, 'stop')"
+        "INSERT INTO session (id, cwd, project_id, backend, started_at, last_seen, source)"
+        " VALUES (?, ?, ?, ?, ?, ?, 'stop')"
         " ON CONFLICT(id) DO UPDATE SET last_seen = excluded.last_seen, cwd = excluded.cwd,"
         " project_id = excluded.project_id, ended_at = NULL, end_reason = NULL",
-        (session_id, cwd, project_id, ts, ts),
+        (session_id, cwd, project_id, backend, ts, ts),
     )
     session = _get(conn, session_id)
     assert session is not None

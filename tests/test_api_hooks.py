@@ -63,3 +63,15 @@ def test_registry_wins_over_scan_and_ended_hides_scan(client, app):
     client.post("/api/hooks/claude", json=hook("SessionStart", sid="s3"))
     tl = client.get("/api/timeline", params={"from": "2020-01-01T00:00:00Z", "to": "2030-01-01T00:00:00Z"}).json()
     assert sorted(l["session_id"] for l in tl["live"]) == ["s2", "s3"]
+
+
+def test_codex_hook_marks_backend_codex(client, anon):
+    tok = client.post("/api/tokens", json={"label": "hooks-codex:x", "scope": {"projects": [], "tools": ["hooks"], "write": False}}).json()["secret"]
+    h = {"Authorization": f"Bearer {tok}"}
+    assert anon.post("/api/hooks/codex", json=hook("SessionStart", sid="c1", source="startup"), headers=h).json() == {}
+    assert anon.post("/api/hooks/codex", json=hook("Stop", sid="c2"), headers=h).json() == {}
+    rows = {r["id"]: r for r in client.get("/api/sessions").json()}
+    assert rows["c1"]["backend"] == "codex" and rows["c2"]["backend"] == "codex"
+    client.post("/api/hooks/claude", json=hook("SessionStart", sid="k1"))
+    assert {r["id"]: r for r in client.get("/api/sessions").json()}["k1"]["backend"] == "claude"
+    assert anon.post("/api/hooks/codex", json=hook("Stop")).status_code == 401

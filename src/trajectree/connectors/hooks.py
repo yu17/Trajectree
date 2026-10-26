@@ -20,7 +20,9 @@ def _text(value: Any) -> str | None:
     return value if isinstance(value, str) and 0 < len(value) <= MAX_FIELD_CHARS else None
 
 
-def handle_hook(conn: apsw.Connection, payload: Any, *, now: datetime) -> SessionRow | None:
+def handle_hook(
+    conn: apsw.Connection, payload: Any, *, now: datetime, backend: str = "claude"
+) -> SessionRow | None:
     """Apply one hook event; None when the payload is malformed or the event is not tracked."""
     if not isinstance(payload, dict):
         return None
@@ -43,7 +45,9 @@ def handle_hook(conn: apsw.Connection, payload: Any, *, now: datetime) -> Sessio
     project = project_for_path(conn, cwd)
     project_id = project.id if project is not None else None
     if event == "Stop":
-        return touch_session(conn, session_id=session_id, cwd=cwd, project_id=project_id, now=now)
+        return touch_session(
+            conn, session_id=session_id, cwd=cwd, project_id=project_id, now=now, backend=backend
+        )
     transcript, source = payload.get("transcript_path"), payload.get("source")
     return start_session(
         conn,
@@ -52,5 +56,6 @@ def handle_hook(conn: apsw.Connection, payload: Any, *, now: datetime) -> Sessio
         transcript_path=transcript if isinstance(transcript, str) else None,
         project_id=project_id,
         source=source if isinstance(source, str) else None,
+        backend=backend,
         now=now,
     )

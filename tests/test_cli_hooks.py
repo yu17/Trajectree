@@ -162,3 +162,135 @@ def test_hooks_uninstall_removes_any_port(app, anon, tmp_path):
     env = {**env_for(app), "HOME": str(tmp_path), "TRAJECTREE_URL": "http://127.0.0.1:40210"}
     assert cli.main(["hooks", "uninstall", "--settings-file", str(f)], client=anon, env=env) == 0
     assert json.loads(f.read_text()) == {}
+
+
+# ---- Codex hooks. Every test points CODEX_HOME and HOME at tmp_path; none may touch the real ~/.codex. ----
+import http.server, threading, io
+from trajectree.cli import hooks as hk
+
+OWNER = {"type": "command", "command": "owner-hook", "timeout": 5}
+
+
+def _codex(tmp_path, *, feature=True):
+    home = tmp_path / "codex"
+    home.mkdir()
+    (home / "hooks.json").write_text(json.dumps(
+        {ev: [{"matcher": None, "hooks": [OWNER]}] for ev in ("PermissionRequest", "SessionStart", "Stop", "UserPromptSubmit")}))
+    (home / "config.toml").write_text("[features]\nhooks = true\n" if feature else "[features]\n")
+    env_home = tmp_path / "home"
+    env_home.mkdir()
+    return home, {"HOME": str(env_home), "CODEX_HOME": str(home)}
+
+
+def test_codex_home_never_falls_back_to_the_real_home(tmp_path):
+    assert hk.codex_home({}) is None and hk.codex_home({"HOME": str(tmp_path)}) is None
+    (tmp_path / ".codex").mkdir()
+    assert hk.codex_home({"HOME": str(tmp_path)}) == tmp_path / ".codex"
+    assert hk.codex_home({"CODEX_HOME": str(tmp_path / "nope")}) is None
+
+
+def test_codex_install_appends_last_group_writes_token_file_and_show_reports_untrusted(app, client, anon, tmp_path, capsys):
+    home, extra = _codex(tmp_path)
+    claude = tmp_path / "settings.json"
+    env = {**env_for(app), **extra}
+    assert cli.main(["hooks", "install", "--yes", "--settings-file", str(claude)], client=anon, env=env) == 0
+    out = capsys.readouterr().out
+    assert "codex hooks: installed (3 events); Codex will ask to trust them on its next start" in out
+    assert "enable them" not in out and "trj_" not in out
+    doc = json.loads((home / "hooks.json").read_text())
+    for ev in ("SessionStart", "Stop"):
+        assert len(doc[ev]) == 2 and doc[ev][0]["hooks"] == [OWNER]
+        h = doc[ev][-1]["hooks"][0]
+        assert h["type"] == "command" and h["async"] is True and h["timeout"] == 3
+    assert len(doc["SessionEnd"]) == 1 and len(doc["PermissionRequest"]) == 1
+    token_file = tmp_path / "home" / ".config" / "trajectree" / "codex-hook-token"
+    assert stat.S_IMODE(token_file.stat().st_mode) == 0o600
+    secret = token_file.read_text().strip()
+    assert secret.startswith("trj_") and secret not in json.dumps(doc) and str(token_file) in doc["Stop"][-1]["hooks"][0]["command"]
+    assert any(t["label"].startswith("hooks-codex:") for t in client.get("/api/tokens").json())
+    assert cli.main(["hooks", "show", "--settings-file", str(claude)], client=anon, env=env) == 0
+    shown = capsys.readouterr().out
+    assert "codex SessionStart: present (not yet trusted)" in shown and secret not in shown
+    (home / "config.toml").write_text(f'[features]\nhooks = true\n\n[hooks.state."{home / "hooks.json"}:SessionStart:1:0"]\ntrusted_hash = "sha256:x"\n')
+    assert cli.main(["hooks", "show", "--settings-file", str(claude)], client=anon, env=env) == 0
+    shown = capsys.readouterr().out
+    assert "codex SessionStart: present (trusted)" in shown and "codex Stop: present (not yet trusted)" in shown
+
+
+def test_codex_install_uses_wrapper_shape_when_the_file_does(app, anon, tmp_path):
+    home, extra = _codex(tmp_path)
+    (home / "hooks.json").write_text(json.dumps({"hooks": {"Stop": [{"hooks": [OWNER]}]}}))
+    env = {**env_for(app), **extra}
+    assert cli.main(["hooks", "install", "--yes", "--settings-file", str(tmp_path / "s.json")], client=anon, env=env) == 0
+    doc = json.loads((home / "hooks.json").read_text())
+    assert list(doc) == ["hooks"] and len(doc["hooks"]["Stop"]) == 2 and len(doc["hooks"]["SessionStart"]) == 1
+
+
+def test_codex_uninstall_removes_only_ours_and_warns_on_later_groups(app, client, anon, tmp_path, capsys):
+    home, extra = _codex(tmp_path)
+    original = json.loads((home / "hooks.json").read_text())
+    claude = tmp_path / "settings.json"
+    env = {**env_for(app), **extra}
+    assert cli.main(["hooks", "install", "--yes", "--settings-file", str(claude)], client=anon, env=env) == 0
+    doc = json.loads((home / "hooks.json").read_text())
+    doc["Stop"].append({"hooks": [{"type": "command", "command": "later"}]})
+    (home / "hooks.json").write_text(json.dumps(doc))
+    capsys.readouterr()
+    assert cli.main(["hooks", "uninstall", "--settings-file", str(claude)], client=anon, env=env) == 0
+    out = capsys.readouterr().out
+    assert "codex hooks: removed; groups after Trajectree's shifted: re-trust Stop" in out
+    after = json.loads((home / "hooks.json").read_text())
+    assert after["Stop"] == original["Stop"] + [{"hooks": [{"type": "command", "command": "later"}]}]
+    assert after["SessionStart"] == original["SessionStart"] and "SessionEnd" not in after
+    assert not (tmp_path / "home" / ".config" / "trajectree" / "codex-hook-token").exists()
+    assert client.get("/api/tokens").json() == []
+
+
+def test_codex_install_without_feature_flag_prints_the_flag_line(app, anon, tmp_path, capsys):
+    home, extra = _codex(tmp_path, feature=False)
+    env = {**env_for(app), **extra}
+    assert cli.main(["hooks", "install", "--yes", "--settings-file", str(tmp_path / "s.json")], client=anon, env=env) == 0
+    assert f"codex hooks: enable them with [features] hooks = true in {home / 'config.toml'}" in capsys.readouterr().out
+
+
+def test_claude_install_skips_codex_when_env_has_no_codex_home(app, anon, tmp_path, capsys):
+    env = {**env_for(app), "HOME": str(tmp_path)}
+    assert cli.main(["hooks", "install", "--yes", "--settings-file", str(tmp_path / "s.json")], client=anon, env=env) == 0
+    assert "codex" not in capsys.readouterr().out
+
+
+def _stub():
+    seen = []
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            seen.append((self.path, self.headers.get("Authorization"), self.rfile.read(int(self.headers["Content-Length"]))))
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, seen
+
+
+def test_hooks_post_forwards_stdin_with_token(tmp_path, capsys):
+    srv, seen = _stub()
+    token_file = tmp_path / "tok"
+    token_file.write_text("trj_secret\n")
+    env = {"HOME": str(tmp_path), "TRAJECTREE_URL": f"http://127.0.0.1:{srv.server_port}"}
+    body = '{"session_id": "s1", "hook_event_name": "Stop"}'
+    assert cli.main(["hooks", "post", "--token-file", str(token_file)], env=env, stdin=io.StringIO(body)) == 0
+    srv.shutdown()
+    assert seen == [("/api/hooks/codex", "Bearer trj_secret", body.encode())]
+    captured = capsys.readouterr()
+    assert captured.out == "" and captured.err == ""
+    down = {"HOME": str(tmp_path), "TRAJECTREE_URL": "http://127.0.0.1:1"}
+    assert cli.main(["hooks", "post", "--token-file", str(token_file)], env=down, stdin=io.StringIO(body)) == 0
+    assert cli.main(["hooks", "post", "--token-file", str(tmp_path / "missing")], env=down, stdin=io.StringIO(body)) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "" and "trj_secret" not in captured.err

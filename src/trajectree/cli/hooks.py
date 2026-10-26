@@ -4,8 +4,10 @@ import copy
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import sys
+import tomllib
 from urllib.parse import urlsplit
 from pathlib import Path
 from typing import Any, Callable, Mapping, TextIO
@@ -13,6 +15,10 @@ from typing import Any, Callable, Mapping, TextIO
 HOOK_EVENTS = ("SessionStart", "Stop", "SessionEnd")
 HOOK_LABEL = "hooks"
 HOOK_PATH = "/api/hooks/claude"
+CODEX_HOOK_PATH = "/api/hooks/codex"
+CODEX_EVENTS = ("SessionStart", "Stop", "SessionEnd")
+CODEX_LABEL = "hooks-codex"
+POST_TIMEOUT_S = 3
 
 
 def token_label(path: Path) -> str:
@@ -181,6 +187,9 @@ def install(
     print(f"settings file: {path}", file=out)
     print(json.dumps({ev: shown[ev] for ev in HOOK_EVENTS}, indent=2), file=out)
     print(f"This writes {path} (backup at {path}.trajectree.bak).", file=out)
+    codex_on = codex_home(env) is not None
+    if codex_on:
+        _codex_plan(env, out)
     if not (yes or confirm("Proceed? [y/N] ")):
         api.delete(f"/api/tokens/{created['id']}")
         print("aborted", file=out)
@@ -199,6 +208,8 @@ def install(
             api.delete(f"/api/tokens/{token['id']}")
             print(f"rotated legacy token {token['id']}", file=out)
     print(f"hooks: installed ({len(HOOK_EVENTS)} events)", file=out)
+    if codex_on:
+        return install_codex(api, env, out=out, yes=True, confirm=confirm)  # the one confirmation covered it
     return 0
 
 
@@ -219,6 +230,8 @@ def uninstall(
     for token in _hook_tokens(api, path):
         api.delete(f"/api/tokens/{token['id']}")
     print("hooks: removed", file=out)
+    if codex_home(env) is not None:
+        return uninstall_codex(api, env, out=out)
     return 0
 
 
@@ -240,4 +253,289 @@ def show(
             state = "absent"
         print(f"{event}: {state}", file=out)
     print(f"token: {'present' if _hook_tokens(api, path) else 'absent'}", file=out)
+    if codex_home(env) is not None:
+        return show_codex(api, env, out=out)
+    return 0
+
+
+# ---- Codex: command hooks that post to the daemon with a liveness-only token ----
+
+
+def codex_home(env: Mapping[str, str]) -> Path | None:
+    """$CODEX_HOME, else $HOME/.codex; the process's real home only when env is the real environment.
+
+    None when the directory does not exist, so an env dict without HOME or CODEX_HOME never reaches
+    the real ~/.codex.
+    """
+    if env.get("CODEX_HOME"):
+        home: Path | None = Path(env["CODEX_HOME"])
+    elif env.get("HOME"):
+        home = Path(env["HOME"]) / ".codex"
+    elif env is os.environ:
+        home = Path.home() / ".codex"
+    else:
+        home = None
+    return home if home is not None and home.is_dir() else None
+
+
+def codex_hooks_file(home: Path) -> Path:
+    return home / "hooks.json"
+
+
+def codex_token_file(env: Mapping[str, str]) -> Path:
+    from trajectree.cli.main import _config_file
+
+    return _config_file(env, "codex-hook-token")
+
+
+def codex_token_label(hooks_file: Path) -> str:
+    return f"{CODEX_LABEL}:{hashlib.sha256(str(hooks_file).encode()).hexdigest()[:8]}"
+
+
+def codex_handler(token_file: Path) -> dict[str, Any]:
+    return {
+        "type": "command",
+        "command": f"trajectree hooks post --token-file {shlex.quote(str(token_file))}",
+        "timeout": 3,
+        "async": True,
+    }
+
+
+def _ours_codex(h: dict[str, Any]) -> bool:
+    return h.get("type") == "command" and "trajectree hooks post" in str(h.get("command", ""))
+
+
+def _codex_events(doc: dict[str, Any], *, create: bool = False) -> dict[str, Any]:
+    """The event -> groups mapping: under a top-level `hooks` key when the file uses one."""
+    if isinstance(doc.get("hooks"), dict):
+        return doc["hooks"]
+    if create and not doc:
+        return doc.setdefault("hooks", {})
+    return doc
+
+
+def _codex_well_formed(data: Any) -> bool:
+    if not isinstance(data, dict):
+        return False
+    if "hooks" in data and not isinstance(data["hooks"], dict):
+        return False
+    for groups in _codex_events(data).values():
+        if not isinstance(groups, list):
+            return False
+        for group in groups:
+            if not isinstance(group, dict):
+                return False
+            handlers = group.get("hooks", [])
+            if not isinstance(handlers, list) or not all(isinstance(h, dict) for h in handlers):
+                return False
+    return True
+
+
+def _codex_load(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = None
+    if not _codex_well_formed(data):
+        print(f"cannot parse {path}", file=sys.stderr)
+        return None
+    return data
+
+
+def _strip_codex(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    kept = []
+    for group in groups:
+        hooks = [h for h in group.get("hooks", []) if not _ours_codex(h)]
+        if hooks:
+            kept.append({**group, "hooks": hooks})
+    return kept
+
+
+def merge_codex_hooks(doc: dict[str, Any], token_file: Path) -> dict[str, Any]:
+    merged = copy.deepcopy(doc)
+    events = _codex_events(merged, create=True)
+    for event in CODEX_EVENTS:
+        groups = _strip_codex(events.get(event, []))
+        # Last: Codex keys trust by position, so appending never shifts the owner's groups.
+        groups.append({"hooks": [codex_handler(token_file)]})
+        events[event] = groups
+    return merged
+
+
+def remove_codex_hooks(doc: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Without our groups, and the events where a group of the owner's came after ours (their positions shift)."""
+    result = copy.deepcopy(doc)
+    events = _codex_events(result)
+    shifted = []
+    for event in CODEX_EVENTS:
+        if event not in events:
+            continue
+        original = events[event]
+        removed = [
+            i for i, g in enumerate(original)
+            if g.get("hooks") and all(_ours_codex(h) for h in g["hooks"])
+        ]
+        groups = _strip_codex(original)
+        if removed and len(original) - 1 > removed[0]:
+            shifted.append(event)
+        if groups:
+            events[event] = groups
+        else:
+            del events[event]
+    if "hooks" in result and not result["hooks"]:
+        del result["hooks"]
+    return result, shifted
+
+
+def _toml(path: Path) -> dict[str, Any]:
+    try:
+        return tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def codex_trusted(config_toml: Path, hooks_file: Path, event: str, group_index: int) -> bool:
+    """Whether Codex holds a trusted_hash for our (first) handler in this group."""
+    state = _toml(config_toml).get("hooks", {}).get("state", {})
+    entry = state.get(f"{hooks_file}:{event}:{group_index}:0") if isinstance(state, dict) else None
+    return isinstance(entry, dict) and bool(entry.get("trusted_hash"))
+
+
+def _write_secret(path: Path, secret: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(secret + "\n")
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def _codex_plan(env: Mapping[str, str], out: TextIO) -> None:
+    home = codex_home(env)
+    assert home is not None
+    hooks_file = codex_hooks_file(home)
+    print(f"codex hooks file: {hooks_file} (backup at {hooks_file}.trajectree.bak)", file=out)
+    print(f"codex token file: {codex_token_file(env)}", file=out)
+
+
+def _codex_tokens(api: Any, hooks_file: Path) -> list[dict[str, Any]]:
+    label = codex_token_label(hooks_file)
+    return [t for t in api.get("/api/tokens") if t["label"] == label]
+
+
+def install_codex(
+    api: Any,
+    env: Mapping[str, str],
+    *,
+    out: TextIO,
+    yes: bool = False,
+    confirm: Callable[[str], bool] = _default_confirm,
+) -> int:
+    home = codex_home(env)
+    if home is None:
+        return 0
+    hooks_file = codex_hooks_file(home)
+    token_file = codex_token_file(env)
+    current = _codex_load(hooks_file)
+    if current is None:
+        return 1
+    if not yes:
+        _codex_plan(env, out)
+        if not confirm("Proceed? [y/N] "):
+            print("aborted", file=out)
+            return 1
+    old_tokens = _codex_tokens(api, hooks_file)
+    created = api.post(
+        "/api/tokens",
+        {"label": codex_token_label(hooks_file), "scope": {"projects": [], "tools": ["hooks"], "write": False}},
+    )
+    try:
+        _write(hooks_file, merge_codex_hooks(current, token_file))
+        _write_secret(token_file, created["secret"])
+    except OSError as exc:
+        api.delete(f"/api/tokens/{created['id']}")
+        print(f"cannot write codex hooks: {exc}", file=sys.stderr)
+        return 1
+    for token in old_tokens:
+        api.delete(f"/api/tokens/{token['id']}")
+    print(f"codex hooks: installed ({len(CODEX_EVENTS)} events); Codex will ask to trust them on its next start", file=out)
+    config = home / "config.toml"
+    if _toml(config).get("features", {}).get("hooks") is not True:
+        print(f"codex hooks: enable them with [features] hooks = true in {config}", file=out)
+    return 0
+
+
+def uninstall_codex(api: Any, env: Mapping[str, str], *, out: TextIO) -> int:
+    home = codex_home(env)
+    if home is None:
+        return 0
+    hooks_file = codex_hooks_file(home)
+    current = _codex_load(hooks_file)
+    if current is None:
+        return 1
+    cleaned, shifted = remove_codex_hooks(current)
+    if cleaned != current:
+        try:
+            _write(hooks_file, cleaned)
+        except OSError as exc:
+            print(f"cannot write {hooks_file}: {exc}", file=sys.stderr)
+            return 1
+    for token in _codex_tokens(api, hooks_file):
+        api.delete(f"/api/tokens/{token['id']}")
+    codex_token_file(env).unlink(missing_ok=True)
+    if shifted:
+        print(f"codex hooks: removed; groups after Trajectree's shifted: re-trust {', '.join(shifted)}", file=out)
+    else:
+        print("codex hooks: removed", file=out)
+    return 0
+
+
+def show_codex(api: Any, env: Mapping[str, str], *, out: TextIO) -> int:
+    home = codex_home(env)
+    if home is None:
+        return 0
+    hooks_file = codex_hooks_file(home)
+    current = _codex_load(hooks_file)
+    if current is None:
+        return 1
+    events = _codex_events(current)
+    for event in CODEX_EVENTS:
+        groups = events.get(event, [])
+        index = next(
+            (i for i, g in enumerate(groups) if any(_ours_codex(h) for h in g.get("hooks", []))), None
+        )
+        if index is None:
+            state = "absent"
+        elif codex_trusted(home / "config.toml", hooks_file, event, index):
+            state = "present (trusted)"
+        else:
+            state = "present (not yet trusted)"
+        print(f"codex {event}: {state}", file=out)
+    print(f"codex token: {'present' if _codex_tokens(api, hooks_file) else 'absent'}", file=out)
+    return 0
+
+
+def post(env: Mapping[str, str], *, token_file: Path, stdin: TextIO) -> int:
+    """The command hook Codex runs: forward its stdin JSON to the daemon. Silent, and always 0."""
+    try:
+        import httpx
+
+        from trajectree.cli.main import base_url
+
+        secret = token_file.read_text(encoding="utf-8").strip()
+        body = stdin.read()
+        httpx.post(
+            base_url(env) + CODEX_HOOK_PATH,
+            content=body.encode("utf-8"),
+            headers={"Authorization": f"Bearer {secret}", "Content-Type": "application/json"},
+            timeout=POST_TIMEOUT_S,
+        )
+    except Exception:
+        pass
     return 0

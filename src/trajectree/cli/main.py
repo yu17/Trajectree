@@ -231,6 +231,8 @@ def _parser() -> argparse.ArgumentParser:
         hk_sub.add_parser(name, help=help_)
     for sp in hk_sub.choices.values():
         sp.add_argument("--settings-file")
+    hk_post = hk_sub.add_parser("post", help=argparse.SUPPRESS)  # run by Codex, not by people
+    hk_post.add_argument("--token-file", required=True)
     return p
 
 
@@ -878,6 +880,10 @@ def main(
         from trajectree.cli.shim import run_shim
 
         return run_shim(env)
+    if args.cmd == "hooks" and args.sub == "post":
+        from trajectree.cli import hooks
+
+        return hooks.post(env, token_file=Path(args.token_file), stdin=stdin if stdin is not None else sys.stdin)
     token = _token(env)
     if token is None:
         print(
