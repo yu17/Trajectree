@@ -149,15 +149,36 @@ trajectree init-project ~/path/to/project
 ```
 
 This registers the folder as a Trajectree project (`--slug`, `--title` and
-`--kind` override the defaults derived from the folder name) and writes:
+`--kind` override the defaults derived from the folder name) and writes only
+the project's records in the daemon:
 
-- a `folder` resource, plus a `git_local` resource if the folder has a `.git`;
+- a `folder` resource, plus a `git_local` resource if the folder has a `.git`.
+
+Session guidance is opt-in. It makes Claude Code sessions in the folder record
+decisions, milestones, blockers and follow-ups through the MCP server, which
+costs context in every session there. It is worth having for a project at a
+milestone or finished, when you want the session itself to record the outcome;
+otherwise the history import and inspections are enough. Add it with
+`init-project <folder> --guidance`, answer yes to the question at the end of an
+interactive run, or add or remove it later:
+
+```bash
+trajectree guidance install <folder>   # --no-exclude skips the exclude line
+trajectree guidance show <folder>
+trajectree guidance remove <folder>
+```
+
+`guidance install` (the folder must already be a registered project) writes:
+
 - `.claude/rules/trajectree.md` in the folder: guidance telling Claude Code
   when and how to record decisions, milestones, blockers and follow-ups;
 - the line `.claude/rules/trajectree.md` in `.git/info/exclude`, so the rules
-  file is not committed (`--no-exclude` skips this);
+  file is not committed;
 - the user-scope MCP server `trajectree` in Claude Code, if `claude` is on the
   PATH and it is not already configured.
+
+`guidance remove` deletes the rules file (only if it is the one Trajectree
+wrote) and the exclude line; the MCP registration stays.
 
 After registering, `init-project` asks what history to import. It probes the
 folder through the daemon and lists the sources (git, claude, codex, folder)
@@ -206,7 +227,7 @@ The CLI needs the token at `~/.config/trajectree/token` (copied from
 
 ## MCP
 
-`init-project` registers the stdio shim, equivalent to:
+`init-project --guidance` and `guidance install` register the stdio shim, equivalent to:
 
 ```bash
 claude mcp add --scope user trajectree -- trajectree mcp
@@ -737,7 +758,7 @@ its cache. Then run `trajectree models --refresh`. Pick a Codex model with
 | Container, `./data/exports/reports/` | `<id>.md`, `<id>.html`, `<id>.pdf`, `<id>.pptx`, written on export |
 | Container, `./cfg/home/.ssh/` | `known_hosts`: the Slurm login node's host key, accepted on first connect |
 | Container, `./cfg/home/.config/chromium/`, `./cfg/home/.local/share/pki/` | `reports` image only: Chromium's `Crash Reports/` settings and an empty NSS database, created on the first PDF/PPTX export (a few KB). Chromium's per-export profile goes to a private temporary directory under `/tmp` that is removed after the export |
-| Host CLI, `init-project` | `<project>/.claude/rules/trajectree.md`, `<project>/.git/info/exclude`, Claude Code's user MCP config via `claude mcp add` |
+| Host CLI, `init-project --guidance`, `guidance install` | `<project>/.claude/rules/trajectree.md`, `<project>/.git/info/exclude`, Claude Code's user MCP config via `claude mcp add`; `guidance remove` deletes the rules file and the exclude line. Plain `init-project` writes nothing on the host |
 | Host CLI, `hooks install` | `~/.claude/settings.json` after confirmation, with `settings.json.trajectree.bak` |
 | Host, you (optional) | `sockets/<profile>.sock` in the instance dir (created by systemd, 0600), `~/.config/trajectree/backends/<profile>.env`, the two units in `~/.config/systemd/user/`, one ufw rule; see [Local backends through a socket](#local-backends-through-a-socket). The container only connects to the sockets (mounted read-only) |
 | Host, anything else | Nothing |

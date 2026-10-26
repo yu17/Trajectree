@@ -88,12 +88,14 @@ def _parser() -> argparse.ArgumentParser:
 
     sub.add_parser("ingest", help="run one ingest pass now")
 
-    init = sub.add_parser("init-project", help="register a folder as a project and install guidance")
+    init = sub.add_parser("init-project", help="register a folder as a project (guidance is opt-in)")
     init.add_argument("path")
     init.add_argument("--slug")
     init.add_argument("--title")
     init.add_argument("--kind", choices=["research", "tooling", "routine", "admin"], default="research")
     init.add_argument("--no-exclude", action="store_true")
+    init.add_argument("--guidance", action="store_true",
+                      help="also write the session rules file and register the MCP server")
     init.add_argument("--sources", help="history sources to import: a comma list (git,claude,folder) or all")
     init.add_argument("--since", action="append", default=[], metavar="SOURCE=DATE",
                       help="import SOURCE from YYYY-MM-DD, all or default (repeatable)")
@@ -105,6 +107,11 @@ def _parser() -> argparse.ArgumentParser:
     init.add_argument("--yes", action="store_true", help="never prompt; a missing choice is an error")
     init.add_argument("--start-block-only", action="store_true",
                       help="queue the starting-point summary of the skipped history again (needs a model)")
+
+    gd = sub.add_parser("guidance", help="add, remove or show session guidance for a project folder")
+    gd.add_argument("sub", choices=["install", "remove", "show"])
+    gd.add_argument("path")
+    gd.add_argument("--no-exclude", action="store_true", help="install: leave .git/info/exclude alone")
 
     sub.add_parser("mcp", help="run the stdio MCP shim that forwards to the daemon")
 
@@ -756,6 +763,19 @@ def _run(
         if code:
             raise _Fail("", code)
         return
+    if cmd == "guidance":
+        from trajectree.cli import guidance as gmod
+
+        run = runner or (lambda a: subprocess.run(a, capture_output=True, text=True))
+        if args.sub == "install":
+            code = gmod.install(api, Path(args.path), out=sys.stdout, runner=run, no_exclude=args.no_exclude)
+        elif args.sub == "remove":
+            code = gmod.remove(Path(args.path), out=sys.stdout)
+        else:
+            code = gmod.show(Path(args.path), out=sys.stdout, runner=run)
+        if code:
+            raise _Fail("", code)
+        return
     if cmd == "init-project":
         from trajectree.cli.init_project import init_project
 
@@ -768,6 +788,7 @@ def _run(
             sources=args.sources, since=args.since, start_model=args.start_model,
             start_runner=args.start_runner, no_start_block=args.no_start_block,
             remote=args.remote, no_remotes=args.no_remotes, start_block_only=args.start_block_only,
+            guidance=args.guidance,
         )
         if code:
             raise _Fail("", code)

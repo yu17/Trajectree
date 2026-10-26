@@ -37,15 +37,27 @@ def test_slug_from_path(tmp_path):
     assert slug_from_path(tmp_path / "---x---") == "x"
 
 
-def test_init_project_creates_project_resources_rules_and_mcp(tmp_path, client, app, capsys):
+def test_init_project_without_guidance_writes_no_rules_and_skips_mcp(tmp_path, client, app, capsys):
     repo = make_repo(tmp_path)
     fake = FakeClaude()
     assert main(["init-project", str(repo)], client=client, env=env_for(app), runner=fake) == 0
     out = capsys.readouterr().out.splitlines()
-    assert out[0].startswith("project: my-proj (") and out[1] == "resources: folder, git_local" and out[3] == "mcp: configured"
+    assert out[0].startswith("project: my-proj (") and out[1] == "resources: folder, git_local"
+    assert out[2] == "guidance: not installed (trajectree guidance install <path> to add it)"
     assert user_projects(client)[0]["slug"] == "my-proj"
     kinds = {r["kind"]: r["locator"] for r in client.get("/api/resources").json()}
     assert kinds == {"folder": str(repo.resolve()), "git_local": str(repo.resolve())}
+    assert not (repo / ".claude").exists()
+    assert "trajectree" not in (repo / ".git" / "info" / "exclude").read_text() if (repo / ".git" / "info" / "exclude").exists() else True
+    assert fake.calls == []
+
+
+def test_init_project_guidance_flag_writes_rules_and_configures_mcp(tmp_path, client, app, capsys):
+    repo = make_repo(tmp_path)
+    fake = FakeClaude()
+    assert main(["init-project", str(repo), "--guidance"], client=client, env=env_for(app), runner=fake) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[0].startswith("project: my-proj (") and out[1] == "resources: folder, git_local" and out[3] == "mcp: configured"
     rules = (repo / ".claude" / "rules" / "trajectree.md").read_text()
     assert rules.startswith("<!-- managed by trajectree init-project; edits are overwritten -->") and "my-proj" in rules and "record_event" in rules
     assert (repo / ".git" / "info" / "exclude").read_text().count(".claude/rules/trajectree.md") == 1
@@ -53,12 +65,25 @@ def test_init_project_creates_project_resources_rules_and_mcp(tmp_path, client, 
                           ["claude", "mcp", "add", "--scope", "user", "trajectree", "--", "trajectree", "mcp"]]
 
 
+def test_init_project_interactive_asks_about_guidance_default_no(tmp_path, capsys):
+    api = FakeApi(make_probe())
+    code, out, err, ask = dialogue(tmp_path, capsys, api, "4", "y")  # import answered; list exhausted at guidance
+    assert code == 0 and ask.prompts[-1] == (
+        "Install session guidance so Claude Code sessions in this folder record milestones through Trajectree? [y/N]: ")
+    assert "guidance: not installed" in out and not (tmp_path / "proj" / ".claude").exists()
+    assert api.imports()  # the import was posted before the question
+    code, out, err, ask = dialogue(tmp_path, capsys, FakeApi(make_probe()), "4", "n", "")
+    assert code == 0 and "nothing imported" in out and "guidance: not installed" in out
+    code, out, err, ask = dialogue(tmp_path, capsys, FakeApi(make_probe()), "4", "y", "y")
+    assert code == 0 and "mcp: configured" in out and (tmp_path / "proj" / ".claude" / "rules" / "trajectree.md").is_file()
+
+
 def test_init_project_twice_is_idempotent(tmp_path, client, app, capsys):
     repo = make_repo(tmp_path)
     fake = FakeClaude()
-    main(["init-project", str(repo)], client=client, env=env_for(app), runner=fake)
+    main(["init-project", str(repo), "--guidance"], client=client, env=env_for(app), runner=fake)
     (repo / ".claude" / "rules" / "trajectree.md").write_text("edited")
-    assert main(["init-project", str(repo)], client=client, env=env_for(app), runner=fake) == 0
+    assert main(["init-project", str(repo), "--guidance"], client=client, env=env_for(app), runner=fake) == 0
     assert capsys.readouterr().out.splitlines()[-1] == "mcp: already configured"
     assert len(user_projects(client)) == 1 and len(client.get("/api/resources").json()) == 2
     assert (repo / ".git" / "info" / "exclude").read_text().count(".claude/rules/trajectree.md") == 1
@@ -74,7 +99,7 @@ def test_init_project_without_git_or_claude(tmp_path, client, app, capsys):
     def missing(args):
         raise FileNotFoundError("claude")
 
-    assert main(["init-project", str(plain), "--slug", "plain-one", "--title", "Plain", "--kind", "tooling"], client=client, env=env_for(app), runner=missing) == 0
+    assert main(["init-project", str(plain), "--slug", "plain-one", "--title", "Plain", "--kind", "tooling", "--guidance"], client=client, env=env_for(app), runner=missing) == 0
     out = capsys.readouterr().out.splitlines()
     assert out[1] == "resources: folder" and out[3].startswith("mcp: claude not found; run: claude mcp add --scope user trajectree")
     p = user_projects(client)[0]
@@ -91,7 +116,7 @@ def test_init_project_reports_failed_mcp_add(tmp_path, client, app, capsys):
     def failing(args):
         return SimpleNamespace(returncode=1, stdout="", stderr="")
 
-    assert main(["init-project", str(tmp_path), "--slug", "xx", "--sources", "none"], client=client, env=env_for(app), runner=failing) == 0
+    assert main(["init-project", str(tmp_path), "--slug", "xx", "--sources", "none", "--guidance"], client=client, env=env_for(app), runner=failing) == 0
     assert capsys.readouterr().out.splitlines()[-1].startswith("mcp: failed (claude mcp add exited 1); run: claude mcp add")
 
 
@@ -110,7 +135,7 @@ def test_init_project_handles_git_file_pointer(tmp_path, client, app, capsys):
     folder = tmp_path / "wt"
     folder.mkdir()
     (folder / ".git").write_text(f"gitdir: {gitdir}\n")
-    assert main(["init-project", str(folder)], client=client, env=env_for(app), runner=FakeClaude()) == 0
+    assert main(["init-project", str(folder), "--guidance"], client=client, env=env_for(app), runner=FakeClaude()) == 0
     out = capsys.readouterr().out.splitlines()
     assert len(out) == 4 and out[1] == "resources: folder, git_local"
     assert (gitdir / "info" / "exclude").read_text().count(".claude/rules/trajectree.md") == 1
@@ -125,14 +150,14 @@ def test_init_project_worktree_exclude_goes_to_common_dir(tmp_path, client, app,
     folder = tmp_path / "wt"
     folder.mkdir()
     (folder / ".git").write_text(f"gitdir: {gitdir}\n")
-    assert main(["init-project", str(folder)], client=client, env=env_for(app), runner=FakeClaude()) == 0
+    assert main(["init-project", str(folder), "--guidance"], client=client, env=env_for(app), runner=FakeClaude()) == 0
     assert (common / "info" / "exclude").read_text().count(".claude/rules/trajectree.md") == 1
     assert not (gitdir / "info" / "exclude").exists()
     # an absolute commondir works too
     other = tmp_path / "other-common"
     other.mkdir()
     (gitdir / "commondir").write_text(f"{other}\n")
-    assert main(["init-project", str(folder)], client=client, env=env_for(app), runner=FakeClaude()) == 0
+    assert main(["init-project", str(folder), "--guidance"], client=client, env=env_for(app), runner=FakeClaude()) == 0
     assert (other / "info" / "exclude").read_text().count(".claude/rules/trajectree.md") == 1
 
 
@@ -254,7 +279,7 @@ def test_start_model_asked_when_history_skipped(tmp_path, capsys):
     assert body["starts"] == {"git": DEFAULT_SINCE}
     assert body["sources"] == {"git": {"picked": True, "since": None}}
     assert "starting-point run run_9 queued" in out
-    assert "next ingest pass imports the history (trajectree ingest to run it now)" in out
+    assert "history imports on the next ingest pass, then the project appears in the Inbox as due for inspection (trajectree ingest to run the pass now)" in out
 
 
 def test_no_model_question_without_skipped_history(tmp_path, capsys):
@@ -279,7 +304,7 @@ def test_summary_then_confirm(tmp_path, capsys):
     api = FakeApi(make_probe())
     code, out, _, _ = dialogue(tmp_path, capsys, api, "2", "n")
     assert code == 0 and "import summary:" in out and "claude: from 2026-07-26 (default)" in out
-    assert out.rstrip().endswith("nothing imported") and api.imports() == []
+    assert "nothing imported" in out and api.imports() == []
 
 
 def test_bad_answers_reprompt(tmp_path, capsys):
@@ -308,7 +333,7 @@ def test_all_with_nothing_pickable_is_not_offered(tmp_path, capsys):
     sources = {n: _source(n) for n in ("git", "claude", "folder")}
     api = FakeApi(make_probe(sources=sources))
     code, out, _, ask = dialogue(tmp_path, capsys, api)
-    assert code == 0 and ask.prompts == [] and "history found" not in out
+    assert code == 0 and [p[:7] for p in ask.prompts] == ["Install"] and "history found" not in out
 
 
 def test_non_tty_missing_choices_errors(tmp_path, capsys):
@@ -518,7 +543,7 @@ def test_flags_import_through_the_daemon(tmp_path, client, app, capsys):
     (plain / "notes.txt").write_text("x")
     args = ["init-project", str(plain), "--sources", "folder"]
     assert main(args, client=client, env=env_for(app), runner=FakeClaude()) == 0
-    assert "next ingest pass imports the history" in capsys.readouterr().out
+    assert "history imports on the next ingest pass" in capsys.readouterr().out
     (p,) = user_projects(client)
     # "default" is stored as the concrete day it meant at import
     from trajectree.importing import default_since

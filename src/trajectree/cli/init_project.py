@@ -7,63 +7,12 @@ from pathlib import Path
 from typing import Any, Callable, TextIO
 from zoneinfo import ZoneInfo
 
-from trajectree.guidance import render_rules
+from trajectree.cli.guidance import ADD_HINT, EXCLUDE_LINE, _ensure_mcp, write_rules  # noqa: F401  (re-exported)
 from trajectree.importing import local_midnight
 from trajectree.models import SLUG_PATTERN
 
-EXCLUDE_LINE = ".claude/rules/trajectree.md"
-ADD_HINT = "claude mcp add --scope user trajectree -- trajectree mcp"
-
-
 def slug_from_path(path: Path) -> str:
     return re.sub(r"[^a-z0-9]+", "-", path.name.lower()).strip("-")[:64]
-
-
-def _git_dir(path: Path) -> Path | None:
-    dot_git = path / ".git"
-    if dot_git.is_dir():
-        return dot_git
-    try:
-        first = dot_git.read_text(encoding="utf-8").splitlines()[0]
-    except (OSError, UnicodeDecodeError, IndexError):
-        return None
-    if not first.startswith("gitdir:") or not first[7:].strip():
-        return None
-    return path / first[7:].strip()  # an absolute pointer replaces the base
-
-
-def _exclude_file(git_dir: Path) -> Path:
-    """`info/exclude` of the common dir: a linked worktree's gitdir names it in `commondir`."""
-    commondir = git_dir / "commondir"
-    if commondir.is_file():
-        try:
-            first = commondir.read_text(encoding="utf-8").splitlines()[0].strip()
-        except (UnicodeDecodeError, IndexError):
-            first = ""
-        if first:
-            return git_dir / first / "info" / "exclude"  # an absolute path replaces the base
-    return git_dir / "info" / "exclude"
-
-
-def _add_exclude(exclude: Path) -> None:
-    exclude.parent.mkdir(parents=True, exist_ok=True)
-    existing = exclude.read_text() if exclude.exists() else ""
-    if EXCLUDE_LINE in existing.splitlines():
-        return
-    sep = "" if not existing or existing.endswith("\n") else "\n"
-    exclude.write_text(existing + sep + EXCLUDE_LINE + "\n")
-
-
-def _ensure_mcp(runner: Callable[[list[str]], Any]) -> str:
-    try:
-        if runner(["claude", "mcp", "get", "trajectree"]).returncode == 0:
-            return "mcp: already configured"
-        added = runner(["claude", "mcp", "add", "--scope", "user", "trajectree", "--", "trajectree", "mcp"])
-    except FileNotFoundError:
-        return f"mcp: claude not found; run: {ADD_HINT}"
-    if added.returncode != 0:
-        return f"mcp: failed (claude mcp add exited {added.returncode}); run: {ADD_HINT}"
-    return "mcp: configured"
 
 
 def init_project(
@@ -86,6 +35,7 @@ def init_project(
     remote: list[str] | None = None,
     no_remotes: bool = False,
     start_block_only: bool = False,
+    guidance: bool = False,
 ) -> int:
     path = path.resolve()
     if start_block_only:
@@ -151,38 +101,47 @@ def init_project(
             print(f"project registered, but the daemon cannot see this folder: {exc}", file=sys.stderr)
             return 2
 
-    rules = path / ".claude" / "rules" / "trajectree.md"
-    note = ""
-    target = rules
-    try:
-        rules.parent.mkdir(parents=True, exist_ok=True)
-        rules.write_text(render_rules(slug, shown_title), encoding="utf-8")
-        if has_git and not no_exclude:
-            git_dir = _git_dir(path)
-            if git_dir is None:
-                note = " (exclude skipped: unreadable .git pointer)"
-            else:
-                target = git_dir / "commondir"  # named in the error if reading it fails
-                target = _exclude_file(git_dir)
-                _add_exclude(target)
-    except OSError as exc:
-        print(
-            f"cannot write {target}: {exc} (project and resources were registered)",
-            file=sys.stderr,
-        )
-        return 1
-
     print(f"project: {slug} ({pid})", file=out)
     print(f"resources: {', '.join(kinds)}", file=out)
-    print(f"rules: {rules}{note}", file=out)
-    print(_ensure_mcp(runner), file=out)
+    if guidance:
+        if write_rules(path, slug, shown_title, no_exclude=no_exclude, out=out):
+            return 1
+        print(_ensure_mcp(runner), file=out)
+    elif not interactive:
+        print(NOT_INSTALLED, file=out)
+
     if report is None:  # --sources none
-        return 0
-    return _import_dialogue(
-        api, pid, path, report, flags, out=out, ask=ask, interactive=interactive,
-        start_model=start_model, start_runner=start_runner, no_start_block=no_start_block,
-        remote=remote or [], no_remotes=no_remotes,
-    )
+        code = 0
+    else:
+        code = _import_dialogue(
+            api, pid, path, report, flags, out=out, ask=ask, interactive=interactive,
+            start_model=start_model, start_runner=start_runner, no_start_block=no_start_block,
+            remote=remote or [], no_remotes=no_remotes,
+        )
+    if code == 0 and interactive and not guidance:
+        # Asked last, so it never changes the import; the end of the input counts as no.
+        try:
+            yes = _prompt(ask, out, GUIDANCE_QUESTION, _yes_no_default)
+        except _Abort:
+            yes = False
+        if yes:
+            if write_rules(path, slug, shown_title, no_exclude=no_exclude, out=out):
+                return 1
+            print(_ensure_mcp(runner), file=out)
+        else:
+            print(NOT_INSTALLED, file=out)
+    return code
+
+
+NOT_INSTALLED = "guidance: not installed (trajectree guidance install <path> to add it)"
+GUIDANCE_QUESTION = (
+    "Install session guidance so Claude Code sessions in this folder record milestones through Trajectree? [y/N]: "
+)
+
+
+def _yes_no_default(answer: str) -> bool:
+    """Like _yes_no, but an empty answer is no."""
+    return _yes_no(answer) if answer else False
 
 
 class _Abort(Exception):
@@ -521,5 +480,5 @@ def _import_dialogue(
     run = result.get("starting_point_run")
     if run:
         print(f"starting-point run {run['id']} queued", file=out)
-    print("next ingest pass imports the history (trajectree ingest to run it now)", file=out)
+    print("history imports on the next ingest pass, then the project appears in the Inbox as due for inspection (trajectree ingest to run the pass now)", file=out)
     return 0
