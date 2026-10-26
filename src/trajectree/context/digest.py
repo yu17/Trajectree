@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import apsw
 
@@ -25,8 +26,10 @@ def _count(payload: dict[str, Any], key: str) -> int:
     return n if isinstance(n, int) and not isinstance(n, bool) else 0
 
 
-def _line(s: Signal) -> str:
-    day, p = s.t_start.strftime("%Y-%m-%d"), s.payload
+def _line(s: Signal, tz: str | None = None) -> str:
+    """One line for the signal; its day is taken in `tz` when given (else as stored, UTC)."""
+    start = s.t_start.astimezone(ZoneInfo(tz)) if tz else s.t_start
+    day, p = start.strftime("%Y-%m-%d"), s.payload
     if s.kind == "commits":
         return f"- {day} {_count(p, 'count')} commits: {'; '.join(_items(p.get('subjects')))}"
     if s.kind == "session":

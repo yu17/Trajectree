@@ -223,6 +223,76 @@ def in_window(rec: dict[str, Any], window: tuple[datetime, datetime] | None) -> 
     return ts is not None and window[0] <= ts <= window[1]
 
 
+class DigestParts:
+    """What a digest is built from, gathered one record at a time (see `render_digest`)."""
+
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+        self.tools: Counter[str] = Counter()
+        self.head: list[str] = []
+        self.tail: deque[str] = deque(maxlen=10)
+        self.texts = 0
+        self.last = ""
+        self.final = ""  # an explicit final message (Codex `task_complete`), preferred over `last`
+
+    def assistant_text(self, text: str) -> None:
+        self.texts += 1
+        self.last = text.strip()
+        short = " ".join(text.split())[:300]
+        if len(self.head) < 10:
+            self.head.append(short)
+        else:
+            self.tail.append(short)
+
+    def render(self, max_chars: int) -> str:
+        return render_digest(
+            self.prompts, self.tools, self.head, list(self.tail), self.texts, self.final or self.last, max_chars
+        )
+
+
+def _claude_digest_record(parts: DigestParts, rec: dict[str, Any]) -> None:
+    content = _dict(rec.get("message")).get("content")
+    if rec.get("type") == "user" and _is_prompt(rec):
+        parts.prompts.extend(" ".join(t.split())[:300] for t in _text_blocks(content))
+    elif rec.get("type") == "assistant":
+        for block in content if isinstance(content, list) else []:
+            block = _dict(block)
+            if block.get("type") == "tool_use":
+                parts.tools[_str(block.get("name")) or "unknown"] += 1
+        for text in _text_blocks(content):
+            parts.assistant_text(text)
+
+
+def digest_windows(
+    path: Path,
+    windows: Sequence[tuple[datetime, datetime] | None],
+    *,
+    max_chars: int,
+    add: Callable[[DigestParts, dict[str, Any]], None],
+) -> list[str]:
+    """One digest per window (None: the whole file), all from a single streaming read of `path`."""
+    parts = [DigestParts() for _ in windows]
+    with path.open("rb") as f:
+        for line in f:
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(rec, dict):
+                continue
+            for acc, window in zip(parts, windows):
+                if in_window(rec, window):
+                    add(acc, rec)
+    return [p.render(max_chars) for p in parts]
+
+
+def digest_transcript_windows(
+    path: Path, windows: Sequence[tuple[datetime, datetime] | None], *, max_chars: int = 12000
+) -> list[str]:
+    """`digest_transcript` for several windows of one transcript, reading the file once."""
+    return digest_windows(path, windows, max_chars=max_chars, add=_claude_digest_record)
+
+
 def digest_transcript(path: Path, *, max_chars: int = 12000, window: tuple[datetime, datetime] | None = None) -> str:
     """A compact Markdown digest of a transcript: prompts, tools used, assistant text, last message.
 
@@ -230,37 +300,7 @@ def digest_transcript(path: Path, *, max_chars: int = 12000, window: tuple[datet
     the file propagates. The raw JSONL never leaves this function. With a `window`, only records
     stamped inside it (inclusive) are digested.
     """
-    prompts: list[str] = []
-    tools: Counter[str] = Counter()
-    head: list[str] = []
-    tail: deque[str] = deque(maxlen=10)
-    texts = 0
-    last = ""
-    with path.open("rb") as f:
-        for line in f:
-            try:
-                rec = json.loads(line)
-            except Exception:
-                continue
-            if not isinstance(rec, dict) or not in_window(rec, window):
-                continue
-            content = _dict(rec.get("message")).get("content")
-            if rec.get("type") == "user" and _is_prompt(rec):
-                prompts.extend(" ".join(t.split())[:300] for t in _text_blocks(content))
-            elif rec.get("type") == "assistant":
-                for block in content if isinstance(content, list) else []:
-                    block = _dict(block)
-                    if block.get("type") == "tool_use":
-                        tools[_str(block.get("name")) or "unknown"] += 1
-                for text in _text_blocks(content):
-                    texts += 1
-                    last = text.strip()
-                    short = " ".join(text.split())[:300]
-                    if len(head) < 10:
-                        head.append(short)
-                    else:
-                        tail.append(short)
-    return render_digest(prompts, tools, head, list(tail), texts, last, max_chars)
+    return digest_transcript_windows(path, [window], max_chars=max_chars)[0]
 
 
 def render_digest(

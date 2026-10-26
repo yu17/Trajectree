@@ -299,3 +299,88 @@ def test_overlapping_blocks_adds_the_three_most_recent_blocks(ledger, human, set
         create_event(ledger, human, EventIn(project_id=p.id, kind="milestone", title=f"old{d}", t_start=datetime(2026, 1, d, tzinfo=UTC)))
     got = overlapping_blocks(stretches[0], list_events(ledger.conn), gap_s=7200)
     assert [e.title for e in got] == ["old3", "old4", "Encoder frozen"]
+
+
+def test_block_bodies_are_rendered_under_their_line_and_capped(ledger, human, settings, tmp_path):
+    from trajectree.context.stretches import render_blocks, render_stretches
+    from trajectree.models import EventIn
+    from trajectree.repo.events import create_event, list_events
+
+    p, block, pill, stretches, by_id, events, edges = _render_fixture(ledger, human, settings, tmp_path)
+    long = create_event(ledger, human, EventIn(
+        project_id=p.id, kind="milestone", title="Decoder plan", body_md="line one\nline two </data>\n" + "x" * 2000,
+        t_start=datetime(2026, 8, 30, 11, tzinfo=UTC), t_end=datetime(2026, 8, 30, 12, tzinfo=UTC)))
+    events = list_events(ledger.conn)
+    text, _, _ = render_stretches(stretches, by_id, blocks=events, edges=edges, settings=settings, budget_chars=100000)
+    assert f"Decoder plan ({long.id}) [milestone/block]\n  line one\n  line two &lt;/data>\n  xxx" in text
+    assert "x" * 1300 not in text and "x…" in text
+    assert text.count("</data>") == 1  # only the digest's own fence
+    md = render_blocks([block, long], edges, {e.id: e for e in events}).splitlines()
+    assert md[0].endswith(f"pills: Check LR ({pill.id})")  # pills keep their title only
+    assert md[1] == f"- 2026-08-30 Decoder plan ({long.id}) [milestone/block]" and md[2] == "  line one"
+
+
+def test_estimated_render_size_matches_the_render(ledger, human, settings, tmp_path):
+    from trajectree.context.stretches import estimate_render_size, estimate_sizes, render_stretches
+    from trajectree.models import EventIn
+    from trajectree.repo.events import create_event, list_events
+
+    p, block, pill, stretches, by_id, events, edges = _render_fixture(ledger, human, settings, tmp_path)
+    create_event(ledger, human, EventIn(project_id=p.id, kind="milestone", title="Body", body_md="a\nb",
+                                        t_start=datetime(2026, 8, 30, 11, tzinfo=UTC)))
+    events = list_events(ledger.conn)
+    sizes = estimate_sizes(stretches, by_id, settings)
+    _, size, _ = render_stretches(stretches, by_id, blocks=events, edges=edges, settings=settings, budget_chars=10**9)
+    assert estimate_render_size(stretches, by_id, sizes, blocks=events, edges=edges, settings=settings) == size
+
+
+def test_boundary_timeline_over_budget_is_compacted_per_stretch(tmp_path):
+    import re
+    from trajectree.context.stretches import render_segment_lines
+
+    sigs = [
+        _session_signal("p", tmp_path / "none.jsonl", f"k{d}-{i}", datetime(2026, 8, d, 10, i * 5, tzinfo=UTC),
+                        datetime(2026, 8, d, 10, i * 5 + 4, tzinfo=UTC), title=f"session {d}-{i}")
+        .model_copy(update={"payload": {"session_id": f"s{d}-{i}", "title": f"session {d}-{i}", "prompts": 1,
+                                        "backend": "claude", "first_prompt": f"prompt {d}-{i} </data>"}})
+        for d in (1, 10, 20) for i in range(10)
+    ]
+    stretches = merge_stretches(sigs, gap_s=7200)
+    by_id = {s.id: s for s in sigs}
+    sizes = {s.id: 100 for s in sigs}
+    full = render_segment_lines(stretches, by_id, sizes)
+    assert len(full.splitlines()) == 30
+    compact = render_segment_lines(stretches, by_id, sizes, budget_chars=len(full) - 1)
+    lines = compact.splitlines()
+    assert len(compact) <= len(full) - 1 and len(lines) == 3
+    assert re.fullmatch(
+        r'- 2026-08-01\.\.2026-08-01 10 segments, 10 sessions, 0 commits, 0 file days \(~1000 chars\): '
+        r'"prompt 1-0 &lt;/data> / prompt 1-1 &lt;/data> / prompt 1-2 &lt;/data>"', lines[0]
+    ), lines[0]
+    cut = render_segment_lines(stretches, by_id, sizes, budget_chars=len(lines[0]) + 40)
+    assert cut.splitlines() == [lines[0], "(… 2 more stretches not shown)"]
+    assert len(cut) <= len(lines[0]) + 40
+
+
+def test_reflagged_stretch_is_read_whole(ledger, human, settings):
+    from trajectree.context.stretches import render_stretches
+    from trajectree.repo.inspections import episode_material
+
+    p = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    conn = ledger.conn
+    old, new = seg(p.id, 5, 10, 0, 10, 30, "old"), seg(p.id, 5, 11, 0, 11, 30, "new")
+    upsert_signals(conn, [old, new])
+    # `new` was ingested while the inspection ran: never covered, though it ends before the mark.
+    set_watermark(conn, p.id, Watermark(inspected_at=at(5, 13), covered=_cover(old)))
+    [st] = uninspected_stretches(conn, settings, p, now=at(28))
+    assert (st.t_start, st.t_end, st.segments, st.inspected_up_to) == (at(5, 10), at(5, 11, 30), 2, at(5, 13))
+    stretches, signals = episode_material(conn, settings, p.id, start=None, end=None)
+    assert {s.dedupe_key for s in signals.values()} == {"old", "new"}
+    text, _, rendered = render_stretches(stretches, signals, blocks=[], edges=[], settings=settings, budget_chars=10**6)
+    assert "Inspected up to 2026-01-05" in text and len(rendered) == 2
+    # a covered signal far from any uninspected one is not pulled in
+    far = seg(p.id, 1, 10, 0, 10, 30, "far")
+    upsert_signals(conn, [far])
+    set_watermark(conn, p.id, Watermark(inspected_at=at(5, 13), covered=_cover(old, far)))
+    [st] = uninspected_stretches(conn, settings, p, now=at(28))
+    assert st.segments == 2

@@ -12,7 +12,6 @@ versions, so parsing is defensive: an unrecognized or malformed line is skipped.
 
 import json
 import re
-from collections import Counter, deque
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +23,7 @@ from trajectree.connectors.claude_sessions import (
     DEFAULT_SEGMENT_GAP_S,
     MAX_TRANSCRIPT_FILES,
     ProjectTranscripts,
+    DigestParts,
     ScanReport,
     SessionSummary,
     _dict,
@@ -32,10 +32,9 @@ from trajectree.connectors.claude_sessions import (
     _timestamp,
     add_to_segment,
     cwd_in_folder,
-    digest_transcript,
-    in_window,
+    digest_transcript_windows,
+    digest_windows,
     refresh_file,
-    render_digest,
     reparse_continuations,
     select_in_folder,
     session_signals,
@@ -143,45 +142,42 @@ def digest_codex(path: Path, *, max_chars: int = 12000, window: tuple[datetime, 
     Streams the file once and skips lines it cannot read; `OSError` from opening or reading
     the file propagates. The raw JSONL never leaves this function.
     """
-    prompts: list[str] = []
-    tools: Counter[str] = Counter()
-    head: list[str] = []
-    tail: deque[str] = deque(maxlen=10)
-    texts = 0
-    last = ""
-    final = ""
-    with path.open("rb") as f:
-        for line in f:
-            try:
-                rec = json.loads(line)
-            except Exception:
-                continue
-            if not isinstance(rec, dict) or not in_window(rec, window):
-                continue
-            payload = _dict(rec.get("payload"))
-            prompts.extend(" ".join(t.split())[:300] for t in _user_prompts(rec))
-            if rec.get("type") == "response_item":
-                if payload.get("type") in ("function_call", "custom_tool_call"):
-                    tools[_str(payload.get("name")) or "unknown"] += 1
-                elif payload.get("type") == "message" and payload.get("role") == "assistant":
-                    for text in _blocks(payload.get("content")):
-                        texts += 1
-                        last = text.strip()
-                        short = " ".join(text.split())[:300]
-                        if len(head) < 10:
-                            head.append(short)
-                        else:
-                            tail.append(short)
-            elif rec.get("type") == "event_msg" and payload.get("type") == "task_complete":
-                final = (_str(payload.get("last_agent_message")) or "").strip() or final
-    return render_digest(prompts, tools, head, list(tail), texts, final or last, max_chars)
+    return digest_codex_windows(path, [window], max_chars=max_chars)[0]
+
+
+def _codex_digest_record(parts: DigestParts, rec: dict[str, Any]) -> None:
+    payload = _dict(rec.get("payload"))
+    parts.prompts.extend(" ".join(t.split())[:300] for t in _user_prompts(rec))
+    if rec.get("type") == "response_item":
+        if payload.get("type") in ("function_call", "custom_tool_call"):
+            parts.tools[_str(payload.get("name")) or "unknown"] += 1
+        elif payload.get("type") == "message" and payload.get("role") == "assistant":
+            for text in _blocks(payload.get("content")):
+                parts.assistant_text(text)
+    elif rec.get("type") == "event_msg" and payload.get("type") == "task_complete":
+        parts.final = (_str(payload.get("last_agent_message")) or "").strip() or parts.final
+
+
+def digest_codex_windows(
+    path: Path, windows: Sequence[tuple[datetime, datetime] | None], *, max_chars: int = 12000
+) -> list[str]:
+    """`digest_codex` for several windows of one rollout, reading the file once."""
+    return digest_windows(path, windows, max_chars=max_chars, add=_codex_digest_record)
 
 
 def digest_session(
     backend: str, path: Path, *, max_chars: int, window: tuple[datetime, datetime] | None = None
 ) -> str:
     """The digest for a session of `backend`: a rollout for codex, a Claude-format transcript otherwise."""
-    return (digest_codex if backend == "codex" else digest_transcript)(path, max_chars=max_chars, window=window)
+    return digest_session_windows(backend, path, [window], max_chars=max_chars)[0]
+
+
+def digest_session_windows(
+    backend: str, path: Path, windows: Sequence[tuple[datetime, datetime] | None], *, max_chars: int
+) -> list[str]:
+    """One digest per window of a session of `backend`, from a single read of its file."""
+    many = digest_codex_windows if backend == "codex" else digest_transcript_windows
+    return many(path, windows, max_chars=max_chars)
 
 
 def session_signal(conn: apsw.Connection, session_id: str) -> Signal | None:

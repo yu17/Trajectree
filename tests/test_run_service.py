@@ -1061,7 +1061,7 @@ def test_inspect_material_is_rendered_outside_the_lock(ledger, human, settings, 
     run = s.inspect(InspectRequest(project="a", model=MODEL))
     done = s.execute(run.id)
     assert done.status == "ok", done.error
-    assert seen and all(seen)  # once to size the material in `inspect`, once to render it in the run
+    assert seen == [True]  # rendered once, in the run; `inspect` only sizes it from the digest sizes
     assert "### Stretch 1: 2026-01-05" in prompt_file.read_text()
 
 
@@ -1250,7 +1250,8 @@ def test_signal_ingested_during_inspection_stays_due(ledger, human, settings, lo
     assert wm.inspected_at == _at(5, 13) and set(wm.covered) == {"s1", "s2"}
     assert "a" in _due_slugs(ledger, settings)
     [st] = _stretches(ledger, settings, p)
-    assert (st.t_start, st.t_end, st.segments) == (_at(5, 11, 20), _at(5, 11, 40), 1)
+    # Re-flagged by the late segment, the stretch is read whole: s1 and s2 come back for context.
+    assert (st.t_start, st.t_end, st.segments, st.inspected_up_to) == (_at(5, 10), _at(5, 13), 3, _at(5, 13))
 
 
 def test_series_that_cannot_queue_its_next_episode_records_why(ledger, human, settings, logged_in, tmp_path):
@@ -1324,3 +1325,83 @@ def test_inspections_report_the_active_run_and_episode(ledger, human, settings, 
     [due] = due_projects(ledger.conn, settings, now=utcnow())
     assert (due.active_run, due.episode, due.episodes) == (run.id, 1, 1)
     assert find_active(ledger.conn, p.id, "inspect").id == run.id
+
+
+def _with_prompt_file(s, settings):
+    prompt_file = settings.claude_config_dir / "prompt.txt"  # the confined fake may write only there
+    s.base_env = {**s.base_env, "FAKE_CLAUDE_PROMPT_FILE": str(prompt_file)}
+    return prompt_file
+
+
+def test_series_validates_episodes_in_local_time(ledger, human, settings, logged_in, tmp_path):
+    settings.tz = "America/Chicago"
+    settings.inspect_budget_chars = 150  # the timeline fits, the whole material does not
+    p = _inspect_project(ledger, human, tmp_path)
+    t = datetime(2026, 9, 4, 0, 30, tzinfo=UTC)  # 19:30 on Sep 3 in Chicago
+    upsert_signals(ledger.conn, [SignalIn(project_id=p.id, kind="session", t_start=t, t_end=t + timedelta(minutes=20),
+                                          payload={"title": "evening", "prompts": 1}, dedupe_key="s1")])
+    [due] = due_projects(ledger.conn, settings, now=utcnow())
+    assert (due.first_day, due.last_day) == ("2026-09-03", "2026-09-03")
+    answer = json.dumps({"answer": "one", "episodes": [{"start": "2026-09-03", "end": "2026-09-03", "label": "evening"}]})
+    s = isvc(ledger, settings, structured=answer)
+    prompt_file = _with_prompt_file(s, settings)
+    b = s.inspect(InspectRequest(project="a", model=MODEL))
+    assert b.kind == "inspect_boundaries"
+    assert s.execute(b.id).status == "ok"
+    text = prompt_file.read_text()
+    assert "- 2026-09-03 19:30–19:50 claude session" in text and "2026-09-04" not in text
+    stored = get_run(ledger.conn, b.id)
+    assert stored.status == "ok", stored.error
+    assert stored.props["episodes_json"][0]["start"] == t.isoformat()
+    [ep] = _queued_inspect_runs(ledger)
+    _set_structured(s, PROPOSALS_ANSWER)
+    assert s.execute(ep.id).status == "ok"
+    assert "### Stretch 1: 2026-09-03 → 2026-09-03" in prompt_file.read_text()  # its segment is cut by the tiny budget
+
+
+def test_boundary_pass_planned_while_live_gets_its_segment_lines(ledger, human, settings, logged_in, tmp_path):
+    from trajectree.repo.sessions import start_session
+    p = _inspect_project(ledger, human, tmp_path)
+    _three_stretches(ledger, p)
+    _episode_budget(ledger, settings, p)
+    s = isvc(ledger, settings, structured=TWO_EPISODES)
+    prompt_file = _with_prompt_file(s, settings)
+    b = s.inspect(InspectRequest(project="a", model=MODEL))
+    assert b.kind == "inspect_boundaries"
+    # The owner starts a session in the project before the boundary pass is planned.
+    start_session(ledger.conn, session_id="x", cwd="/w/a", transcript_path=None, project_id=p.id, source="hook", now=utcnow())
+    assert s.execute(b.id).status == "ok"
+    text = prompt_file.read_text()
+    assert '- 2026-01-05 10:00–11:00 claude session "s1"' in text and '"s4"' in text
+
+
+def test_inspect_reads_each_transcript_once(ledger, human, settings, logged_in, tmp_path, monkeypatch):
+    from tests.test_claude_sessions import CWD, SID, rec_assistant, rec_user, write_transcript
+    p = _inspect_project(ledger, human, tmp_path)
+    path = write_transcript(tmp_path / "home", CWD, SID, [
+        rec_user("2026-01-05T10:00:00.000Z", text="first"), rec_assistant("2026-01-05T10:30:00.000Z"),
+        rec_user("2026-01-05T13:00:00.000Z", text="second"), rec_assistant("2026-01-05T13:30:00.000Z"),
+    ])
+    payload = {"title": "t", "prompts": 1, "transcript_path": str(path), "backend": "claude"}
+    upsert_signals(ledger.conn, [
+        SignalIn(project_id=p.id, kind="session", t_start=_at(5, 10), t_end=_at(5, 10, 30), payload=payload, dedupe_key="a"),
+        SignalIn(project_id=p.id, kind="session", t_start=_at(5, 13), t_end=_at(5, 13, 30), payload=payload, dedupe_key="b"),
+    ])
+    opened = []
+    real_open = Path.open
+    def spy(self, *a, **kw):
+        if self == path:
+            opened.append(1)
+        return real_open(self, *a, **kw)
+    monkeypatch.setattr(Path, "open", spy)
+    run = isvc(ledger, settings).inspect(InspectRequest(project="a", model=MODEL))
+    assert run.kind == "inspect" and len(opened) == 1
+
+
+def test_inspect_while_live_says_so(ledger, human, settings, logged_in, tmp_path):
+    from trajectree.repo.sessions import start_session
+    p = _inspect_project(ledger, human, tmp_path)
+    upsert_signals(ledger.conn, [_seg(p.id, 5, 10, 11, "s1")])
+    start_session(ledger.conn, session_id="x", cwd="/w/a", transcript_path=None, project_id=p.id, source="hook", now=utcnow())
+    with pytest.raises(NothingToInspect, match="^a session is live in a; inspect once it has been quiet for 120 minutes$"):
+        isvc(ledger, settings).inspect(InspectRequest(project="a", model=MODEL))

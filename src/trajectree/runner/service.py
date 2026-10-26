@@ -27,7 +27,7 @@ from trajectree.auth.tokens import mint_token, revoke_token
 from trajectree.config import Settings
 from trajectree.connectors.codex_sessions import session_signal
 from trajectree.context.history import collect_history, session_history
-from trajectree.context.stretches import estimate_sizes, render_blocks, render_stretches
+from trajectree.context.stretches import estimate_render_size, estimate_sizes, render_blocks, render_stretches
 from trajectree.db.ledger import Ledger
 from trajectree.ids import new_id
 from trajectree.importing import local_midnight
@@ -42,9 +42,10 @@ from trajectree.repo.inspections import (
     covered_map,
     episode_material,
     get_watermark,
+    project_is_live,
     reset_watermark_since,
     set_watermark,
-    uninspected_signals,
+    uninspected_material,
     uninspected_stretches,
 )
 from trajectree.repo.projects import get_project_by_slug, resolve_project_ref
@@ -227,17 +228,23 @@ class RunService:
             before = get_watermark(conn, project.id)
             if request.since is not None:
                 reset_watermark_since(conn, project.id, local_midnight(request.since, self.settings.tz))
-            stretches = uninspected_stretches(conn, self.settings, project, now=now)
+            stretches, signals = uninspected_material(conn, self.settings, project, now=now)
             if not stretches:
                 if request.since is not None:
                     set_watermark(conn, project.id, before)  # nothing started: leave it as it was
+                if project_is_live(conn, self.settings, project.id, now=now):
+                    minutes = max(1, self.settings.segment_gap_s // 60)
+                    raise NothingToInspect(
+                        project.slug,
+                        f"a session is live in {project.slug}; inspect once it has been quiet for {minutes} minutes",
+                    )
                 raise NothingToInspect(project.slug)
-            signals = {s.id: s for s in uninspected_signals(conn, project.id, get_watermark(conn, project.id))}
             project_events = events.list_events(conn, project_ids=[project.id])  # blocks and pills
             edges = list_edges(conn, event_ids=[e.id for e in project_events])
+        # Each transcript is read once, here; the full size follows from the digest sizes.
         sizes = estimate_sizes(stretches, signals, self.settings)
-        _, size, _ = render_stretches(
-            stretches, signals, blocks=project_events, edges=edges, settings=self.settings, budget_chars=10**9
+        size = estimate_render_size(
+            stretches, signals, sizes, blocks=project_events, edges=edges, settings=self.settings
         )
         budget = self.settings.inspect_budget_chars
         choice = {"project": project.id, "runner": request.runner, "model": request.model}
@@ -282,7 +289,9 @@ class RunService:
             budget_chars=self.settings.inspect_budget_chars,  # an episode over the budget is cut
         )
         blocks = sorted((e for e in project_events if e.tier == "block"), key=lambda e: (e.t_end or e.t_start, e.id))
-        blocks_md = render_blocks(blocks[-RECENT_BLOCKS:], edges, {e.id: e for e in project_events})
+        blocks_md = render_blocks(
+            blocks[-RECENT_BLOCKS:], edges, {e.id: e for e in project_events}, tz=self.settings.tz
+        )
         with self.ledger.locked() as conn:
             current = get_run(conn, run.id) or run
             update_run(

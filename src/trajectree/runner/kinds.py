@@ -25,7 +25,7 @@ from trajectree.context.pack import build_context_pack
 from trajectree.importing import IMPORT_SOURCES
 from trajectree.models import RUNNER_PATTERN, Delivery, Project, ReportKind, Run, RunKind
 from trajectree.repo import NotFound
-from trajectree.repo.inspections import get_watermark, uninspected_signals, uninspected_stretches
+from trajectree.repo.inspections import get_watermark, uninspected_material
 from trajectree.repo.projects import get_project_by_slug, list_projects, resolve_project_ref
 from trajectree.repo.resources import list_resources
 from trajectree.repo.review import pending_txns
@@ -603,7 +603,7 @@ def _plan_inspect(
         raise NotFound("inspection material missing")
     project = resolve_project_ref(conn, run.project_id or request.project)
     wm = get_watermark(conn, project.id)
-    note = f" Work before {_day(wm.inspected_at)} was inspected already." if wm.inspected_at else ""
+    note = f" Work before {_day(wm.inspected_at, settings.tz)} was inspected already." if wm.inspected_at else ""
     pack = build_context_pack(
         conn,
         project_ids=[project.id],
@@ -616,7 +616,7 @@ def _plan_inspect(
         {
             "project_title": fence_safe(project.title),
             "project_slug": project.slug,
-            "today": _day(now),
+            "today": _day(now, settings.tz),
             "inspected_note": note,
             "blocks": blocks_md,  # rendered by render_blocks, already fence-safe
             "context_pack": fence_safe(pack.markdown),
@@ -645,17 +645,20 @@ def _plan_inspect_boundaries(
     conn: apsw.Connection, settings: Settings, run: Run, request: InspectBoundariesRequest, now: datetime
 ) -> RunPlan:
     project = resolve_project_ref(conn, run.project_id or request.project)
-    stretches = uninspected_stretches(conn, settings, project, now=now)
-    signals = {s.id: s for s in uninspected_signals(conn, project.id, get_watermark(conn, project.id))}
+    # Planned whatever the owner does meanwhile: the series was started on settled stretches.
+    stretches, signals = uninspected_material(conn, settings, project, now=now, live_check=False)
     raw = run.props.get("sizes")
     sizes = {k: v for k, v in raw.items() if isinstance(v, int)} if isinstance(raw, dict) else {}
+    segments = render_segment_lines(  # fence-safe lines, capped at the budget
+        stretches, signals, sizes, tz=settings.tz, budget_chars=settings.inspect_budget_chars
+    )
     prompt = render_prompt(
         load_prompt(settings, "inspect_boundaries"),
         {
             "project_title": fence_safe(project.title),
             "project_slug": project.slug,
-            "today": _day(now),
-            "segments": render_segment_lines(stretches, signals, sizes),  # fence-safe lines
+            "today": _day(now, settings.tz),
+            "segments": segments,
             "budget": str(request.budget_chars),
         },
     )

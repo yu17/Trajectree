@@ -28,10 +28,11 @@ class InspectionActive(Exception):
 
 
 class NothingToInspect(Exception):
-    """The project has no settled uninspected stretch."""
+    """The project has no settled uninspected stretch; `detail` says why when it is not just empty
+    (a session is live)."""
 
-    def __init__(self, slug: str) -> None:
-        super().__init__(f"nothing to inspect for {slug}")
+    def __init__(self, slug: str, detail: str | None = None) -> None:
+        super().__init__(detail or f"nothing to inspect for {slug}")
         self.slug = slug
 
 

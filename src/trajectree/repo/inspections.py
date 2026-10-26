@@ -7,6 +7,7 @@ so advancing it creates no ledger transaction.
 import json
 from datetime import datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import apsw
 
@@ -80,6 +81,10 @@ def uninspected_signals(conn: apsw.Connection, project_id: str, wm: Watermark) -
                 f"SELECT {', '.join(cols)} FROM signal WHERE id IN ({', '.join('?' * len(chunk))})", chunk
             ).fetchall()
         rows.sort(key=lambda r: (r[cols.index("t_start")], r[cols.index("id")]))
+    return _rows_to_signals(cols, rows)
+
+
+def _rows_to_signals(cols: list[str], rows) -> list[Signal]:
     out = []
     for row in rows:
         data = dict(zip(cols, row))
@@ -98,19 +103,70 @@ def project_is_live(conn: apsw.Connection, settings: Settings, project_id: str, 
     )
 
 
+def _covered_near(
+    conn: apsw.Connection, project_id: str, stretches: list[Stretch], *, gap_s: int, exclude: set[str]
+) -> list[Signal]:
+    """The project's activity signals (other than `exclude`) overlapping some stretch widened by `gap_s`."""
+    cols = table_columns(conn, "signal")
+    marks = ", ".join("?" * len(_KINDS))
+    gap = timedelta(seconds=gap_s)
+    found: dict[str, Signal] = {}
+    for st in stretches:
+        rows = conn.execute(
+            f"SELECT {', '.join(cols)} FROM signal WHERE project_id = ? AND kind IN ({marks})"
+            " AND t_start <= ? AND coalesce(t_end, t_start) >= ?",
+            [project_id, *_KINDS, to_db(st.t_end + gap), to_db(st.t_start - gap)],
+        )
+        for s in _rows_to_signals(cols, rows):
+            if s.id not in exclude:
+                found[s.id] = s
+    return list(found.values())
+
+
+def stretch_material(
+    conn: apsw.Connection, settings: Settings, project_id: str
+) -> tuple[list[Stretch], dict[str, Signal]]:
+    """The project's uninspected stretches, read whole, with their signals by id.
+
+    A stretch re-flagged by new work also takes in the covered signals of the project within a gap
+    of it (the part already inspected, shown for context and so still covered after the run); such
+    a stretch is marked `inspected_up_to`."""
+    wm = get_watermark(conn, project_id)
+    signals = uninspected_signals(conn, project_id, wm)
+    gap_s = settings.segment_gap_s
+    stretches = merge_stretches(signals, gap_s=gap_s, inspected_at=wm.inspected_at)
+    if wm.inspected_at is None or not stretches:
+        return stretches, {s.id: s for s in signals}
+    context = _covered_near(conn, project_id, stretches, gap_s=gap_s, exclude={s.id for s in signals})
+    if context:
+        stretches = merge_stretches(signals + context, gap_s=gap_s, inspected_at=wm.inspected_at)
+        ids = {s.id for s in context}
+        for st in stretches:
+            if any(sid in ids for sid in st.signal_ids):
+                st.inspected_up_to = wm.inspected_at
+    return stretches, {s.id: s for s in signals + context}
+
+
+def uninspected_material(
+    conn: apsw.Connection, settings: Settings, project: Project, *, now: datetime, live_check: bool = True
+) -> tuple[list[Stretch], dict[str, Signal]]:
+    """Settled stretches (quiet for a full gap) not yet inspected, with their signals by id; none
+    while a session is live (unless `live_check` is False: a running series and its boundary pass
+    work from the settled stretches whatever the owner does meanwhile)."""
+    if live_check and project_is_live(conn, settings, project.id, now=now):
+        return [], {}
+    stretches, signals = stretch_material(conn, settings, project.id)
+    settled = now - timedelta(seconds=settings.segment_gap_s)
+    kept = [s for s in stretches if s.t_end <= settled]
+    wanted = {sid for st in kept for sid in st.signal_ids}
+    return kept, {sid: s for sid, s in signals.items() if sid in wanted}
+
+
 def uninspected_stretches(
     conn: apsw.Connection, settings: Settings, project: Project, *, now: datetime, live_check: bool = True
 ) -> list[Stretch]:
-    """Settled stretches (quiet for a full gap) not yet inspected; none while a session is live
-    (unless `live_check` is False: a running series checks its episodes against the settled ones)."""
-    if live_check and project_is_live(conn, settings, project.id, now=now):
-        return []
-    wm = get_watermark(conn, project.id)
-    stretches = merge_stretches(
-        uninspected_signals(conn, project.id, wm), gap_s=settings.segment_gap_s, inspected_at=wm.inspected_at
-    )
-    settled = now - timedelta(seconds=settings.segment_gap_s)
-    return [s for s in stretches if s.t_end <= settled]
+    """The stretches of `uninspected_material`."""
+    return uninspected_material(conn, settings, project, now=now, live_check=live_check)[0]
 
 
 def episode_material(
@@ -123,15 +179,14 @@ def episode_material(
 ) -> tuple[list[Stretch], dict[str, Signal]]:
     """The uninspected stretches that start inside `start`..`end` (either bound open when None),
     with their signals by id: what one `inspect` run reads."""
-    wm = get_watermark(conn, project_id)
-    signals = uninspected_signals(conn, project_id, wm)
+    all_stretches, signals = stretch_material(conn, settings, project_id)
     stretches = [
         st
-        for st in merge_stretches(signals, gap_s=settings.segment_gap_s, inspected_at=wm.inspected_at)
+        for st in all_stretches
         if (start is None or st.t_start >= start) and (end is None or st.t_start <= end)
     ]
     wanted = {sid for st in stretches for sid in st.signal_ids}
-    return stretches, {s.id: s for s in signals if s.id in wanted}
+    return stretches, {sid: s for sid, s in signals.items() if sid in wanted}
 
 
 def covered_map(signals: list[Signal]) -> dict[str, str]:
@@ -190,6 +245,7 @@ def active_inspection(conn: apsw.Connection, project_id: str) -> Run | None:
 
 def due_projects(conn: apsw.Connection, settings: Settings, *, now: datetime) -> list[InspectionDue]:
     out: list[InspectionDue] = []
+    zone = ZoneInfo(settings.tz)  # the days shown to the owner are local
     for p in projects.list_projects(conn, status="active"):
         st = uninspected_stretches(conn, settings, p, now=now)
         if not st:
@@ -201,8 +257,8 @@ def due_projects(conn: apsw.Connection, settings: Settings, *, now: datetime) ->
                 slug=p.slug,
                 title=p.title,
                 stretches=len(st),
-                first_day=st[0].t_start.strftime("%Y-%m-%d"),
-                last_day=st[-1].t_end.strftime("%Y-%m-%d"),
+                first_day=st[0].t_start.astimezone(zone).strftime("%Y-%m-%d"),
+                last_day=st[-1].t_end.astimezone(zone).strftime("%Y-%m-%d"),
                 sessions=sum(s.sessions for s in st),
                 commits=sum(s.commits for s in st),
                 file_days=sum(s.file_days for s in st),
