@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 import pytest
-from trajectree.runner.argv import claude_argv, codex_argv, mask, mcp_config_json, run_env, run_secrets
+from trajectree.runner.argv import claude_argv, codex_argv, codex_prompt, mask, mcp_config_json, run_env, run_secrets
 from trajectree.runner.spec import MissingCredentials, RunSpec, ToolPolicy
 
 def spec(**over):
@@ -46,7 +46,11 @@ def test_codex_argv():
     assert 'mcp_servers.trajectree.url="http://127.0.0.1:8742/mcp"' in argv
     assert 'mcp_servers.trajectree.bearer_token_env_var="TRAJECTREE_RUN_TOKEN"' in argv
     assert argv[argv.index("-o") + 1] == "/tmp/last.md" and argv[argv.index("--output-schema") + 1] == "/tmp/s.json"
-    assert argv[-1] == "Sys.\n\nQ?" and argv[argv.index("-m") + 1] == "gpt-5"
+    # `-` makes codex read the prompt from stdin: no prompt text on argv (Linux caps one argument at 128 KiB)
+    assert argv[-1] == "-" and argv[argv.index("-m") + 1] == "gpt-5"
+    assert not any("Q?" in a or "Sys." in a for a in argv)
+    assert codex_prompt(spec(runner="codex", backend="codex", system_prompt="Sys.")) == "Sys.\n\nQ?"
+    assert codex_prompt(spec(runner="codex", backend="codex")) == "Q?"
 
 def test_codex_argv_uses_danger_full_access():
     argv = codex_argv(spec(runner="codex", backend="codex"), binary="codex", schema_path=None,

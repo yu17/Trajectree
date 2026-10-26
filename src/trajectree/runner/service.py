@@ -59,7 +59,7 @@ from trajectree.repo.runs import (
     spent_usd,
     update_run,
 )
-from trajectree.runner.argv import claude_argv, codex_argv, mask_text, mcp_config_json, run_env, run_secrets
+from trajectree.runner.argv import claude_argv, codex_argv, codex_prompt, mask_text, mcp_config_json, run_env, run_secrets
 from trajectree.runner.catalog import Resolved, load_catalog, resolve_model
 from trajectree.runner.confine import CONFINE_FAILED_EXIT, LandlockUnavailable, confine_argv, landlock_abi
 from trajectree.runner.credentials import cli_version, ensure_cfg_dirs, load_oauth_token
@@ -423,16 +423,17 @@ class RunService:
                     run_dir=run_dir, tmp_dir=tmp_dir, cwd=plan.cwd,
                 )
                 last_path = run_dir / "last.md"
-                stdin_text: str | None = None
+                # The prompt goes on stdin for every runner: it stays out of the process table and
+                # has no argument-length limit. The run token lives in a private file (Claude) or
+                # the env (Codex).
                 if run.runner == "codex":
                     schema_path = run_dir / "schema.json"
                     schema_path.write_text(json.dumps(plan.json_schema))
                     argv = codex_argv(
                         spec, binary=self.settings.codex_bin, schema_path=schema_path, last_message_path=last_path
                     )
+                    stdin_text = codex_prompt(spec)
                 else:
-                    # The run token lives in a private file and the prompt goes on stdin, so
-                    # neither shows up in the process table.
                     _write_private(mcp_path, mcp_config_json(spec))
                     argv = claude_argv(spec, binary=self.settings.claude_bin, mcp_config_path=mcp_path.absolute())
                     stdin_text = spec.prompt

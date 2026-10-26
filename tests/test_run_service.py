@@ -914,6 +914,27 @@ def test_codex_last_message_fifo_returns_promptly(ledger, settings):
     assert run.status == "failed" and time.monotonic() - t0 < 5
 
 
+def test_codex_prompt_goes_on_stdin_whole_and_confined(ledger, settings, monkeypatch):
+    big = "x" * (200 * 1024)  # over Linux's 128 KiB limit for one argv element
+    real_plan = service_mod.plan_run
+    monkeypatch.setattr(service_mod, "plan_run", lambda *a, **kw: (p := real_plan(*a, **kw)).model_copy(update={"prompt": p.prompt + big}))
+    seen = {}
+    def capture(argv, *, log_path, stdin_text=None, **kw):
+        seen.update(argv=argv, stdin=stdin_text)
+        Path(argv[argv.index("-o") + 1]).write_text('{"answer": "A", "proposals": []}')
+        log_path.write_text("")
+        return RunOutcome(exit_code=0, timed_out=False, stdout="", stderr_tail="", log_path=str(log_path), duration_ms=1)
+    s = RunService(ledger, settings, launch=capture, version=lambda b: None, base_env={"PATH": os.environ["PATH"]})
+    run = s.execute(s.enqueue(AskRequest(question="the question", model="gpt-6.1-sol")).id)
+    assert run.status == "ok", run.error
+    argv = seen["argv"]
+    assert argv[:4] == [sys.executable, "-I", "-m", "trajectree.runner.confine"]
+    runner = argv[argv.index("--") + 1:]
+    assert runner[:2] == [settings.codex_bin, "exec"] and runner[-1] == "-"
+    assert not any("the question" in a or "xxxx" in a for a in argv)
+    assert "the question" in seen["stdin"] and seen["stdin"].endswith(big)
+
+
 def test_codex_regular_last_message_is_the_result(ledger, settings):
     s = RunService(ledger, settings, launch=_codex_planting(lambda p: p.write_text('{"answer": "A", "proposals": []}')),
                    version=lambda b: None, base_env={"PATH": os.environ["PATH"]})

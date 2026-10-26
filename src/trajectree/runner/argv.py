@@ -62,7 +62,14 @@ def claude_argv(spec: RunSpec, *, binary: str, mcp_config_path: Path) -> list[st
     return argv
 
 
+def codex_prompt(spec: RunSpec) -> str:
+    """What a Codex run reads on stdin: Codex takes no separate system prompt, so it leads."""
+    return f"{spec.system_prompt}\n\n{spec.prompt}" if spec.system_prompt else spec.prompt
+
+
 def codex_argv(spec: RunSpec, *, binary: str, schema_path: Path | None, last_message_path: Path) -> list[str]:
+    """The headless argv. The prompt argument `-` makes `codex exec` read it from stdin (see
+    `codex_prompt`), so it never meets the 128 KiB limit on one argument; the token stays in the env."""
     argv = [
         binary, "exec", "--json", "--ephemeral", "--skip-git-repo-check",
         "--sandbox", "danger-full-access",  # the Landlock wrapper is the isolation (see runner/confine.py)
@@ -75,8 +82,7 @@ def codex_argv(spec: RunSpec, *, binary: str, schema_path: Path | None, last_mes
         argv += ["--output-schema", str(schema_path)]
     if spec.model:
         argv += ["-m", spec.model]
-    prompt = f"{spec.system_prompt}\n\n{spec.prompt}" if spec.system_prompt else spec.prompt
-    return argv + [prompt]
+    return argv + ["-"]
 
 
 def run_env(spec: RunSpec, settings: Settings, *, base: Mapping[str, str], oauth_token: str | None) -> dict[str, str]:
