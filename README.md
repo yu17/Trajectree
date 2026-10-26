@@ -278,7 +278,12 @@ A session's transcript is cut into work segments: a new segment starts after
 `TRAJECTREE_SEGMENT_GAP_S` (7200) seconds without a conversation record. Git
 commits and folder changes are grouped the same way. Neighbouring segments
 across sources merge into stretches of work, which are what inspections read
-(see [Inspections](#inspections)).
+(see [Inspections](#inspections)). A segment's signal is keyed by its session
+and start minute; when a segment's start moves (an earlier record written
+late) or its session is cut differently, the next pass replaces the old
+signals of that session. Changing `TRAJECTREE_SEGMENT_GAP_S` therefore re-reads
+the recent transcripts and re-keys their session signals on the next pass, and
+the projects they belong to become due for inspection again.
 
 - `TRAJECTREE_INGEST_EVERY` sets the loop period in seconds (300; 0 disables).
 - The live marker is derived at scan time, so `TRAJECTREE_LIVE_WINDOW` must be

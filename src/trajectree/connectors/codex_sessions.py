@@ -35,6 +35,7 @@ from trajectree.connectors.claude_sessions import (
     digest_transcript_windows,
     digest_windows,
     refresh_file,
+    prune_session_signals,
     reparse_continuations,
     select_in_folder,
     session_signals,
@@ -277,7 +278,9 @@ def scan_codex(conn: apsw.Connection, settings: Settings, *, now: datetime) -> S
                 continue  # a child rollout (or one whose session_meta is not written yet)
             summaries.append((refreshed[0], st.st_mtime))
         summaries = reparse_continuations(conn, settings, summaries, parse=parse_codex_lines)
-        signals, live = session_signals(conn, settings, summaries, now)
+        emitted: dict[str, set[str]] = {}
+        signals, live = session_signals(conn, settings, summaries, now, emitted)
         written = upsert_signals(conn, signals)
+        prune_session_signals(conn, emitted)  # only the rollouts processed in this pass
     return ScanReport(files_seen=files_seen, files_read=files_read, signals_written=written, live=live)
 

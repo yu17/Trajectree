@@ -41,6 +41,26 @@ def upsert_signals(conn: apsw.Connection, rows: list[SignalIn]) -> int:
     return changed
 
 
+def _like_prefix(prefix: str) -> str:
+    """A LIKE pattern (with `ESCAPE '\\'`) matching every text that starts with `prefix`."""
+    return prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
+def delete_signals_by_prefix_except(conn: apsw.Connection, prefix: str, keep: set[str], *, kind: str) -> int:
+    """Delete the `kind` signals whose `dedupe_key` starts with `prefix` and is not in `keep`;
+    returns how many were deleted."""
+    rows = conn.execute(
+        "SELECT id, dedupe_key FROM signal WHERE kind = ? AND dedupe_key LIKE ? ESCAPE '\\'",
+        (kind, _like_prefix(prefix)),
+    ).fetchall()
+    stale = [sid for sid, key in rows if key not in keep]
+    with conn:
+        for i in range(0, len(stale), 500):
+            chunk = stale[i : i + 500]
+            conn.execute(f"DELETE FROM signal WHERE id IN ({', '.join('?' * len(chunk))})", chunk)
+    return len(stale)
+
+
 def _where(
     project_ids: list[str] | None,
     t_from: datetime | None,

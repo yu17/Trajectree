@@ -466,3 +466,115 @@ def test_resolve_continuations_is_pure_and_maps_by_marker_or_first_uuid():
     assert got == {"/x/b.jsonl": ("a", a.t_end), "/x/c.jsonl": ("b", b.t_end)}
     other_dir = SessionSummary(transcript_path="/y/d.jsonl", backend="claude", session_id="d", t_end=a.t_end, first_uuid="u1")
     assert resolve_continuations([a, other_dir]) == {}
+
+
+def _grow_original(home):
+    orig = home / "projects" / encode_project_dir(CWD) / f"{ORIG}.jsonl"
+    with orig.open("a") as f:  # the owner types again in the original after continuing it elsewhere
+        f.write(json.dumps(dict(rec_user("2026-10-02T09:00:00.000Z", text="back in the original", sid=ORIG), uuid="u30")) + "\n")
+        f.write(json.dumps(dict(rec_assistant("2026-10-02T09:05:00.000Z", sid=ORIG), uuid="u31")) + "\n")
+    os.utime(orig, None)
+    return orig
+
+
+def _assert_original_and_continuation_apart(ledger):
+    by = _by_session(ledger)
+    assert [(r.t_start.month, r.t_start.day, r.payload["resumed_from"]) for r in by[ORIG]] == [
+        (8, 30, None), (9, 22, None), (10, 2, None)]
+    (cont,) = by[CONT]
+    assert cont.t_start == datetime(2026, 9, 29, 16, 9, 30, tzinfo=UTC)
+    assert (cont.payload["records"], cont.payload["resumed_from"]) == (4, ORIG)
+
+
+def test_original_that_keeps_growing_is_not_mapped_as_its_continuation(ledger, human, settings, tmp_path):
+    from trajectree.ingest.job import run_ingest
+    home, s, p = _continuation_setup(ledger, human, settings, tmp_path)
+    now = datetime(2026, 10, 25, tzinfo=UTC)
+    run_ingest(ledger, s, now=now)
+    _assert_split(ledger)
+    _grow_original(home)
+    run_ingest(ledger, s, now=now)
+    _assert_original_and_continuation_apart(ledger)
+    # read fresh, the same files give the same answer
+    for key in [k for (k,) in ledger.conn.execute("SELECT key FROM state WHERE key LIKE 'scan:%'")]:
+        ledger.conn.execute("DELETE FROM state WHERE key = ?", (key,))
+    run_ingest(ledger, s, now=now)
+    _assert_original_and_continuation_apart(ledger)
+
+
+def test_a_dropped_continuation_is_reparsed_without_skipping(ledger, human, settings, tmp_path):
+    from trajectree.ingest.job import run_ingest
+    from trajectree.repo.state import get_state, set_state
+    home, s, p = _continuation_setup(ledger, human, settings, tmp_path)
+    now = datetime(2026, 10, 25, tzinfo=UTC)
+    run_ingest(ledger, s, now=now)
+    # As an earlier version stored it: the original mapped as a continuation of its own continuation.
+    key = f"scan:{home / 'projects' / encode_project_dir(CWD) / f'{ORIG}.jsonl'}"
+    state = get_state(ledger.conn, key)
+    state["summary"] = {**state["summary"], "skip_until": "2026-09-29T16:13:00Z", "resumed_from": CONT, "segments": []}
+    set_state(ledger.conn, key, state)
+    run_ingest(ledger, s, now=now)
+    _assert_split(ledger)
+    stored = get_state(ledger.conn, key)["summary"]
+    assert (stored["skip_until"], stored["resumed_from"], len(stored["segments"])) == (None, None, 2)
+
+
+def test_resolve_continuations_rejects_cycles():
+    from trajectree.connectors.claude_sessions import resolve_continuations
+    def sm(sid, end, **kw):
+        return SessionSummary(transcript_path=f"/x/{sid}.jsonl", backend="claude", session_id=sid, t_end=datetime(2026, 9, end, tzinfo=UTC), **kw)
+    # markers both ways
+    assert resolve_continuations([sm("a", 1, continued_in="b"), sm("b", 2, continued_in="a")]) == {}
+    # a marker (a continued in b) plus the uuid fallback (c after b, a after c) would close b -> a -> c -> b
+    a, b, c = sm("a", 3, continued_in="b", first_uuid="u1"), sm("b", 1, first_uuid="u1"), sm("c", 2, first_uuid="u1")
+    assert resolve_continuations([a, b, c]) == {}
+    # without the marker the uuid chain stands
+    a = sm("a", 3, first_uuid="u1")
+    assert resolve_continuations([a, b, c]) == {"/x/c.jsonl": ("b", b.t_end), "/x/a.jsonl": ("c", c.t_end)}
+
+
+def _session_keys(ledger):
+    return sorted(r.dedupe_key for r in list_signals(ledger.conn, kinds=["session"]))
+
+
+def test_a_segment_whose_start_moves_leaves_one_signal(ledger, human, settings, tmp_path):
+    home, s, p = setup(ledger, human, settings, tmp_path)
+    path = write_transcript(home, CWD, SID, [rec_user("2026-08-30T10:00:00.000Z"), rec_assistant("2026-08-30T10:10:00.000Z")])
+    other = "2" * 36
+    write_transcript(home, CWD, other, [rec_user("2026-08-30T10:00:00.000Z", sid=other)])
+    now = datetime.now(UTC)
+    scan_transcripts(ledger.conn, s, now=now)
+    assert _session_keys(ledger) == sorted([f"claude_session:{other}:2026-08-30T10:00", f"claude_session:{SID}:2026-08-30T10:00"])
+    with path.open("a") as f:  # an earlier record written late moves the segment's start
+        f.write(json.dumps(rec_user("2026-08-30T09:55:00.000Z")) + "\n")
+    os.utime(path, None)
+    scan_transcripts(ledger.conn, s, now=now)
+    assert _session_keys(ledger) == sorted([f"claude_session:{other}:2026-08-30T10:00", f"claude_session:{SID}:2026-08-30T09:55"])
+
+
+def test_changing_the_segment_gap_rekeys_session_signals(ledger, human, settings, tmp_path):
+    from trajectree.repo.signals import upsert_signals
+    from trajectree.models import SignalIn
+    home, s, p = setup(ledger, human, settings, tmp_path)
+    write_transcript(home, CWD, SID, [
+        rec_user("2026-08-30T10:00:00.000Z"), rec_assistant("2026-08-30T10:10:00.000Z"),
+        rec_user("2026-08-30T11:00:00.000Z"), rec_assistant("2026-08-30T11:10:00.000Z"),
+    ])
+    # a transcript outside the scan cutoff, and another kind, are never pruned
+    old = write_transcript(home, CWD, "3" * 36, [rec_user("2024-01-01T10:00:00.000Z", sid="3" * 36)])
+    stamp = (datetime.now(UTC) - timedelta(days=800)).timestamp()
+    os.utime(old, (stamp, stamp))
+    kept = [SignalIn(project_id=p.id, kind="session", t_start=datetime(2024, 1, 1, 10, tzinfo=UTC), dedupe_key=f"claude_session:{'3' * 36}:2024-01-01T10:00"),
+            SignalIn(project_id=p.id, kind="commits", t_start=datetime(2026, 8, 30, 10, tzinfo=UTC), dedupe_key=f"claude_session:{SID}:commits")]
+    upsert_signals(ledger.conn, kept)
+    now = datetime.now(UTC)
+    scan_transcripts(ledger.conn, s, now=now)
+    assert f"claude_session:{SID}:2026-08-30T10:00" in _session_keys(ledger)
+    s = s.model_copy(update={"segment_gap_s": 1800})  # the 50-minute pause now splits the session
+    scan_transcripts(ledger.conn, s, now=now)
+    assert _session_keys(ledger) == sorted([
+        f"claude_session:{'3' * 36}:2024-01-01T10:00", f"claude_session:{SID}:2026-08-30T10:00", f"claude_session:{SID}:2026-08-30T11:00"])
+    s = s.model_copy(update={"segment_gap_s": 7200})
+    scan_transcripts(ledger.conn, s, now=now)
+    assert _session_keys(ledger) == sorted([f"claude_session:{'3' * 36}:2024-01-01T10:00", f"claude_session:{SID}:2026-08-30T10:00"])
+    assert [r.dedupe_key for r in list_signals(ledger.conn, kinds=["commits"])] == [f"claude_session:{SID}:commits"]

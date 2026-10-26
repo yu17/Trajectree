@@ -23,7 +23,7 @@ from trajectree.importing import SESSION_SOURCE_OF_BACKEND, default_since, local
 from trajectree.models import Project, SignalIn
 from trajectree.repo.projects import list_projects
 from trajectree.repo.resources import project_for_path
-from trajectree.repo.signals import upsert_signals
+from trajectree.repo.signals import delete_signals_by_prefix_except, upsert_signals
 from trajectree.repo.state import get_state, set_state
 
 
@@ -40,9 +40,14 @@ class Segment(BaseModel):
     first_prompt: str | None = None
 
 
+def segment_prefix(source: str, session_id: str) -> str:
+    """What every segment key of one session starts with."""
+    return f"{source}_session:{session_id}:"
+
+
 def segment_key(source: str, session_id: str, t_start: datetime) -> str:
     """The signal `dedupe_key` of a segment: stable while it grows, because it names the start minute."""
-    return f"{source}_session:{session_id}:{t_start.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M')}"
+    return segment_prefix(source, session_id) + t_start.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M")
 
 
 class SessionSummary(BaseModel):
@@ -69,6 +74,7 @@ class SessionSummary(BaseModel):
     skip_until: AwareDatetime | None = None  # records at or before this belong to a session this one resumed
     resumed_from: str | None = None
     continued_in: str | None = None
+    continued_at: dict[str, AwareDatetime] = {}  # continuation session id -> when its marker was written
     first_uuid: str | None = None
 
 
@@ -181,7 +187,10 @@ def _apply(acc: SessionSummary, rec: dict[str, Any], *, gap_s: int = DEFAULT_SEG
     elif kind == "summary" and acc.title is None:
         acc.title = _str(rec.get("summary"))
     elif kind == "continued-in":
-        acc.continued_in = _str(rec.get("continuedInSessionId")) or acc.continued_in
+        cont = _str(rec.get("continuedInSessionId"))
+        acc.continued_in = cont or acc.continued_in
+        if cont is not None and ts is not None:
+            acc.continued_at[cont] = ts
     acc.cwd = acc.cwd or _str(rec.get("cwd"))
     acc.session_id = acc.session_id or _str(rec.get("sessionId"))
     acc.git_branch = acc.git_branch or _str(rec.get("gitBranch"))
@@ -535,11 +544,14 @@ def refresh_file(
     gap_s: int = DEFAULT_SEGMENT_GAP_S,
 ) -> tuple[SessionSummary, bool] | None:
     """The file's stored summary brought up to date, and whether any of it was read; `None` when
-    unreadable. Resumes from the stored byte offset; a new, unreadable-state or shrunk file starts over."""
+    unreadable. Resumes from the stored byte offset; a new, unreadable-state or shrunk file starts
+    over, and so does one whose summary was cut into segments with another `gap_s`."""
     abs_path = str(path.absolute())
     key = f"scan:{abs_path}"
     state = get_state(conn, key)
     stored = _stored_summary(state)
+    if stored is not None and state.get("gap_s") != gap_s:
+        stored = None  # TRAJECTREE_SEGMENT_GAP_S changed: re-segment from the start
     if stored is not None and state["size"] == st.st_size and state["mtime"] == st.st_mtime:
         return stored, False
     if stored is not None and st.st_size >= state["offset"]:
@@ -557,38 +569,85 @@ def refresh_file(
             "offset": offset + consumed,
             "size": st.st_size,
             "mtime": st.st_mtime,
+            "gap_s": gap_s,
             "summary": summary.model_dump(mode="json"),
         },
     )
     return summary, True
 
 
-def resolve_continuations(summaries: Sequence[SessionSummary]) -> dict[str, tuple[str, datetime]]:
-    """Transcript path -> (original session id, original `t_end`) for each continuation among `summaries`.
+def _sid(sm: SessionSummary) -> str:
+    return sm.session_id or Path(sm.transcript_path).stem
 
-    Only transcripts in the same directory are related. A `continued-in` marker in the original
-    names its continuation; without one, transcripts that begin with the same record `uuid` are
-    ordered by `t_end`, each continuing the one before it. Pure: no I/O."""
+
+def _resolve(summaries: Sequence[SessionSummary]) -> tuple[dict[str, tuple[str, datetime]], set[str]]:
+    """`resolve_continuations`, plus the paths whose mapping was refused (a pair a marker already
+    relates, or a cycle)."""
     mapping: dict[str, tuple[str, datetime]] = {}
+    parent: dict[str, str] = {}  # continuation path -> original path
+    refused: set[str] = set()
     groups: dict[Path, list[SessionSummary]] = {}
     for sm in summaries:
         groups.setdefault(Path(sm.transcript_path).parent, []).append(sm)
     for group in groups.values():
-        ids = {sm.session_id or Path(sm.transcript_path).stem: sm for sm in group}
+        ids = {_sid(sm): sm for sm in group}
+        related: set[frozenset[str]] = set()  # pairs a marker relates, in either direction
         for sm in group:
-            cont = ids.get(sm.continued_in) if sm.continued_in else None
-            if cont is not None and cont is not sm and sm.t_end is not None:
-                mapping[cont.transcript_path] = (sm.session_id or Path(sm.transcript_path).stem, sm.t_end)
+            named: dict[str, datetime | None] = dict(sm.continued_at)
+            if sm.continued_in and sm.continued_in not in named:
+                named[sm.continued_in] = None  # a summary stored before markers kept their time
+            for cid, at in named.items():
+                cont = ids.get(cid)
+                if cont is None or cont is sm:
+                    continue
+                related.add(frozenset((sm.transcript_path, cont.transcript_path)))
+                # The continuation copied what the original held when the marker was written; the
+                # original may have grown since, so its `t_end` is only the fallback.
+                skip = at or sm.t_end
+                if skip is not None:
+                    mapping[cont.transcript_path] = (_sid(sm), skip)
+                    parent[cont.transcript_path] = sm.transcript_path
         by_uuid: dict[str, list[SessionSummary]] = {}
         for sm in group:
             if sm.first_uuid is not None and sm.t_end is not None:
                 by_uuid.setdefault(sm.first_uuid, []).append(sm)
         for same in by_uuid.values():
             same.sort(key=lambda sm: sm.t_end or datetime.min.replace(tzinfo=timezone.utc))
-            for prev, nxt in zip(same, same[1:]):
-                if nxt.transcript_path not in mapping and prev.t_end != nxt.t_end and prev.t_end is not None:
-                    mapping[nxt.transcript_path] = (prev.session_id or Path(prev.transcript_path).stem, prev.t_end)
-    return mapping
+            for i, nxt in enumerate(same):
+                if nxt.transcript_path in mapping:
+                    continue
+                # Each continues the latest one before it that a marker does not already relate it to.
+                for prev in reversed(same[:i]):
+                    if frozenset((prev.transcript_path, nxt.transcript_path)) in related:
+                        refused.add(nxt.transcript_path)
+                        continue
+                    if prev.t_end != nxt.t_end and prev.t_end is not None:
+                        mapping[nxt.transcript_path] = (_sid(prev), prev.t_end)
+                        parent[nxt.transcript_path] = prev.transcript_path
+                    break
+    cycles: set[str] = set()
+    for start in list(parent):
+        seen, path = {start}, parent.get(start)
+        while path is not None and path not in seen:
+            seen.add(path)
+            path = parent.get(path)
+        if path == start:  # the chain returns to its start: no member continues another
+            cycles.update(seen)
+    for path in cycles:
+        mapping.pop(path, None)
+    return mapping, (refused | cycles) - set(mapping)
+
+
+def resolve_continuations(summaries: Sequence[SessionSummary]) -> dict[str, tuple[str, datetime]]:
+    """Transcript path -> (original session id, where the copied history ends) for each continuation
+    among `summaries`.
+
+    Only transcripts in the same directory are related. A `continued-in` marker in the original
+    names its continuation, and the marker's time is where the copied history ends; without one,
+    transcripts that begin with the same record `uuid` are ordered by `t_end`, each continuing the
+    one before it, except that a pair a marker relates is never mapped the other way. A chain that
+    returns to its start is dropped whole. Pure: no I/O."""
+    return _resolve(summaries)[0]
 
 
 def reparse_continuations(
@@ -598,18 +657,33 @@ def reparse_continuations(
     *,
     parse: Callable[..., SessionSummary] = parse_lines,
 ) -> list[tuple[SessionSummary, float]]:
-    """Re-read, once, each continuation whose stored summary does not yet skip its original's records.
+    """Re-read, once, each continuation whose stored summary does not yet skip its original's records,
+    and each summary that skips records for a relation that no longer holds (refused, or its original
+    is in this pass but no longer maps it), this time without skipping.
 
-    The re-read starts at offset 0 with `skip_until`/`resumed_from` set and the scan state is stored
-    like `refresh_file` does, so later passes resume from there and read nothing while the file is unchanged."""
-    mapping = resolve_continuations([sm for sm, _ in summaries])
+    The re-read starts at offset 0 with `skip_until`/`resumed_from` set (or cleared) and the scan state
+    is stored like `refresh_file` does, so later passes resume from there and read nothing while the
+    file is unchanged. A continuation whose original is not in this pass (older than the scan cutoff)
+    keeps what it stored."""
+    mapping, refused = _resolve([sm for sm, _ in summaries])
+    visible = {(Path(sm.transcript_path).parent, _sid(sm)) for sm, _ in summaries}
     out: list[tuple[SessionSummary, float]] = []
     for summary, mtime in summaries:
         target = mapping.get(summary.transcript_path)
-        if target is None or (summary.resumed_from, summary.skip_until) == target:
+        if target is None:
+            stale = summary.skip_until is not None and (
+                summary.transcript_path in refused
+                or (Path(summary.transcript_path).parent, summary.resumed_from) in visible
+            )
+            if not stale:
+                out.append((summary, mtime))
+                continue
+            original_id, original_end = None, None
+        elif (summary.resumed_from, summary.skip_until) == target:
             out.append((summary, mtime))
             continue
-        original_id, original_end = target
+        else:
+            original_id, original_end = target
         path = Path(summary.transcript_path)
         fresh = SessionSummary(
             transcript_path=summary.transcript_path, backend=summary.backend, skip_until=original_end, resumed_from=original_id
@@ -623,7 +697,10 @@ def reparse_continuations(
         set_state(
             conn,
             f"scan:{summary.transcript_path}",
-            {"offset": consumed, "size": st.st_size, "mtime": st.st_mtime, "summary": reread.model_dump(mode="json")},
+            {
+                "offset": consumed, "size": st.st_size, "mtime": st.st_mtime, "gap_s": settings.segment_gap_s,
+                "summary": reread.model_dump(mode="json"),
+            },
         )
         out.append((reread, mtime))
     return out
@@ -658,8 +735,13 @@ def session_signals(
     settings: Settings,
     summaries: list[tuple[SessionSummary, float]],
     now: datetime,
+    emitted: dict[str, set[str]] | None = None,
 ) -> tuple[list[SignalIn], list[LiveSession]]:
-    """One `session` signal per summary whose cwd maps to a project, plus the live ones."""
+    """One `session` signal per segment of each summary whose cwd maps to a project, plus the live ones.
+
+    `emitted`, when given, collects per processed session its key prefix (`<source>_session:<id>:`)
+    -> the segment keys emitted for it now (empty for a continuation with nothing of its own yet),
+    for `prune_session_signals`."""
     projects: dict[str, Project | None] = {}
     signals: list[SignalIn] = []
     live: list[LiveSession] = []
@@ -683,6 +765,7 @@ def session_signals(
         if start is not None and (summary.t_end or seen) < start:
             continue
         running = (now - seen).total_seconds() < settings.live_window_s
+        keys = emitted.setdefault(segment_prefix(source, session_id), set()) if emitted is not None else set()
         if summary.skip_until is not None and not summary.segments:
             continue  # a continuation holding only copied history has nothing of its own yet
         # a summary with no conversation timestamps still yields one signal, so nothing is lost
@@ -692,13 +775,15 @@ def session_signals(
         for n, seg in enumerate(segments, 1):
             if start is not None and seg.t_end < start:
                 continue
+            key = segment_key(source, session_id, seg.t_start)
+            keys.add(key)
             signals.append(
                 SignalIn(
                     project_id=project.id,
                     kind="session",
                     t_start=seg.t_start,
                     t_end=seg.t_end,
-                    dedupe_key=segment_key(source, session_id, seg.t_start),
+                    dedupe_key=key,
                     payload={
                         "session_id": session_id,
                         "cwd": summary.cwd,
@@ -733,16 +818,26 @@ def session_signals(
     return signals, live
 
 
+def prune_session_signals(conn: apsw.Connection, emitted: Mapping[str, set[str]]) -> int:
+    """Delete the `session` signals of each session processed in this pass whose segment key was not
+    emitted again (a segment whose start moved, or a different segment gap); returns the count.
+    Sessions not processed in this pass, and other kinds, are left alone."""
+    return sum(delete_signals_by_prefix_except(conn, prefix, keep, kind="session") for prefix, keep in emitted.items())
+
+
 def scan_transcripts(conn: apsw.Connection, settings: Settings, *, now: datetime) -> ScanReport:
-    """Bring every recent transcript's summary up to date and upsert its session signal.
+    """Bring every recent transcript's summary up to date and upsert its session signals; a
+    processed session's signals that no longer match a segment are deleted.
 
     Runs all DB work on `conn` in one transaction, so cursors and signals land together;
     callers that need the ledger lock take it themselves.
     """
     with conn:
         files_seen, files_read, summaries = _refresh_summaries(conn, settings, now)
-        signals, live = session_signals(conn, settings, summaries, now)
+        emitted: dict[str, set[str]] = {}
+        signals, live = session_signals(conn, settings, summaries, now, emitted)
         written = upsert_signals(conn, signals)
+        prune_session_signals(conn, emitted)
     return ScanReport(
         files_seen=files_seen, files_read=files_read, signals_written=written, live=live
     )
