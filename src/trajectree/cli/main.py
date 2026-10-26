@@ -392,17 +392,36 @@ def _cmd_inspections(args: argparse.Namespace, api: _Api) -> None:
     for d in due:
         line = (
             f"{d['slug']}  {d['stretches']} stretches  {d['first_day']}..{d['last_day']}"
-            f"  {d['sessions']} sessions, {d['commits']} commits, {d['file_days']} file days"
+            # `sessions` counts session segments
+            f"  {d['sessions']} segments, {d['commits']} commits, {d['file_days']} file days"
         )
         if d.get("active_run"):
-            line += f"  running episode {d['episode'] or 0}/{d['episodes'] or 0} ({d['active_run']})"
+            if d.get("episode") is None:  # a boundary pass comes before episode 1
+                line += f"  running boundary pass ({d['active_run']})"
+            else:
+                line += f"  running episode {d['episode']}/{d['episodes'] or 0} ({d['active_run']})"
         print(line)
 
 
 SERIES_RETRIES = 50  # a finished run's successor is queued just after the run is stored
 
 
+def _series_successor(api: _Api, finished: dict[str, Any]) -> str | None:
+    """The run of `finished`'s series that comes right after it (the boundary pass is episode 0)."""
+    props = finished.get("props") or {}
+    series = props.get("series_id")
+    if not series:
+        return None
+    following = (props.get("episode_no") or 0) + 1
+    for run in api.get(f"/api/runs?series_id={quote(str(series), safe='')}&limit=500"):
+        if run["id"] != finished["id"] and ((run.get("props") or {}).get("episode_no") or 0) == following:
+            return run["id"]
+    return None
+
+
 def _next_in_series(api: _Api, slug: str, finished: dict[str, Any]) -> str | None:
+    """The id of the series' next run once it is queued (found by series id, so a project gone live
+    meanwhile does not hide it); None when `finished` was the last. Raises `_Fail` when the series stopped."""
     props = finished.get("props") or {}
     more = finished["kind"] == "inspect_boundaries" or (props.get("episode_no") or 0) < (props.get("episodes") or 0)
     for _ in range(SERIES_RETRIES if more else 1):
@@ -417,9 +436,9 @@ def _next_in_series(api: _Api, slug: str, finished: dict[str, Any]) -> str | Non
             stopped = (now.get("props") or {}).get("series_stopped")
             if stopped:
                 raise _Fail(f"series stopped: {stopped}", 1)
-        for d in api.get("/api/inspections"):
-            if d["slug"] == slug and d.get("active_run") and d["active_run"] != finished["id"]:
-                return d["active_run"]
+        nxt = _series_successor(api, finished)
+        if nxt is not None:
+            return nxt
         if more:
             _sleep(POLL_S)
     if more:
@@ -435,7 +454,7 @@ def _cmd_inspect(args: argparse.Namespace, api: _Api) -> None:
     if args.all:
         if args.project or args.since:
             raise _Fail("--all takes no project and no --since", 2)
-        res = api.post("/api/inspect", {"projects": "all", **body})
+        res = api.post("/api/inspect", {"projects": "all", **body}, slow=True)  # sizes every due project's transcripts
         slugs = {p["id"]: p["slug"] for p in api.get("/api/projects")}
         for run in res["runs"]:
             print(f"run {run['id']} queued ({slugs.get(run['project_id'], run['project_id'])})")
@@ -451,7 +470,7 @@ def _cmd_inspect(args: argparse.Namespace, api: _Api) -> None:
         except ValueError:
             raise _Fail(f"invalid --since {args.since!r}; use YYYY-MM-DD", 2)
         body["since"] = args.since
-    run = api.post(f"/api/projects/{api.project_id(args.project)}/inspect", body)
+    run = api.post(f"/api/projects/{api.project_id(args.project)}/inspect", body, slow=True)  # reads the transcripts
     print(f"run {run['id']} queued")
     if args.no_wait:
         _print_warning(run)
