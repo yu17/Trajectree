@@ -397,11 +397,24 @@ def _next_in_series(api: _Api, slug: str, finished: dict[str, Any]) -> str | Non
     props = finished.get("props") or {}
     more = finished["kind"] == "inspect_boundaries" or (props.get("episode_no") or 0) < (props.get("episodes") or 0)
     for _ in range(SERIES_RETRIES if more else 1):
+        if more:
+            # The run was stored `ok` before the series carried on: it may have failed validation
+            # or recorded why it could not continue since.
+            detail = api.get(f"/api/runs/{finished['id']}")
+            now = detail["run"]
+            if now["status"] in ("failed", "capped"):
+                _print_run(detail, sys.stdout)
+                raise _Fail("", 1)
+            stopped = (now.get("props") or {}).get("series_stopped")
+            if stopped:
+                raise _Fail(f"series stopped: {stopped}", 1)
         for d in api.get("/api/inspections"):
             if d["slug"] == slug and d.get("active_run") and d["active_run"] != finished["id"]:
                 return d["active_run"]
         if more:
             _sleep(POLL_S)
+    if more:
+        raise _Fail(f"series stopped: no next run was queued for {slug}", 1)
     return None
 
 
@@ -436,8 +449,8 @@ def _cmd_inspect(args: argparse.Namespace, api: _Api) -> None:
         return
     while True:
         props = run.get("props") or {}
-        if run["kind"] == "inspect" and (props.get("episodes") or 0) > 1:
-            print(f"episode {props.get('episode_no')}/{props['episodes']}")
+        if run["kind"] == "inspect":
+            print(f"episode {props.get('episode_no') or 1}/{props.get('episodes') or 1}")
         detail = _wait_run(api, run["id"])
         _print_run(detail, sys.stdout)
         if detail["run"]["status"] in ("failed", "capped"):

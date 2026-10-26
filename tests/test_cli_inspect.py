@@ -69,7 +69,7 @@ def test_cli_inspect_single_run_and_refusals(app, ledger, human, tmp_path, anon,
     _project(ledger, human, tmp_path, "a", [(5, 10, 11, "s1")])
     assert cli.main(["inspect", "a", "--model", MODEL], client=anon, env=env_for(app)) == 0
     out = capsys.readouterr().out
-    assert " queued" in out and " ok " in out and "episode" not in out
+    assert " queued" in out and " ok " in out and "episode 1/1" in out
     # Nothing is due any more: the daemon's 409 comes back as the error.
     assert cli.main(["inspect", "a", "--model", MODEL], client=anon, env=env_for(app)) == 1
     assert "nothing to inspect for a" in capsys.readouterr().err
@@ -90,3 +90,43 @@ def test_cli_inspect_all_prints_queued_and_skipped(app, ledger, human, tmp_path,
     out = capsys.readouterr().out
     assert " queued (a)" in out and out.startswith("run ") and "skipped: " in out and "b" in out.split("skipped: ")[1].strip().split(", ")
     assert "ok" not in out
+
+
+class _FakeApi:
+    def __init__(self, run, due):
+        self.run, self.due, self.calls = run, due, 0
+
+    def get(self, path):
+        self.calls += 1
+        if path == "/api/inspections":
+            return self.due
+        return {"run": self.run, "txn_ids": []}
+
+
+def _finished(**props):
+    return {"id": "r1", "kind": "inspect", "status": "ok", "props": {"episode_no": 1, "episodes": 2, **props}}
+
+
+def test_cli_inspect_reports_a_stopped_series():
+    api = _FakeApi(_finished(series_stopped="the model is paused"), [])
+    with pytest.raises(cli._Fail) as exc:
+        cli._next_in_series(api, "a", _finished())
+    assert exc.value.code == 1 and str(exc.value) == "series stopped: the model is paused"
+    assert api.calls == 1  # no waiting out the bound
+
+
+def test_cli_inspect_stops_when_no_next_run_is_queued():
+    api = _FakeApi(_finished(), [])
+    with pytest.raises(cli._Fail) as exc:
+        cli._next_in_series(api, "a", _finished())
+    assert exc.value.code == 1 and str(exc.value) == "series stopped: no next run was queued for a"
+
+
+def test_cli_inspect_stops_when_the_boundary_pass_fails_validation(capsys):
+    failed = {"id": "r1", "kind": "inspect_boundaries", "status": "failed", "est_usd": 0, "turns": 1,
+              "duration_ms": 1, "error": "boundaries invalid: no episodes", "props": {}}
+    api = _FakeApi(failed, [])
+    with pytest.raises(cli._Fail) as exc:
+        cli._next_in_series(api, "a", {**failed, "status": "ok"})
+    assert exc.value.code == 1
+    assert "boundaries invalid" in capsys.readouterr().err
