@@ -604,13 +604,20 @@ Start / Start all. A project page offers "Re-inspect since <date>".
   model say.
 - A run writes only through `record_event`, `update_event`, `add_todo`, `link`
   and `set_project_summary`, and every write lands pending in the Inbox,
-  attributed to the run. Pending writes are grouped per run, with Accept all
-  and Reject all for the group.
+  attributed to the run. Pending writes are grouped per inspection series (per
+  run for other runs), with Accept all and Reject all for the whole group.
+- A stretch that new work re-opens is read whole: the part already inspected
+  comes back for context, marked "Inspected up to".
+- `inspect --all` (and Start all) starts every due project; a project with a
+  live session is not due, and starting one directly says when to retry.
 - A large backlog runs as a series on one model. A read-only boundary pass
   (`inspect_boundaries`) groups the stretches into episodes that fit the
   budget, then one `inspect` run per episode, in order, each seeing the blocks
   the earlier ones created. A failed run stops the series and keeps the
   watermark where it was; start again and only what is still due is covered.
+  The boundary pass sees one line per segment, or one per stretch when that
+  timeline is over the budget. Its dates, like every date an inspection is
+  shown, are in `TRAJECTREE_TZ`.
 - `TRAJECTREE_INSPECT_BUDGET_CHARS` caps the digest text one run reads. An
   episode larger than the budget still runs with its text cut short, and the
   segments that did not fit stay due. Keep the budget above
