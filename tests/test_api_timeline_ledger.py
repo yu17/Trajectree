@@ -87,3 +87,59 @@ def test_context_route(client):
     assert r.status_code == 200 and "Freeze" in r.json()["markdown"]
     assert client.get("/api/context", params={"projects": "ghost"}).status_code == 404
     assert client.get("/api/context", params={"projects": p["slug"], "budget": 5}).status_code == 422
+
+
+def _agent_create_then_update(client, app, run_id="run_a"):
+    from datetime import datetime, timezone
+
+    from trajectree.models import Actor, EventIn, EventPatch
+    from trajectree.repo.events import create_event, update_event
+
+    p, _ = seed(client)
+    actor = Actor(kind="agent", ref=run_id, run_id=run_id)
+    ev = create_event(app.state.ledger, actor, EventIn(project_id=p["id"], kind="note", title="n",
+                      t_start=datetime(2026, 1, 6, tzinfo=timezone.utc), source="agent"))
+    update_event(app.state.ledger, actor, ev.id, EventPatch(title="n2"))
+    rows = client.get("/api/ledger/txns", params={"run_id": run_id}).json()
+    return ev, rows   # newest first
+
+
+def test_review_many_rejects_newest_first_so_dependents_go_before_their_target(client, app):
+    ev, rows = _agent_create_then_update(client, app)
+    b, a = rows[0]["id"], rows[1]["id"]
+    r = client.post("/api/ledger/review-many", json={"ids": [a, b], "state": "rejected"})
+    assert r.status_code == 200
+    assert r.json() == {"done": [b, a], "failed": None, "conflicts": []}
+    assert all(client.get(f"/api/ledger/txns/{i}").json()["txn"]["review"] == "rejected" for i in (a, b))
+
+
+def test_review_many_stops_at_a_conflict_and_reports_it(client, app):
+    ev, rows = _agent_create_then_update(client, app)
+    b, a = rows[0]["id"], rows[1]["id"]
+    assert client.post(f"/api/ledger/txns/{a}/revert").status_code == 409
+    r = client.post("/api/ledger/review-many", json={"ids": [a], "state": "rejected"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["done"] == [] and body["failed"] == a and body["conflicts"]
+
+
+def test_review_many_accepts_in_given_order_and_unknown_id_stops(client, app):
+    ev, rows = _agent_create_then_update(client, app)
+    b, a = rows[0]["id"], rows[1]["id"]
+    r = client.post("/api/ledger/review-many", json={"ids": [a, "nope", b], "state": "accepted"})
+    assert r.json() == {"done": [a], "failed": "nope", "conflicts": []}
+    assert client.post("/api/ledger/review-many", json={"ids": [], "state": "accepted"}).status_code == 422
+
+
+def test_review_many_treats_already_rejected_as_done(client, app):
+    ev, rows = _agent_create_then_update(client, app)
+    b, a = rows[0]["id"], rows[1]["id"]
+    client.post("/api/ledger/review-many", json={"ids": [a, b], "state": "rejected"})
+    r = client.post("/api/ledger/review-many", json={"ids": [a, b], "state": "rejected"})
+    assert r.json() == {"done": [b, a], "failed": None, "conflicts": []}
+
+
+def test_txns_filter_by_run_id(client, app):
+    ev, rows = _agent_create_then_update(client, app, "run_a")
+    assert len(rows) == 2 and {r["run_id"] for r in rows} == {"run_a"}
+    assert client.get("/api/ledger/txns", params={"run_id": "run_zzz"}).json() == []
