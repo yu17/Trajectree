@@ -132,12 +132,13 @@ export const api = {
     return request<Resource[]>("GET", `/api/resources${q.size ? `?${q}` : ""}`);
   },
   runIngest: () => request<IngestReport>("POST", "/api/ingest/run"),
-  runs(opts: { limit?: number; kind?: RunKind; status?: RunStatus; openProposals?: boolean } = {}) {
+  runs(opts: { limit?: number; kind?: RunKind; status?: RunStatus; openProposals?: boolean; seriesId?: string } = {}) {
     const q = new URLSearchParams();
     if (opts.limit !== undefined) q.set("limit", String(opts.limit));
     if (opts.kind) q.set("kind", opts.kind);
     if (opts.status) q.set("status", opts.status);
     if (opts.openProposals) q.set("open_proposals", "true");
+    if (opts.seriesId) q.set("series_id", opts.seriesId);
     return request<Run[]>("GET", `/api/runs${q.size ? `?${q}` : ""}`);
   },
   run: (id: string) => request<RunDetail>("GET", `/api/runs/${encodeURIComponent(id)}`),

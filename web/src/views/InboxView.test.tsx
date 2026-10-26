@@ -66,7 +66,7 @@ describe("InboxView", () => {
     api.inspect.mockResolvedValue({ id: "run1" });
     wrap(<InboxView />);
     expect(await screen.findByRole("heading", { name: "Due for inspection (1)" })).toBeTruthy();
-    expect(await screen.findByText("CLMI · 3 stretches · 2026-09-01 → 2026-09-20 · 5 sessions, 7 commits, 9 file days")).toBeTruthy();
+    expect(await screen.findByText("CLMI · 3 stretches · 2026-09-01 → 2026-09-20 · 5 segments, 7 commits, 9 file days")).toBeTruthy();
     await pickFable(await screen.findByRole("combobox", { name: "Model" }));
     fireEvent.click(screen.getByRole("button", { name: "Start" }));
     await waitFor(() => expect(api.inspect).toHaveBeenCalledWith("clmi", FABLE));
@@ -101,5 +101,27 @@ describe("InboxView", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "Reject all" })[0]);
     await waitFor(() => expect(api.reviewMany).toHaveBeenCalledWith(["t9", "t2", "t1"], "rejected"));
     expect(api.txns).toHaveBeenCalledWith(500, undefined, { review: "pending", run_id: "run1" });
+  });
+  it("groups the writes of one inspection series and rejects the whole series newest first", async () => {
+    const run = (id: string, episode: number) => ({ id, kind: "inspect", model: "claude-fable-5-1", runner: "claude",
+      created_at: `2026-10-2${episode}T10:00:00Z`, props: { series_id: "S", episode_no: episode, episodes: 2 } }) as unknown as Run;
+    const byRun: Record<string, Txn[]> = {
+      run1: [txn("t1"), txn("t0")].map(t => ({ ...t, run_id: "run1" })),
+      run2: [txn("t5"), txn("t2")].map(t => ({ ...t, run_id: "run2" })),
+    };
+    api.txns.mockImplementation(async (_limit: number, _before: unknown, filter?: { run_id?: string }) =>
+      filter?.run_id ? byRun[filter.run_id] ?? []
+        : [{ ...txn("t2"), run_id: "run2" }, { ...txn("t1"), run_id: "run1" }, txn("t3")]);
+    api.run.mockImplementation(async (id: string) => ({ run: run(id, id === "run1" ? 1 : 2), txn_ids: [] }));
+    api.runs.mockImplementation(async (opts: { seriesId?: string }) => opts.seriesId === "S" ? [run("run2", 2), run("run1", 1)] : []);
+    api.reviewMany.mockResolvedValue({ done: [], failed: null, conflicts: [] });
+    wrap(<InboxView />);
+    const heading = await screen.findByRole("heading", { name: /^inspection · claude-fable-5-1 · episode 1–2 of 2 · / });
+    expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(2); // the series, and the other writes
+    const group = heading.closest(".pending-group") as HTMLElement;
+    expect([...group.querySelectorAll("button.intent")].map(b => b.textContent)).toEqual(["intent t1", "intent t2"]); // episodes in order
+    fireEvent.click(screen.getAllByRole("button", { name: "Reject all" })[0]);
+    await waitFor(() => expect(api.reviewMany).toHaveBeenCalledWith(["t5", "t2", "t1", "t0"], "rejected"));
+    expect(api.runs).toHaveBeenCalledWith({ seriesId: "S", limit: 500 });
   });
 });

@@ -24,6 +24,12 @@ describe("api client", () => {
     expect([q(0).get("projects"), q(0).get("kinds"), q(0).get("limit")]).toEqual(["p1", "job_state,remote", "500"]);
     expect([q(1).has("projects"), q(1).has("kinds"), q(1).has("limit")]).toEqual([false, false, false]);
   });
+  it("filters runs by series", async () => {
+    const f = vi.fn(async (_url: string) => new Response(JSON.stringify([])));
+    vi.stubGlobal("fetch", f);
+    await api.runs({ seriesId: "S 1", limit: 500 });
+    expect(String(f.mock.calls[0][0])).toBe("/api/runs?limit=500&series_id=S+1");
+  });
   it("calls the routine and scheduler endpoints", async () => {
     const f = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({})));
     vi.stubGlobal("fetch", f);

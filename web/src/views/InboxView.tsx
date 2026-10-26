@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
-import type { Conflict, InspectionDue, ModelChoice, ReviewManyResult, Todo, Txn } from "../api/types";
+import type { Conflict, InspectionDue, ModelChoice, ReviewManyResult, Run, Todo, Txn } from "../api/types";
 import { errorText } from "../components/errorText";
 import { ModelPicker } from "../components/ModelPicker";
 import { useRun } from "../components/useRun";
@@ -44,7 +44,8 @@ function DueRow({ item }: { item: InspectionDue }) {
   return (
     <li className="ledger-row">
       <div className="ledger-head">
-        <span>{`${item.title} · ${item.stretches} stretches · ${item.first_day} → ${item.last_day} · ${item.sessions} sessions, ${item.commits} commits, ${item.file_days} file days`}</span>
+        {/* `sessions` counts session segments */}
+        <span>{`${item.title} · ${item.stretches} stretches · ${item.first_day} → ${item.last_day} · ${item.sessions} segments, ${item.commits} commits, ${item.file_days} file days`}</span>
         {active && item.episode !== null && item.episodes !== null && (
           <span className="muted">{`episode ${item.episode} of ${item.episodes}`}</span>
         )}
@@ -122,6 +123,18 @@ function PendingRow({ txn, actions, onReject }: {
 const PENDING_LIMIT = 200;
 const PAGE = 500; // the server's cap for one txns page and for one review-many call
 
+const seriesOf = (run: Run | undefined): string | null =>
+  typeof run?.props?.series_id === "string" && run.props.series_id ? run.props.series_id : null;
+const episodeOf = (run: Run | undefined): number =>
+  typeof run?.props?.episode_no === "number" ? run.props.episode_no : 0;
+
+// Every pending write of every run of an inspection series, newest first across the series.
+async function fetchSeriesPending(seriesId: string): Promise<string[]> {
+  const runs = await api.runs({ seriesId, limit: PAGE });
+  const ids = (await Promise.all(runs.map(r => fetchRunPending(r.id)))).flat();
+  return ids.sort().reverse(); // ULIDs: newest first
+}
+
 // Every pending write of a run, newest first, paged past the list's cap.
 async function fetchRunPending(runId: string): Promise<string[]> {
   const ids: string[] = [];
@@ -146,17 +159,34 @@ async function reviewChunks(ids: string[], state: "accepted" | "rejected"): Prom
   return { done, failed: null, conflicts: [] };
 }
 
-function PendingGroup({ runId, txns, capped, actions }: {
-  runId: string | null; txns: Txn[]; capped: boolean; actions: ReturnType<typeof useTxnActions>;
+// The pending writes of one series (all its runs), of one run, or of no run (`runIds` empty).
+interface Group { key: string; seriesId: string | null; runIds: string[]; txns: Txn[] }
+
+function seriesHeading(runs: Run[]): string {
+  const episodes = runs.map(episodeOf).filter(n => n > 0);
+  const lo = Math.min(...episodes), hi = Math.max(...episodes);
+  const total = Math.max(0, ...runs.map(r => (typeof r.props?.episodes === "number" ? r.props.episodes : 0)));
+  const range = episodes.length === 0 ? "" : lo === hi ? ` · episode ${lo} of ${total}` : ` · episode ${lo}–${hi} of ${total}`;
+  const first = runs.reduce((a, b) => (a.created_at <= b.created_at ? a : b));
+  return `inspection · ${first.model ?? first.runner}${range} · ${new Date(first.created_at).toLocaleString()}`;
+}
+
+function PendingGroup({ group, runs, capped, actions }: {
+  group: Group; runs: Map<string, Run>; capped: boolean; actions: ReturnType<typeof useTxnActions>;
 }) {
   const qc = useQueryClient();
-  const run = useRun(runId);
+  const { seriesId, runIds, txns } = group;
+  const runId = runIds[0] ?? null;
   const [conflicted, setConflicted] = useState(false);
   const [failure, setFailure] = useState<{ failed: string; conflicts: Conflict[] } | null>(null);
   const many = useMutation({
-    // A run's group is fetched whole; writes without a run have no filter, so the loaded ones are used.
+    // A series or a run is fetched whole; writes without a run have no filter, so the loaded ones are used.
     mutationFn: async (state: "accepted" | "rejected") =>
-      reviewChunks(runId === null ? txns.map(t => t.id) : await fetchRunPending(runId), state),
+      reviewChunks(
+        seriesId !== null ? await fetchSeriesPending(seriesId)
+          : runId === null ? txns.map(t => t.id) : await fetchRunPending(runId),
+        state,
+      ),
     onSuccess: r => setFailure(r.failed === null ? null : { failed: r.failed, conflicts: r.conflicts }),
     // Refresh after a partial result too: the finished ones left the pending list.
     onSettled: () => {
@@ -168,10 +198,12 @@ function PendingGroup({ runId, txns, capped, actions }: {
       void qc.invalidateQueries({ queryKey: ["runs"] });
     },
   });
-  const r = run.data?.run;
+  const r = runId === null ? undefined : runs.get(runId);
+  const loaded = runIds.map(id => runs.get(id)).filter((x): x is Run => x !== undefined);
   const heading = runId === null
     ? `Other writes (${txns.length})${capped ? ` (showing first ${PENDING_LIMIT})` : ""}`
-    : r ? `${r.kind} · ${r.model ?? r.runner} · ${new Date(r.created_at).toLocaleString()}` : runId;
+    : seriesId !== null && loaded.length > 0 ? seriesHeading(loaded)
+      : r ? `${r.kind} · ${r.model ?? r.runner} · ${new Date(r.created_at).toLocaleString()}` : runId;
   return (
     <div className="pending-group">
       <h3>{heading}</h3>
@@ -200,12 +232,26 @@ function PendingGroup({ runId, txns, capped, actions }: {
   );
 }
 
-// Writes of one run sit together, runs in order of first appearance; writes without a run come last.
-function groupByRun(rows: Txn[]): [string | null, Txn[]][] {
-  const groups = new Map<string | null, Txn[]>();
-  for (const t of rows) groups.set(t.run_id, [...(groups.get(t.run_id) ?? []), t]);
-  const out = [...groups];
-  return [...out.filter(([k]) => k !== null), ...out.filter(([k]) => k === null)];
+// Writes of one inspection series sit together (episodes in order), else writes of one run; groups
+// in order of first appearance, writes without a run last.
+function groupPending(rows: Txn[], runs: Map<string, Run>): Group[] {
+  const groups = new Map<string, Group>();
+  for (const t of rows) {
+    const seriesId = t.run_id === null ? null : seriesOf(runs.get(t.run_id));
+    const key = seriesId !== null ? `series:${seriesId}` : t.run_id === null ? "none" : `run:${t.run_id}`;
+    const g = groups.get(key) ?? { key, seriesId, runIds: [], txns: [] };
+    if (t.run_id !== null && !g.runIds.includes(t.run_id)) g.runIds.push(t.run_id);
+    g.txns.push(t);
+    groups.set(key, g);
+  }
+  for (const g of groups.values()) {
+    if (g.seriesId === null) continue;
+    const ep = (t: Txn) => episodeOf(t.run_id === null ? undefined : runs.get(t.run_id));
+    g.txns = g.txns.map((t, i) => [t, i] as const).sort(([a, i], [b, j]) => ep(a) - ep(b) || i - j).map(([t]) => t);
+    g.runIds.sort((a, b) => episodeOf(runs.get(a)) - episodeOf(runs.get(b)));
+  }
+  const out = [...groups.values()];
+  return [...out.filter(g => g.key !== "none"), ...out.filter(g => g.key === "none")];
 }
 
 export function InboxView() {
@@ -239,6 +285,13 @@ export function InboxView() {
   });
 
   const rows = pending.data ?? [];
+  // The runs behind the pending writes: a run's series decides its group.
+  const runIds = [...new Set(rows.map(t => t.run_id).filter((id): id is string => id !== null))];
+  const runQueries = useQueries({
+    queries: runIds.map(id => ({ queryKey: ["run", id], queryFn: () => api.run(id) })),
+  });
+  const runs = new Map<string, Run>();
+  runQueries.forEach(q => { if (q.data) runs.set(q.data.run.id, q.data.run); });
   const dueItems = (inspections.data ?? []).filter(d => d.stretches > 0 || d.active_run !== null);
   const open = [...(todos.data ?? [])].sort(byDue);
   const projectOf = (t: Todo) =>
@@ -261,8 +314,8 @@ export function InboxView() {
       {pending.isError && <p className="form-error">{errorText(pending.error)}</p>}
       {pending.isPending && <p className="muted">loading…</p>}
       {pending.isSuccess && rows.length === 0 && <p>Nothing to review</p>}
-      {groupByRun(rows).map(([runId, txns]) => (
-        <PendingGroup key={runId ?? "none"} runId={runId} txns={txns} capped={rows.length >= PENDING_LIMIT} actions={actions} />
+      {groupPending(rows, runs).map(g => (
+        <PendingGroup key={g.key} group={g} runs={runs} capped={rows.length >= PENDING_LIMIT} actions={actions} />
       ))}
       <h2>Proposals</h2>
       {proposals.isError && <p className="form-error">{errorText(proposals.error)}</p>}
