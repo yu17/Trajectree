@@ -17,6 +17,7 @@ HOOK_LABEL = "hooks"
 HOOK_PATH = "/api/hooks/claude"
 CODEX_HOOK_PATH = "/api/hooks/codex"
 CODEX_EVENTS = ("SessionStart", "Stop", "SessionEnd")
+CODEX_TRUST_EVENT = {"SessionStart": "session_start", "Stop": "stop", "SessionEnd": "session_end"}  # config.toml keys
 CODEX_LABEL = "hooks-codex"
 POST_TIMEOUT_S = 3
 
@@ -176,6 +177,10 @@ def install(
     path = (settings_file or settings_path(env)).resolve()
     current = _load(path)
     if current is None:
+        return 1
+    home = codex_home(env)
+    # Validate the Codex file before anything is minted, confirmed or written.
+    if home is not None and _codex_load(codex_hooks_file(home)) is None:
         return 1
     old_tokens = _hook_tokens(api, path)
     created = api.post(
@@ -357,9 +362,21 @@ def merge_codex_hooks(doc: dict[str, Any], token_file: Path) -> dict[str, Any]:
     merged = copy.deepcopy(doc)
     events = _codex_events(merged, create=True)
     for event in CODEX_EVENTS:
-        groups = _strip_codex(events.get(event, []))
-        # Last: Codex keys trust by position, so appending never shifts the owner's groups.
-        groups.append({"hooks": [codex_handler(token_file)]})
+        # Codex keys trust by position: replace our handler where it already sits, so no owner
+        # group moves; only when ours is absent does it go last.
+        groups, placed = [], False
+        for group in events.get(event, []):
+            hooks = []
+            for h in group.get("hooks", []):
+                if not _ours_codex(h):
+                    hooks.append(h)
+                elif not placed:
+                    hooks.append(codex_handler(token_file))
+                    placed = True
+            if hooks:
+                groups.append({**group, "hooks": hooks})
+        if not placed:
+            groups.append({"hooks": [codex_handler(token_file)]})
         events[event] = groups
     return merged
 
@@ -399,15 +416,19 @@ def _toml(path: Path) -> dict[str, Any]:
 def codex_trusted(config_toml: Path, hooks_file: Path, event: str, group_index: int) -> bool:
     """Whether Codex holds a trusted_hash for our (first) handler in this group."""
     state = _toml(config_toml).get("hooks", {}).get("state", {})
-    entry = state.get(f"{hooks_file}:{event}:{group_index}:0") if isinstance(state, dict) else None
+    snake = CODEX_TRUST_EVENT.get(event, event)
+    key = f"{hooks_file.absolute()}:{snake}:{group_index}:0"
+    entry = state.get(key) if isinstance(state, dict) else None
     return isinstance(entry, dict) and bool(entry.get("trusted_hash"))
 
 
 def _write_secret(path: Path, secret: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
+    tmp.unlink(missing_ok=True)  # a stale temp may carry a broader mode
     try:
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(secret + "\n")
         os.replace(tmp, path)
@@ -456,8 +477,8 @@ def install_codex(
         {"label": codex_token_label(hooks_file), "scope": {"projects": [], "tools": ["hooks"], "write": False}},
     )
     try:
-        _write(hooks_file, merge_codex_hooks(current, token_file))
         _write_secret(token_file, created["secret"])
+        _write(hooks_file, merge_codex_hooks(current, token_file))
     except OSError as exc:
         api.delete(f"/api/tokens/{created['id']}")
         print(f"cannot write codex hooks: {exc}", file=sys.stderr)
