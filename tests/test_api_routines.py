@@ -69,7 +69,7 @@ def test_usage_by_routine_uses_names(client, ledger):
 
 def test_scheduler_status_and_tick_report(client):
     rep = client.post("/api/scheduler/tick").json()
-    assert set(rep) == {"ticked", "fired", "skipped", "retried", "errors"}
+    assert set(rep) == {"ticked", "fired", "skipped", "retried", "errors", "ended_idle"}
     status = client.get("/api/scheduler").json()
     assert set(status) == {"last_tick", "interval_s", "next_fires"} and status["next_fires"] == []
 

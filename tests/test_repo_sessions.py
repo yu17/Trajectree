@@ -28,3 +28,11 @@ def test_ended_sessions_since_oldest_first(conn):
 def test_touch_unknown_session_creates_it(conn):
     s = touch_session(conn, session_id="s9", cwd="/x", project_id=None, now=T0)
     assert s.started_at == T0 and s.source == "stop" and s.project_id is None
+
+
+def test_idle_sessions_lists_only_quiet_open_sessions(conn):
+    from trajectree.repo.sessions import idle_sessions
+    for sid, minute in (("quiet", 0), ("fresh", 50), ("done", 0)):
+        start_session(conn, session_id=sid, cwd="/p", transcript_path=None, project_id="p1", source="startup", now=T0 + timedelta(minutes=minute))
+    end_session(conn, session_id="done", reason="other", now=T0 + timedelta(minutes=1))
+    assert [s.id for s in idle_sessions(conn, before=T0 + timedelta(minutes=30))] == ["quiet"]

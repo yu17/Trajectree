@@ -32,7 +32,7 @@ from trajectree.repo.routines import (
     set_run_state,
 )
 from trajectree.repo.runs import failed_retry_candidates, get_run, update_run
-from trajectree.repo.sessions import ended_sessions_since
+from trajectree.repo.sessions import end_session, ended_sessions_since, idle_sessions
 from trajectree.repo.state import get_state, set_state
 from trajectree.runner.kinds import RoutineRequest
 from trajectree.runner.routines import MAX_ATTEMPTS, RETRY_BACKOFF_S
@@ -74,6 +74,7 @@ class SchedulerReport(BaseModel):
     skipped: list[str] = []
     retried: list[str] = []
     errors: list[str] = []
+    ended_idle: list[str] = []
 
 
 class Scheduler:
@@ -115,6 +116,7 @@ class Scheduler:
             report = SchedulerReport(ticked=now)
             self._fire_due(now, report)
             self._retry_failed(now, report)
+            self._end_idle(now, report)
             self._fire_session_end(now, report)
             with self.ledger.locked() as conn:
                 set_state(conn, LAST_KEY, self._status(conn, now).model_dump(mode="json"))
@@ -203,6 +205,17 @@ class Scheduler:
             if current is not None:
                 update_run(conn, run_id, props={**current.props, "retried": "abandoned", "retry_note": note})
 
+    def _end_idle(self, now: datetime, report: SchedulerReport) -> None:
+        """End each open session silent for `idle_s`, at its last activity (`ended_at == last_seen`)."""
+        try:
+            with self.ledger.locked() as conn:
+                for s in idle_sessions(conn, before=now - timedelta(seconds=self.settings.idle_s)):
+                    end_session(conn, session_id=s.id, reason="idle", now=s.last_seen)
+                    report.ended_idle.append(s.id)
+        except Exception as exc:
+            log.warning("ending idle sessions failed: %s", exc)
+            report.errors.append(f"idle sessions: {type(exc).__name__}: {exc}"[:500])
+
     def _fire_session_end(self, now: datetime, report: SchedulerReport) -> None:
         with self.ledger.locked() as conn:
             refs = session_end_routine_refs(conn)
@@ -219,9 +232,9 @@ class Scheduler:
                         continue
                     handled: list[str] = list(get_state(conn, key) or [])
                     pending = _ended_in_scope(conn, routine, now=now, handled=set(handled))
-                for session_id, slug in pending:
+                for session_id, slug, mark in pending:
                     self.runs.enqueue(RoutineRequest(routine=routine_id, projects=[slug], reason="session_end"))
-                    handled.append(session_id)
+                    handled.append(mark)
                     with self.ledger.locked() as conn:
                         set_state(conn, key, handled[-HANDLED_CAP:])
                     report.fired.append(name)
@@ -245,8 +258,11 @@ class Scheduler:
 
 def _ended_in_scope(
     conn: apsw.Connection, routine: Routine, *, now: datetime, handled: set[str]
-) -> list[tuple[str, str]]:
-    """`(session id, project slug)` of each ended, debounced, not yet handled session in scope.
+) -> list[tuple[str, str, str]]:
+    """`(session id, project slug, handled mark)` of each ended, debounced, not yet handled session.
+
+    The mark is `<id>@<ended_at>`, so a reopened session that ends again fires again. A plain id
+    stored by an earlier version counts as handled too.
 
     The window is the last day, not "since the routine last fired": a session that ended just
     before a run started (inside the debounce) would otherwise never be seen; `handled` dedupes.
@@ -257,10 +273,11 @@ def _ended_in_scope(
     else:
         in_scope = {p.id: p.slug for p in (resolve_project_ref(conn, ref) for ref in routine.scope.projects)}
     return [
-        (s.id, in_scope[s.project_id])
+        (s.id, in_scope[s.project_id], f"{s.id}@{s.ended_at.isoformat()}")
         for s in ended_sessions_since(conn, since=now - SESSION_LOOKBACK)
-        if s.id not in handled
+        if s.ended_at is not None
+        and s.id not in handled
+        and f"{s.id}@{s.ended_at.isoformat()}" not in handled
         and s.project_id in in_scope
-        and s.ended_at is not None
         and s.ended_at <= now - debounce
     ]

@@ -90,6 +90,12 @@ def running_sessions(conn: apsw.Connection, *, since: datetime) -> list[SessionR
     return [_to_session(conn, r) for r in rows]
 
 
+def idle_sessions(conn: apsw.Connection, *, before: datetime) -> list[SessionRow]:
+    """Open sessions whose last activity is older than `before`, oldest first."""
+    rows = select_rows(conn, "session", ["ended_at IS NULL", "last_seen < ?"], [to_db(before)], "last_seen, id")
+    return [_to_session(conn, r) for r in rows]
+
+
 def ended_sessions_since(conn: apsw.Connection, *, since: datetime) -> list[SessionRow]:
     """Sessions that ended at or after `since`, oldest `ended_at` first."""
     rows = select_rows(

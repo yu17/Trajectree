@@ -7,7 +7,7 @@ from trajectree.models import ProjectIn, RoutineIn, RoutineScope
 from trajectree.repo.projects import create_project
 from trajectree.repo.routines import create_routine, get_routine
 from trajectree.repo.runs import get_run, list_runs, update_run
-from trajectree.repo.sessions import end_session, start_session
+from trajectree.repo.sessions import end_session, start_session, touch_session
 from trajectree.repo.state import get_state
 from trajectree.runner.kinds import AskRequest, RoutineRequest
 from trajectree.runner.launch import RunOutcome
@@ -231,7 +231,7 @@ def test_session_end_trigger_fires_once_per_session(ledger, human, settings, log
     runs = list_runs(ledger.conn, routine_id=r.id)
     assert len(runs) == 1 and runs[0].props["request"]["projects"] == ["a"]
     assert runs[0].props["request"]["reason"] == "session_end"
-    assert get_state(ledger.conn, f"scheduler:session_end:{r.id}") == ["s1"]
+    assert get_state(ledger.conn, f"scheduler:session_end:{r.id}") == [f"s1@{(T0 + timedelta(minutes=1)).isoformat()}"]
 
 
 def test_session_end_debounce_comes_from_props(ledger, human, settings, logged_in):
@@ -275,3 +275,42 @@ def test_scheduler_fires_a_runner_only_routine(ledger, human, settings, logged_i
     _routine(ledger, name="ro", model=None, runner="claude")
     rep = Scheduler(ledger, settings, _svc(ledger, settings), now=lambda: T0 + timedelta(minutes=2)).tick()
     assert rep.fired == ["ro"] and rep.skipped == []
+
+
+def test_idle_sessions_end_with_reason_idle_and_fire_session_end(ledger, human, settings, logged_in):
+    a = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    r = _routine(ledger, name="wrap", trigger="session_end", props={"debounce_s": 30})
+    start_session(ledger.conn, session_id="s1", cwd="/a", transcript_path=None, project_id=a.id, source="startup", now=T0)
+    sched = Scheduler(ledger, settings, _svc(ledger, settings), now=lambda: T0 + timedelta(seconds=settings.idle_s + 1))
+    rep = sched.tick()
+    assert rep.ended_idle == ["s1"] and rep.fired == ["wrap"]
+    row = ledger.conn.execute("SELECT ended_at, end_reason FROM session WHERE id = 's1'").fetchone()
+    assert row == (to_db(T0), "idle")
+    assert sched.tick().fired == [] and len(list_runs(ledger.conn, routine_id=r.id)) == 1
+
+
+def test_reopened_session_fires_session_end_again(ledger, human, settings, logged_in):
+    a = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    r = _routine(ledger, name="wrap", trigger="session_end", props={"debounce_s": 30})
+    start_session(ledger.conn, session_id="s1", cwd="/a", transcript_path=None, project_id=a.id, source="startup", now=T0)
+    idle = timedelta(seconds=settings.idle_s + 1)
+    assert Scheduler(ledger, settings, _svc(ledger, settings), now=lambda: T0 + idle).tick().fired == ["wrap"]
+    t1 = T0 + idle + timedelta(minutes=5)
+    touch_session(ledger.conn, session_id="s1", cwd="/a", project_id=a.id, now=t1)
+    sched = Scheduler(ledger, settings, _svc(ledger, settings), now=lambda: t1 + idle)
+    assert sched.tick().fired == ["wrap"]
+    assert len(list_runs(ledger.conn, routine_id=r.id)) == 2
+    assert get_state(ledger.conn, f"scheduler:session_end:{r.id}") == [
+        f"s1@{T0.isoformat()}", f"s1@{t1.isoformat()}"
+    ]
+
+
+def test_legacy_plain_handled_id_is_not_fired_again(ledger, human, settings, logged_in):
+    from trajectree.repo.state import set_state
+    a = create_project(ledger, human, ProjectIn(slug="a", title="A", kind="research"))
+    r = _routine(ledger, name="wrap", trigger="session_end", props={"debounce_s": 30})
+    start_session(ledger.conn, session_id="s1", cwd="/a", transcript_path=None, project_id=a.id, source="startup", now=T0)
+    end_session(ledger.conn, session_id="s1", reason="other", now=T0)
+    set_state(ledger.conn, f"scheduler:session_end:{r.id}", ["s1"])
+    rep = Scheduler(ledger, settings, _svc(ledger, settings), now=lambda: T0 + timedelta(minutes=2)).tick()
+    assert rep.fired == [] and list_runs(ledger.conn, routine_id=r.id) == []
