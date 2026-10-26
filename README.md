@@ -81,6 +81,24 @@ docker compose exec trajectree ls -ld /host/sockets
 
 Instance state must never live inside `TRAJECTREE_PROJECTS_ROOT`.
 
+Upgrading to the version with work segments and inspections:
+
+1. Session signals are rebuilt on the first ingest pass after this version
+   (schema v5 deletes them and the transcript cursors). History older than the
+   scan window (`TRAJECTREE_SCAN_SINCE_DAYS`) is not rebuilt, unless a project's
+   import chose `all`. Run `trajectree ingest` to do it now.
+2. The stale chip now means "due for inspection". `TRAJECTREE_STALE_SETTLE_H`
+   no longer has any effect.
+3. Installed prompt files are never overwritten. To pick up the new tier
+   guidance in `starting_point.md`, `summarize.md` and `summarize_session.md`,
+   delete those files (or the whole `prompts/` directory) under the instance's
+   data dir before restarting. The new `inspect.md` and `inspect_boundaries.md`
+   are seeded automatically.
+4. Every project starts with an empty inspection watermark, so its whole scanned
+   history is due once.
+5. Run `trajectree hooks install` again to add the Codex hooks, then trust them
+   in Codex.
+
 A changed `.env` takes effect with `docker compose up -d`; `docker compose
 restart` keeps the old values. While a first import runs, set
 `TRAJECTREE_INGEST_EVERY=0` to pause the ingest loop, and run one pass by hand
@@ -253,8 +271,14 @@ and `TRAJECTREE_BACKENDS_ROOT`, Codex sessions under `TRAJECTREE_CODEX_SESSIONS`
 registered folder equals the session's `cwd` (a host path) or is an ancestor
 of it; the deepest registered folder wins. Codex sessions are attached the same
 way, appear as the `codex` import source, and `summarize --session <id>` works
-for them. Codex has no live hooks: a session counts as live by file modification
-time.
+for them. Without the Codex hooks (see [Live sessions](#live-sessions-hooks)) a
+Codex session counts as live by file modification time.
+
+A session's transcript is cut into work segments: a new segment starts after
+`TRAJECTREE_SEGMENT_GAP_S` (7200) seconds without a conversation record. Git
+commits and folder changes are grouped the same way. Neighbouring segments
+across sources merge into stretches of work, which are what inspections read
+(see [Inspections](#inspections)).
 
 - `TRAJECTREE_INGEST_EVERY` sets the loop period in seconds (300; 0 disables).
 - The live marker is derived at scan time, so `TRAJECTREE_LIVE_WINDOW` must be
@@ -523,6 +547,93 @@ for; `install` likewise replaces earlier entries, so changing the port leaves
 none stale. All three accept
 `--settings-file` to target another file.
 
+When a Codex home exists (`$CODEX_HOME`, else `~/.codex`), `install` also
+registers command hooks for Codex in `~/.codex/hooks.json`. Trajectree's handler
+is appended as its own last group, and a re-install replaces it in place without
+moving the groups around it. The hook runs `trajectree hooks post`, so
+`trajectree` must be on the PATH that Codex sees. It posts to
+`/api/hooks/codex` with a liveness-only token kept in `codex-hook-token`, a 0600
+file next to the CLI config file (`~/.config/trajectree/`). The installer never
+writes Codex trust entries: Codex asks you to trust the new hooks on its next
+start, and `hooks show` reports `present (not yet trusted)` until you have.
+Codex also needs hooks switched on in its `config.toml`:
+
+```toml
+[features]
+hooks = true
+```
+
+`install` prints a reminder when that is missing.
+
+Sessions that never send a Stop do not stay live forever. A hooked session with
+no Stop for `TRAJECTREE_SESSION_IDLE_S` (default: the segment gap, 7200 s) is
+ended as `idle`, with `ended_at` set to the time it was last seen. A later Stop
+reopens it. On the first scheduler tick after an upgrade, every session that
+has been quiet longer than the idle window is ended at once.
+
+## Inspections
+
+An inspection is a run that reads a project's recent history and records what it
+finds as blocks, pills, todos and links. It is the one way history becomes
+timeline events without you writing them, and it runs only on the runner and
+model you pick; nothing starts by itself.
+
+A stretch of work is **due** when it has settled and no inspection has covered
+it. Settled means its last activity is older than `TRAJECTREE_SEGMENT_GAP_S` and
+the project has no live session, so work in progress never lands in the Inbox.
+The timeline's stale chip means "due for inspection" and starts one.
+
+```bash
+trajectree inspections                     # projects with history due
+trajectree inspect <slug> [--model M] [--runner R] [--since YYYY-MM-DD] [--no-wait]
+trajectree inspect --all  [--model M] [--runner R] [--no-wait]
+```
+
+The Inbox has a "Due for inspection" section with a model picker per project and
+Start / Start all. A project page offers "Re-inspect since <date>".
+
+- The inspection watermark is kept in the daemon state, not in the ledger, so
+  advancing it creates no transaction. Rejecting an inspection's writes does not
+  move it back. "Re-inspect since <date>" (or `inspect --since`) resets it to
+  that local date, so the history from the date on is due again, for another
+  model say.
+- A run writes only through `record_event`, `update_event`, `add_todo`, `link`
+  and `set_project_summary`, and every write lands pending in the Inbox,
+  attributed to the run. Pending writes are grouped per run, with Accept all
+  and Reject all for the group.
+- A large backlog runs as a series on one model. A read-only boundary pass
+  (`inspect_boundaries`) groups the stretches into episodes that fit the
+  budget, then one `inspect` run per episode, in order, each seeing the blocks
+  the earlier ones created. A failed run stops the series and keeps the
+  watermark where it was; start again and only what is still due is covered.
+- `TRAJECTREE_INSPECT_BUDGET_CHARS` caps the digest text one run reads. An
+  episode larger than the budget still runs with its text cut short, and the
+  segments that did not fit stay due. Keep the budget above
+  `TRAJECTREE_DIGEST_MAX_CHARS` plus a little overhead: otherwise a stretch whose
+  first segment exceeds it is never covered and stays due.
+- One inspection per project at a time.
+- The prompts are `data/prompts/inspect.md` and `inspect_boundaries.md`, editable
+  like the others.
+
+## Blocks and pills
+
+Events have a tier. The agent that records an event, and you, decide it by
+these tests:
+
+- A **block** is a checkpoint: the project is left in a state you could stop
+  at, demo, hand over or return to; something works, ships or is written down.
+  A release is a block.
+- A **pill** is a moment on the way to a block: a design choice, a notable
+  commit (a revert, a switch of approach, the commit that first made something
+  work), a blocker hit or cleared, a meeting held. Ordinary commits and
+  individual prompts are not pills; they are already on the activity strip.
+
+On the timeline a block is drawn at its end date as a fixed label, not as a bar.
+Pills are drawn smaller, and hidden while the visible range is wider than 60
+days. A pill belongs to a block through a `part_of` edge (pill to block); the
+details panel of a block lists its pills and that of a pill names its block, and
+the edge is not drawn as a wire. Set the tier with `trajectree event --tier`.
+
 ## Routines
 
 A routine is a scheduled run: a cron trigger in a time zone, a prompt, a scope,
@@ -560,6 +671,10 @@ trajectree scheduler [tick]                  # show the scheduler, or tick it no
   `trajectree routines` shows each routine's model (`runner/model` when a
   runner is set, `runner/default` for a runner alone), or `no model`.
 
+- A routine whose trigger is `session_end` fires when a session ends, including
+  when it ends as idle (see [Live sessions](#live-sessions-hooks)), and fires
+  again when a reopened session idles out. On the first scheduler tick after an
+  upgrade, sessions that ended within the last day fire it once.
 - The seeds take their time zone from `TRAJECTREE_TZ` when they are created;
   compose passes `TZ` from your shell or `.env` (default `UTC`). Changing it
   later does not move existing routines: patch their `tz` instead.
@@ -759,7 +874,7 @@ its cache. Then run `trajectree models --refresh`. Pick a Codex model with
 | Container, `./cfg/home/.ssh/` | `known_hosts`: the Slurm login node's host key, accepted on first connect |
 | Container, `./cfg/home/.config/chromium/`, `./cfg/home/.local/share/pki/` | `reports` image only: Chromium's `Crash Reports/` settings and an empty NSS database, created on the first PDF/PPTX export (a few KB). Chromium's per-export profile goes to a private temporary directory under `/tmp` that is removed after the export |
 | Host CLI, `init-project --guidance`, `guidance install` | `<project>/.claude/rules/trajectree.md`, `<project>/.git/info/exclude`, Claude Code's user MCP config via `claude mcp add`; `guidance remove` deletes the rules file and the exclude line. Plain `init-project` writes nothing on the host |
-| Host CLI, `hooks install` | `~/.claude/settings.json` after confirmation, with `settings.json.trajectree.bak` |
+| Host CLI, `hooks install` | `~/.claude/settings.json` after confirmation, with `settings.json.trajectree.bak`; when a Codex home exists, also `~/.codex/hooks.json` (Trajectree's group only) and `~/.config/trajectree/codex-hook-token` (0600). No Codex trust entries are written |
 | Host, you (optional) | `sockets/<profile>.sock` in the instance dir (created by systemd, 0600), `~/.config/trajectree/backends/<profile>.env`, the two units in `~/.config/systemd/user/`, one ufw rule; see [Local backends through a socket](#local-backends-through-a-socket). The container only connects to the sockets (mounted read-only) |
 | Host, anything else | Nothing |
 
@@ -783,7 +898,10 @@ make sure `~/.codex/sessions` exists (`mkdir -p ~/.codex/sessions`) before
 | `TRAJECTREE_PATH_MAP` | none | `host=container;host2=container2`: where host paths live in the container |
 | `TRAJECTREE_INGEST_EVERY` | `300` | Seconds between ingest passes; `0` disables the loop |
 | `TRAJECTREE_LIVE_WINDOW` | `900` | Seconds since the last transcript activity during which a session counts as live |
-| `TRAJECTREE_STALE_SETTLE_H` | `24` | Hours after a project's first activity since its last summary before it is flagged stale (summary due) |
+| `TRAJECTREE_STALE_SETTLE_H` | `24` | Unused: it no longer has any effect (the stale chip means "due for inspection") |
+| `TRAJECTREE_SEGMENT_GAP_S` | `7200` | Seconds of silence that split a session into work segments, and that must pass before a stretch counts as settled |
+| `TRAJECTREE_SESSION_IDLE_S` | the segment gap | Seconds without a Stop before a hooked session is ended as `idle` |
+| `TRAJECTREE_INSPECT_BUDGET_CHARS` | `40000` | Characters of stretch digests one inspection run reads. Keep it above `TRAJECTREE_DIGEST_MAX_CHARS` plus a little overhead, or a stretch whose first segment exceeds it is never covered and stays due |
 | `TRAJECTREE_SCAN_SINCE_DAYS` | `365` | Ignore transcripts and commits older than this many days |
 | `TRAJECTREE_CFG_DIR` | `<data dir>/cfg` (`/cfg`, bind-mounted from `./cfg`, in Docker) | Container-private runner config: OAuth token, synced backend profiles, runner home |
 | `TRAJECTREE_CLAUDE_BIN` | `claude` | Claude Code binary the runner spawns |

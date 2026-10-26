@@ -1,5 +1,12 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
+
+// The live model list fails in e2e (no network, or a fake token) and a failed refresh keeps the list it had,
+// which is empty here; add the model the steps pick by hand, as the Settings tab does.
+async function addFable(page: Page, headers: Record<string, string>) {
+  const edited = await page.request.post("/api/models/edit", { headers, data: { runner: "claude", add: ["claude-fable-5-1"] } });
+  expect(edited.status()).toBe(200);
+}
 
 test("create a project and an event, see the block, revert it from the ledger", async ({ page }) => {
   const token = readFileSync(process.env.TRAJECTREE_DATA_DIR + "/token", "utf8").trim();
@@ -36,6 +43,7 @@ test("create a project and an event, see the block, revert it from the ledger", 
   // No network in e2e: the live Claude call fails and the catalog falls back to the built-in models.
   const refreshed = await page.request.post("/api/models/refresh", { headers: { Authorization: `Bearer ${token}` } });
   expect(refreshed.status()).toBe(200);
+  await addFable(page, { Authorization: `Bearer ${token}` });
   await page.getByRole("button", { name: "Quick capture" }).click();
   await page.getByLabel("Describe it").fill("we froze the encoder");
   await page.getByRole("combobox", { name: "Model", exact: true }).selectOption({ value: "claude|claude-fable-5-1" });
@@ -60,6 +68,7 @@ test("write and export a report, run a routine, open settings", async ({ page })
   expect(cred.status()).toBe(200);
   const refreshed = await page.request.post("/api/models/refresh", { headers: auth });
   expect(refreshed.status()).toBe(200);
+  await addFable(page, auth);
 
   await page.getByRole("tab", { name: "Reports" }).click();
   await page.getByRole("button", { name: "New report" }).click();

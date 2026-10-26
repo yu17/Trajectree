@@ -83,6 +83,17 @@ def test_projects_root_must_exist(path):
     assert mount["source"].startswith("${TRAJECTREE_PROJECTS_ROOT:?")
 
 
+@pytest.mark.parametrize("path", ["compose.yaml", "deploy/compose.yaml"])
+def test_segment_and_inspect_variables_pass_through(path):
+    env = _load(path)["services"]["trajectree"]["environment"]
+    for key in (
+        "TRAJECTREE_SEGMENT_GAP_S",
+        "TRAJECTREE_SESSION_IDLE_S",
+        "TRAJECTREE_INSPECT_BUDGET_CHARS",
+    ):
+        assert key in env
+
+
 def test_env_example_leaves_projects_root_empty():
     # Empty, so compose's ${TRAJECTREE_PROJECTS_ROOT:?...} stops an install that never set it.
     example = (ROOT / "deploy/env.example").read_text()
