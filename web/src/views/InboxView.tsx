@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
-import type { Conflict, InspectionDue, ModelChoice, Todo, Txn } from "../api/types";
+import type { Conflict, InspectionDue, ModelChoice, ReviewManyResult, Todo, Txn } from "../api/types";
 import { errorText } from "../components/errorText";
 import { ModelPicker } from "../components/ModelPicker";
 import { useRun } from "../components/useRun";
@@ -14,7 +14,7 @@ import "./views.css";
 // Shared with App, which shows the count on the Inbox tab.
 export const pendingTxnsQuery = {
   queryKey: ["txns", "pending"],
-  queryFn: () => api.txns(200, undefined, { review: "pending" }),
+  queryFn: () => api.txns(PENDING_LIMIT, undefined, { review: "pending" }),
 };
 
 // Shared with App, which counts the projects that can be started on the Inbox tab.
@@ -119,16 +119,44 @@ function PendingRow({ txn, actions, onReject }: {
   );
 }
 
-function PendingGroup({ runId, txns, actions }: {
-  runId: string | null; txns: Txn[]; actions: ReturnType<typeof useTxnActions>;
+const PENDING_LIMIT = 200;
+const PAGE = 500; // the server's cap for one txns page and for one review-many call
+
+// Every pending write of a run, newest first, paged past the list's cap.
+async function fetchRunPending(runId: string): Promise<string[]> {
+  const ids: string[] = [];
+  let before: string | undefined;
+  for (;;) {
+    const page = await api.txns(PAGE, before, { review: "pending", run_id: runId });
+    ids.push(...page.map(t => t.id));
+    if (page.length < PAGE) return ids;
+    before = page[page.length - 1].id;
+  }
+}
+
+// Review ids in chunks the server accepts, in the order given (newest first for a reject);
+// stops at the first chunk that fails.
+async function reviewChunks(ids: string[], state: "accepted" | "rejected"): Promise<ReviewManyResult> {
+  const done: string[] = [];
+  for (let i = 0; i < ids.length; i += PAGE) {
+    const r = await api.reviewMany(ids.slice(i, i + PAGE), state);
+    done.push(...r.done);
+    if (r.failed !== null) return { done, failed: r.failed, conflicts: r.conflicts };
+  }
+  return { done, failed: null, conflicts: [] };
+}
+
+function PendingGroup({ runId, txns, capped, actions }: {
+  runId: string | null; txns: Txn[]; capped: boolean; actions: ReturnType<typeof useTxnActions>;
 }) {
   const qc = useQueryClient();
   const run = useRun(runId);
   const [conflicted, setConflicted] = useState(false);
   const [failure, setFailure] = useState<{ failed: string; conflicts: Conflict[] } | null>(null);
-  const ids = txns.map(t => t.id);
   const many = useMutation({
-    mutationFn: (state: "accepted" | "rejected") => api.reviewMany(ids, state),
+    // A run's group is fetched whole; writes without a run have no filter, so the loaded ones are used.
+    mutationFn: async (state: "accepted" | "rejected") =>
+      reviewChunks(runId === null ? txns.map(t => t.id) : await fetchRunPending(runId), state),
     onSuccess: r => setFailure(r.failed === null ? null : { failed: r.failed, conflicts: r.conflicts }),
     // Refresh after a partial result too: the finished ones left the pending list.
     onSettled: () => {
@@ -136,11 +164,13 @@ function PendingGroup({ runId, txns, actions }: {
       void qc.invalidateQueries({ queryKey: ["txns"] });
       void qc.invalidateQueries({ queryKey: ["txn"] });
       void qc.invalidateQueries({ queryKey: ["todos"] });
+      void qc.invalidateQueries({ queryKey: ["inspections"] });
+      void qc.invalidateQueries({ queryKey: ["runs"] });
     },
   });
   const r = run.data?.run;
   const heading = runId === null
-    ? "Other writes"
+    ? `Other writes (${txns.length})${capped ? ` (showing first ${PENDING_LIMIT})` : ""}`
     : r ? `${r.kind} · ${r.model ?? r.runner} · ${new Date(r.created_at).toLocaleString()}` : runId;
   return (
     <div className="pending-group">
@@ -232,7 +262,7 @@ export function InboxView() {
       {pending.isPending && <p className="muted">loading…</p>}
       {pending.isSuccess && rows.length === 0 && <p>Nothing to review</p>}
       {groupByRun(rows).map(([runId, txns]) => (
-        <PendingGroup key={runId ?? "none"} runId={runId} txns={txns} actions={actions} />
+        <PendingGroup key={runId ?? "none"} runId={runId} txns={txns} capped={rows.length >= PENDING_LIMIT} actions={actions} />
       ))}
       <h2>Proposals</h2>
       {proposals.isError && <p className="form-error">{errorText(proposals.error)}</p>}

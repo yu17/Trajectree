@@ -94,7 +94,7 @@ describe("ProjectView", () => {
     wrap(<ProjectView projectId="p1" onClose={() => {}} />);
     expect(await screen.findByText("No summary yet")).toBeTruthy();
     await screen.findByText("Email Bob");
-    expect(screen.queryByText("stale")).toBeNull();
+    expect(screen.queryByText(/stretches to inspect/)).toBeNull();
     expect(screen.queryByText("running")).toBeNull();
   });
 

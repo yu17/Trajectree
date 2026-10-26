@@ -89,15 +89,17 @@ describe("InboxView", () => {
     await waitFor(() => expect(api.inspectAll).toHaveBeenCalledWith(FABLE));
   });
   it("groups pending writes by run and rejects a group newest first", async () => {
-    api.txns.mockResolvedValue([
-      { ...txn("t1"), run_id: "run1" }, { ...txn("t2"), run_id: "run1" }, txn("t3"),
-    ]);
+    // The list shows two of the run's writes; the group fetch finds a third beyond the list's cap.
+    api.txns.mockImplementation(async (_limit: number, _before: unknown, filter?: { run_id?: string }) =>
+      filter?.run_id ? [txn("t9"), txn("t2"), txn("t1")].map(t => ({ ...t, run_id: "run1" }))
+        : [{ ...txn("t1"), run_id: "run1" }, { ...txn("t2"), run_id: "run1" }, txn("t3")]);
     api.run.mockResolvedValue({ run: { id: "run1", kind: "inspect", model: "claude-fable-5-1", created_at: "2026-10-20T10:00:00Z" } as Run, txn_ids: [] });
     api.reviewMany.mockResolvedValue({ done: ["t1", "t2"], failed: null, conflicts: [] });
     wrap(<InboxView />);
     expect(await screen.findByRole("heading", { name: new RegExp(`^inspect · claude-fable-5-1 · `) })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Other writes" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Other writes (1)" })).toBeTruthy();
     fireEvent.click(screen.getAllByRole("button", { name: "Reject all" })[0]);
-    await waitFor(() => expect(api.reviewMany).toHaveBeenCalledWith(["t1", "t2"], "rejected"));
+    await waitFor(() => expect(api.reviewMany).toHaveBeenCalledWith(["t9", "t2", "t1"], "rejected"));
+    expect(api.txns).toHaveBeenCalledWith(500, undefined, { review: "pending", run_id: "run1" });
   });
 });
