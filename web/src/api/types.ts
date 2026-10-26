@@ -217,7 +217,7 @@ export interface IngestReport {
   exports_errors: string[];
 }
 
-export type RunKind = "summarize" | "summarize_session" | "ask" | "quick_add" | "routine" | "report" | "starting_point";
+export type RunKind = "summarize" | "summarize_session" | "ask" | "quick_add" | "routine" | "report" | "starting_point" | "inspect" | "inspect_boundaries";
 export type RunStatus = "queued" | "running" | "ok" | "failed" | "capped" | "cancelled";
 
 export interface Proposal {
@@ -603,3 +603,26 @@ export interface Catalog {
 
 export type EventPatch = Partial<EventIn>;
 export type TodoPatch = Partial<TodoIn>;
+
+// One project with settled stretches that no inspection covers yet.
+export interface InspectionDue {
+  project_id: string;
+  slug: string;
+  title: string;
+  stretches: number;
+  first_day: string;
+  last_day: string;
+  sessions: number;
+  commits: number;
+  file_days: number;
+  active_run: string | null;
+  // Which episode of the series an active run is on; null for a boundary pass.
+  episode: number | null;
+  episodes: number | null;
+}
+
+export interface ReviewManyResult {
+  done: string[];
+  failed: string | null;
+  conflicts: Conflict[];
+}

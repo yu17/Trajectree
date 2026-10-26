@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -6,7 +6,7 @@ import { ProjectView } from "./ProjectView";
 import { FABLE, pickFable, testCatalog } from "../components/testCatalog";
 import type { Event, Project, Routine, Run, TimelineResponse } from "../api/types";
 
-const api = vi.hoisted(() => ({ projects: vi.fn(), timeline: vi.fn(), resources: vi.fn(), signals: vi.fn(), routines: vi.fn(), summarize: vi.fn(), run: vi.fn(), models: vi.fn() }));
+const api = vi.hoisted(() => ({ projects: vi.fn(), timeline: vi.fn(), resources: vi.fn(), signals: vi.fn(), routines: vi.fn(), summarize: vi.fn(), inspect: vi.fn(), run: vi.fn(), models: vi.fn() }));
 vi.mock("../api/client", () => ({ api, ApiError: class extends Error {} }));
 
 const wrap = (ui: React.ReactElement) => render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>{ui}</QueryClientProvider>);
@@ -24,7 +24,7 @@ const timeline = (over: Partial<TimelineResponse> = {}): TimelineResponse => ({
   ],
   edges: [], pending: { event: {}, todo: {}, edge: {} }, strip: [],
   live: [{ project_id: "p1", session_id: "s1", cwd: "/home/u/clmi", title: null, started: null, last_seen: "2026-10-22T10:00:00Z" }],
-  stale: ["p1"],
+  stale: ["p1"], due: { p1: 3 },
   ...over,
 });
 
@@ -56,7 +56,7 @@ describe("ProjectView", () => {
     expect(screen.getByText("research · active")).toBeTruthy();
     for (const h of ["Summary", "Events", "Todos", "Resources", "Routines"]) expect(screen.getByRole("heading", { name: h })).toBeTruthy();
     expect(screen.getByText("CLMI is a two-stage model.").tagName).toBe("PRE");
-    expect(await screen.findByText("stale")).toBeTruthy();
+    expect(await screen.findByText("3 stretches to inspect")).toBeTruthy();
 
     const events = screen.getByRole("list", { name: "Events" });
     const items = within(events).getAllByRole("listitem");
@@ -90,7 +90,7 @@ describe("ProjectView", () => {
 
   it("shows No summary yet without a summary", async () => {
     api.projects.mockResolvedValue([project("p1", "clmi")]);
-    api.timeline.mockResolvedValue(timeline({ stale: [], live: [] }));
+    api.timeline.mockResolvedValue(timeline({ stale: [], due: {}, live: [] }));
     wrap(<ProjectView projectId="p1" onClose={() => {}} />);
     expect(await screen.findByText("No summary yet")).toBeTruthy();
     await screen.findByText("Email Bob");
@@ -108,5 +108,25 @@ describe("ProjectView", () => {
     expect(api.summarize).toHaveBeenCalledWith("p1", FABLE);
     expect(await screen.findByText("Summary regeneration queued (run run9)")).toBeTruthy();
     await waitFor(() => expect(api.run).toHaveBeenCalledWith("run9"));
+  });
+
+  it("inspects with the chosen model", async () => {
+    const user = userEvent.setup();
+    api.inspect.mockResolvedValue(run("run10", "queued"));
+    wrap(<ProjectView projectId="p1" onClose={() => {}} />);
+    await pickFable(await screen.findByRole("combobox", { name: "Inspection model" }));
+    await user.click(screen.getByRole("button", { name: "Inspect" }));
+    await waitFor(() => expect(api.inspect).toHaveBeenCalledWith("p1", FABLE));
+    expect(await screen.findByText("Inspection queued (run run10)")).toBeTruthy();
+  });
+
+  it("re-inspects since a date", async () => {
+    const user = userEvent.setup();
+    api.inspect.mockResolvedValue(run("run11", "queued"));
+    wrap(<ProjectView projectId="p1" onClose={() => {}} />);
+    await pickFable(await screen.findByRole("combobox", { name: "Inspection model" }));
+    fireEvent.change(screen.getByLabelText("Re-inspect since"), { target: { value: "2026-09-01" } });
+    await user.click(screen.getByRole("button", { name: "Re-inspect" }));
+    await waitFor(() => expect(api.inspect).toHaveBeenCalledWith("p1", FABLE, "2026-09-01"));
   });
 });

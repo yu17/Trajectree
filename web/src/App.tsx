@@ -4,7 +4,7 @@ import { api, ApiError } from "./api/client";
 import { AskPanel } from "./components/AskPanel";
 import { ProjectForm } from "./components/ProjectForm";
 import { QuickCapture } from "./components/QuickCapture";
-import { InboxView, pendingTxnsQuery } from "./views/InboxView";
+import { InboxView, inspectionsQuery, isDue, pendingTxnsQuery } from "./views/InboxView";
 import { LedgerView } from "./views/LedgerView";
 import { ProjectView } from "./views/ProjectView";
 import { RunsView } from "./views/RunsView";
@@ -40,7 +40,8 @@ export default function App() {
     retry: (n, err) => !isUnauthorized(err) && n < 3,
   });
   const pending = useQuery({ ...pendingTxnsQuery, retry: (n, err) => !isUnauthorized(err) && n < 3 });
-  const pendingCount = pending.data?.length ?? 0;
+  const inspections = useQuery({ ...inspectionsQuery, retry: (n, err) => !isUnauthorized(err) && n < 3 });
+  const pendingCount = (pending.data?.length ?? 0) + (inspections.data?.filter(isDue).length ?? 0);
 
   const created = () => {
     setPanel(null);

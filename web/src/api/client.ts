@@ -32,6 +32,8 @@ import type {
   EventIn,
   EventPatch,
   IngestReport,
+  InspectionDue,
+  ReviewManyResult,
   Project,
   ProjectIn,
   Resource,
@@ -99,11 +101,12 @@ export const api = {
     return request<Todo[]>("GET", `/api/todos${q.size ? `?${q}` : ""}`);
   },
   // `actor_kind` is a comma-separated list, e.g. "agent,session".
-  txns(limit = 50, before?: string, filter?: { review?: Review; actor_kind?: string }) {
+  txns(limit = 50, before?: string, filter?: { review?: Review; actor_kind?: string; run_id?: string }) {
     const q = new URLSearchParams({ limit: String(limit) });
     if (before) q.set("before", before);
     if (filter?.review) q.set("review", filter.review);
     if (filter?.actor_kind) q.set("actor_kind", filter.actor_kind);
+    if (filter?.run_id) q.set("run_id", filter.run_id);
     return request<Txn[]>("GET", `/api/ledger/txns?${q}`);
   },
   txn: (id: string) => request<TxnDetail>("GET", `/api/ledger/txns/${encodeURIComponent(id)}`),
@@ -111,6 +114,8 @@ export const api = {
     request<Txn>("POST", `/api/ledger/txns/${encodeURIComponent(id)}/revert`, { intent }),
   review: (id: string, state: "accepted" | "rejected") =>
     request<Txn>("POST", `/api/ledger/txns/${encodeURIComponent(id)}/review`, { state }),
+  reviewMany: (ids: string[], state: "accepted" | "rejected") =>
+    request<ReviewManyResult>("POST", "/api/ledger/review-many", { ids, state }),
   search: (q: string) =>
     request<SearchHit[]>("GET", `/api/search?${new URLSearchParams({ q })}`),
   // `kinds` narrows the signal kinds; `limit` overrides the server's default of 200.
@@ -141,6 +146,11 @@ export const api = {
   editModels: (body: { runner: string; add?: string[]; delete?: string[] }) => request<Catalog>("POST", "/api/models/edit", body),
   summarize: (projectId: string, choice: ModelChoice) =>
     request<Run>("POST", `/api/projects/${encodeURIComponent(projectId)}/summarize`, choice),
+  inspections: () => request<InspectionDue[]>("GET", "/api/inspections"),
+  inspect: (projectId: string, choice: ModelChoice, since?: string) =>
+    request<Run>("POST", `/api/projects/${encodeURIComponent(projectId)}/inspect`, { ...choice, ...(since ? { since } : {}) }),
+  inspectAll: (choice: ModelChoice) =>
+    request<{ runs: Run[]; skipped: string[] }>("POST", "/api/inspect", { projects: "all", ...choice }),
   summarizeSession: (sessionId: string, choice: ModelChoice) =>
     request<Run>("POST", `/api/sessions/${encodeURIComponent(sessionId)}/summarize`, choice),
   ask: (body: AskRequest) => request<Run>("POST", "/api/ask", body),

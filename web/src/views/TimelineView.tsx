@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { DetailsPanel } from "../components/DetailsPanel";
 import type { ModelChoice } from "../api/types";
@@ -26,21 +26,27 @@ export function TimelineView({ onOpenProject }: { onOpenProject?: (id: string) =
   const [selected, setSelected] = useState<Selection | null>(null);
   const actions = useTxnActions();
   const [notice, setNotice] = useState<string | null>(null);
-  // Projects with a regeneration in flight: a second stale click on one is ignored,
+  const qc = useQueryClient();
+  // Projects with an inspection request in flight: a second chip click on one is ignored,
   // while a click on another lane still fires.
   const regeneratingRef = useRef<Set<string>>(new Set());
   const { mutate: regenerate } = useMutation({
-    mutationFn: ({ projectId, choice }: { projectId: string; choice: ModelChoice }) => api.summarize(projectId, choice),
-    onSuccess: run => setNotice(`Summary regeneration queued (run ${run.id})`),
+    mutationFn: ({ projectId, choice }: { projectId: string; choice: ModelChoice }) => api.inspect(projectId, choice),
+    onSuccess: run => setNotice(`Inspection queued (run ${run.id})`),
     onError: err => setNotice(errorText(err)),
-    onSettled: (_run, _err, { projectId }) => { regeneratingRef.current.delete(projectId); },
+    onSettled: (_run, _err, { projectId }) => {
+      regeneratingRef.current.delete(projectId);
+      void qc.invalidateQueries({ queryKey: ["inspections"] });
+      void qc.invalidateQueries({ queryKey: ["runs"] });
+      void qc.invalidateQueries({ queryKey: ["timeline"] });
+    },
   });
-  // A stale chip is not a button, so the model for its regeneration is picked in the toolbar.
+  // A chip is not a button, so the model for its inspection is picked in the toolbar.
   const [choice, setChoice] = useState<ModelChoice | null>(null);
   const onChip = useCallback((projectId: string, kind: "running" | "stale") => {
     if (kind !== "stale" || regeneratingRef.current.has(projectId)) return;
     if (!choice) {
-      setNotice("Choose a model in the toolbar to regenerate a summary");
+      setNotice("Choose a model in the toolbar to inspect");
       return;
     }
     // Added before mutate: the mutation function starts a tick later.
@@ -70,7 +76,7 @@ export function TimelineView({ onOpenProject }: { onOpenProject?: (id: string) =
           <input type="checkbox" checked={showAllWires} onChange={e => setShowAllWires(e.target.checked)} />
           Show all wires
         </label>
-        <ModelPicker value={choice} onChange={setChoice} label="Summary model" />
+        <ModelPicker value={choice} onChange={setChoice} label="Inspection model" />
       </div>
       <ActionNotice conflicts={actions.conflicts} error={actions.error ?? notice}
         onDismiss={() => { actions.dismiss(); setNotice(null); }} />

@@ -61,6 +61,20 @@ export function ProjectView({ projectId, onClose }: { projectId: string; onClose
     void qc.invalidateQueries({ queryKey: ["timeline"] });
   }, [qc, runStatus]);
 
+  const [inspectChoice, setInspectChoice] = useState<ModelChoice | null>(null);
+  const [since, setSince] = useState("");
+  const inspect = useMutation({
+    mutationFn: (v: { c: ModelChoice; since?: string }) =>
+      v.since ? api.inspect(projectId, v.c, v.since) : api.inspect(projectId, v.c),
+    onSuccess: run => setNotice(`Inspection queued (run ${run.id})`),
+    onError: err => setNotice(errorText(err)),
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ["inspections"] });
+      void qc.invalidateQueries({ queryKey: ["runs"] });
+      void qc.invalidateQueries({ queryKey: ["timeline"] });
+    },
+  });
+
   const project = projects.data?.find(p => p.id === projectId);
   const tl = timeline.data;
   const events = (tl?.events ?? [])
@@ -68,7 +82,7 @@ export function ProjectView({ projectId, onClose }: { projectId: string; onClose
     .sort((a, b) => Date.parse(b.t_start) - Date.parse(a.t_start))
     .slice(0, MAX_EVENTS);
   const todos = (tl?.todos ?? []).filter(t => t.project_id === projectId && OPEN_TODO.includes(t.state));
-  const stale = tl?.stale.includes(projectId) ?? false;
+  const toInspect = tl?.due?.[projectId] ?? 0;
   const live = tl?.live.some(s => s.project_id === projectId) ?? false;
   const jobStates = latestJobStates(signals.data ?? []);
   // A routine's scope may name a project by slug or by id.
@@ -90,9 +104,20 @@ export function ProjectView({ projectId, onClose }: { projectId: string; onClose
 
       <h2>Summary</h2>
       <div className="row-actions">
-        {stale && <span className="badge stale">stale</span>}
+        {toInspect > 0 && <span className="badge stale">{`${toInspect} stretches to inspect`}</span>}
         <ModelPicker value={choice} onChange={setChoice} />
         <button disabled={!choice || summarize.isPending} onClick={() => choice && summarize.mutate(choice)}>Regenerate summary</button>
+      </div>
+      <div className="row-actions">
+        <ModelPicker value={inspectChoice} onChange={setInspectChoice} label="Inspection model" />
+        <button disabled={!inspectChoice || inspect.isPending}
+          onClick={() => inspectChoice && inspect.mutate({ c: inspectChoice })}>Inspect</button>
+        <label>
+          Re-inspect since{" "}
+          <input type="date" value={since} onChange={e => setSince(e.target.value)} />
+        </label>
+        <button disabled={!inspectChoice || since === "" || inspect.isPending}
+          onClick={() => inspectChoice && inspect.mutate({ c: inspectChoice, since })}>Re-inspect</button>
       </div>
       {project && (project.summary_md
         ? <pre className="answer">{project.summary_md}</pre>
