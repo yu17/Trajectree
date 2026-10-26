@@ -252,6 +252,27 @@ def test_codex_reinstall_replaces_in_place_without_shifting_owner_groups(app, an
     assert "shift" not in out and "re-trust" not in out
 
 
+def test_codex_hooks_file_symlink_is_written_through(app, client, anon, tmp_path, capsys):
+    home, extra = _codex(tmp_path)
+    dotfiles = tmp_path / "dotfiles"
+    dotfiles.mkdir()
+    real = dotfiles / "codex-hooks.json"
+    (home / "hooks.json").rename(real)
+    (home / "hooks.json").symlink_to(real)
+    env = {**env_for(app), **extra}
+    claude = tmp_path / "s.json"
+    assert cli.main(["hooks", "install", "--yes", "--settings-file", str(claude)], client=anon, env=env) == 0
+    link = home / "hooks.json"
+    assert link.is_symlink() and link.resolve() == real
+    assert "trajectree hooks post" in json.dumps(json.loads(real.read_text()))
+    assert (dotfiles / "codex-hooks.json.trajectree.bak").exists()
+    # the token label and the trust key keep the path Codex reads, the link
+    assert any(t["label"] == hk.codex_token_label(link) for t in client.get("/api/tokens").json())
+    assert cli.main(["hooks", "uninstall", "--settings-file", str(claude)], client=anon, env=env) == 0
+    assert link.is_symlink() and "trajectree hooks post" not in real.read_text()
+    assert not any(t["label"] == hk.codex_token_label(link) for t in client.get("/api/tokens").json())
+
+
 def test_codex_token_file_is_private_even_with_a_stale_temp(app, anon, tmp_path):
     home, extra = _codex(tmp_path)
     env = {**env_for(app), **extra}

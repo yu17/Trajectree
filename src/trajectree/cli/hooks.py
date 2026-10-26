@@ -441,7 +441,9 @@ def _codex_plan(env: Mapping[str, str], out: TextIO) -> None:
     home = codex_home(env)
     assert home is not None
     hooks_file = codex_hooks_file(home)
-    print(f"codex hooks file: {hooks_file} (backup at {hooks_file}.trajectree.bak)", file=out)
+    target = hooks_file.resolve()
+    shown = f"{hooks_file} -> {target}" if target != hooks_file.absolute() else str(hooks_file)
+    print(f"codex hooks file: {shown} (backup at {target}.trajectree.bak)", file=out)
     print(f"codex token file: {codex_token_file(env)}", file=out)
 
 
@@ -478,7 +480,9 @@ def install_codex(
     )
     try:
         _write_secret(token_file, created["secret"])
-        _write(hooks_file, merge_codex_hooks(current, token_file))
+        # Written through a symlink to its target, as the Claude settings file is; the label and
+        # Codex's trust keys keep the path Codex reads.
+        _write(hooks_file.resolve(), merge_codex_hooks(current, token_file))
     except OSError as exc:
         api.delete(f"/api/tokens/{created['id']}")
         print(f"cannot write codex hooks: {exc}", file=sys.stderr)
@@ -503,7 +507,7 @@ def uninstall_codex(api: Any, env: Mapping[str, str], *, out: TextIO) -> int:
     cleaned, shifted = remove_codex_hooks(current)
     if cleaned != current:
         try:
-            _write(hooks_file, cleaned)
+            _write(hooks_file.resolve(), cleaned)  # through a symlink, like install
         except OSError as exc:
             print(f"cannot write {hooks_file}: {exc}", file=sys.stderr)
             return 1

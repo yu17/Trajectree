@@ -322,9 +322,10 @@ def _plan_summarize(
         {
             "project_title": project.title,
             "project_slug": project.slug,
-            "previous_summary": project.summary_md or "_none yet_",
-            "context_pack": pack.markdown,
-            "activity_digest": activity_digest(conn, project_ids=[project.id], since=since, until=now),
+            # Material inside <data> blocks: fence-safe, so it cannot close its block.
+            "previous_summary": fence_safe(project.summary_md or "_none yet_"),
+            "context_pack": fence_safe(pack.markdown),
+            "activity_digest": fence_safe(activity_digest(conn, project_ids=[project.id], since=since, until=now)),
             "since": _day(since),
             "today": _day(now),
         },
@@ -434,11 +435,11 @@ def _plan_summarize_session(
         load_prompt(settings, "summarize_session"),
         {
             "session_id": request.session_id,
-            "session_title": str(signal.payload.get("title") or request.session_id[:8]),
+            "session_title": fence_safe(str(signal.payload.get("title") or request.session_id[:8])),
             "project_slug": project.slug,
             "project_title": project.title,
-            "transcript_digest": digest or "_empty transcript_",
-            "context_pack": pack.markdown,
+            "transcript_digest": fence_safe(digest or "_empty transcript_"),
+            "context_pack": fence_safe(pack.markdown),
             "today": _day(now),
         },
     )
@@ -695,9 +696,9 @@ def _plan_starting_point(
             "project_title": project.title,
             "project_slug": project.slug,
             "block_date": day.isoformat(),
-            "git_history": history.git_md or "_none_",
-            "session_history": sessions or "_none_",
-            "folder_snapshot": history.folder_md or "_none_",
+            "git_history": fence_safe(history.git_md or "_none_"),
+            "session_history": fence_safe(sessions or "_none_"),
+            "folder_snapshot": fence_safe(history.folder_md or "_none_"),
             "sources": sources,
         },
     )
