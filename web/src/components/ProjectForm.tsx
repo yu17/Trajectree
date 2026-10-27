@@ -3,7 +3,7 @@ import { api } from "../api/client";
 import type { ProjectKind } from "../api/types";
 import { errorText } from "./errorText";
 
-const KINDS: ProjectKind[] = ["research", "tooling", "routine", "admin", "inbox"];
+export const KINDS: ProjectKind[] = ["research", "tooling", "routine", "admin", "inbox"];
 
 export function ProjectForm({ onCreated }: { onCreated: () => void }) {
   const [slug, setSlug] = useState("");

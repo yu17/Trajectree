@@ -30,6 +30,17 @@ describe("RunsView", () => {
     expect(screen.getByText(/spent today \$0\.50 of \$5/)).toBeTruthy();
     expect(await screen.findByText("No runs yet")).toBeTruthy();
   });
+  it("lists every runner at the top and each run's runner and model", async () => {
+    api.runnerStatus.mockResolvedValue({ claude: { available: true, version: "2.1.309", authenticated: true }, codex: { available: true, version: "0.163.0", authenticated: true }, backends: [{ name: "lmstudio", credentials: false }] });
+    api.runs.mockResolvedValue([run("r1", { runner: "codex", backend: "codex", model: "gpt-6.1-sol", kind: "inspect" }), run("r2", { runner: "ccx:lmstudio", backend: "lmstudio", model: "qwen3" })]);
+    wrap(<RunsView />);
+    const runners = await screen.findByRole("list", { name: "Runners" });
+    expect(runners.textContent).toContain("claude 2.1.309 · logged in");
+    expect(runners.textContent).toContain("codex 0.163.0 · logged in");
+    expect(runners.textContent).toContain("ccx:lmstudio · no credentials in its profile");
+    expect(await screen.findByText("codex · gpt-6.1-sol")).toBeTruthy();
+    expect(screen.getByText("ccx:lmstudio · qwen3")).toBeTruthy();
+  });
   it("saves caps and toggles pause", async () => {
     api.runs.mockResolvedValue([]);
     wrap(<RunsView />);
@@ -56,6 +67,7 @@ describe("RunsView", () => {
     const { container } = wrap(<RunsView />);
     const row = await screen.findByRole("button", { name: /ask/ });
     expect(container.querySelector("span.badge.run-ok")).not.toBeNull();
+    expect(screen.getByText("claude")).toBeTruthy(); // the runner, with no model recorded
     fireEvent.click(row);
     expect(await screen.findByText("Email Bob")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Accept" })).toBeTruthy();

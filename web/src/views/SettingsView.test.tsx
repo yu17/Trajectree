@@ -137,13 +137,24 @@ describe("SettingsView", () => {
     expect((screen.getByRole("textbox", { name: "Add a model to claude" }) as HTMLInputElement).value).toBe("");
   });
 
-  it("shows the runner, mounts and scheduler", async () => {
+  it("shows every runner, mounts and scheduler", async () => {
+    mocks.runnerStatus.mockResolvedValue({
+      claude: { available: true, version: "2.1.309", authenticated: true },
+      codex: { available: true, version: "0.163.0", authenticated: false },
+      backends: [{ name: "lmstudio", credentials: false }, { name: "zai", credentials: true }],
+    });
     wrap(<SettingsView />);
-    expect(await screen.findByText(/claude 2\.1\.309 · logged in/)).toBeTruthy();
+    const runners = await screen.findByRole("list", { name: "Runners" });
+    expect(within(runners).getAllByRole("listitem").map(li => li.textContent)).toEqual([
+      "claude 2.1.309 · logged in",
+      "codex 0.163.0 · not logged in (run codex login --device-auth)",
+      "ccx:lmstudio · no credentials in its profile",
+      "ccx:zai · credentials set",
+    ]);
     expect(await screen.findByText("/data/cfg")).toBeTruthy();
     expect(screen.getByText("/home/u -> /mnt/u")).toBeTruthy();
     expect(screen.getByText(/last tick never · every 30 s/)).toBeTruthy();
     expect(await screen.findByText(/weekly-review/)).toBeTruthy();
-    for (const name of ["Runner", "Mounts", "Scheduler", "Connectors"]) expect(screen.getByRole("heading", { name })).toBeTruthy();
+    for (const name of ["Runners", "Mounts", "Scheduler", "Connectors"]) expect(screen.getByRole("heading", { name })).toBeTruthy();
   });
 });

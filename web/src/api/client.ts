@@ -36,6 +36,7 @@ import type {
   ReviewManyResult,
   Project,
   ProjectIn,
+  ProjectPatch,
   Resource,
   Review,
   SearchHit,
@@ -87,6 +88,8 @@ export const api = {
   },
   projects: () => request<Project[]>("GET", "/api/projects"),
   createProject: (body: ProjectIn) => request<Project>("POST", "/api/projects", body),
+  updateProject: (id: string, patch: ProjectPatch) =>
+    request<Project>("PATCH", `/api/projects/${encodeURIComponent(id)}`, patch),
   createEvent: (body: EventIn) => request<Event>("POST", "/api/events", body),
   updateEvent: (id: string, patch: EventPatch) =>
     request<Event>("PATCH", `/api/events/${encodeURIComponent(id)}`, patch),

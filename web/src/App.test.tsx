@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import App from "./App";
 
@@ -12,6 +12,40 @@ import { api } from "./api/client";
 import type { Txn } from "./api/types";
 
 describe("App", () => {
+  // The tab lives in the URL, which jsdom keeps from one test to the next.
+  beforeEach(() => window.history.replaceState(null, "", "/"));
+
+  it("each tab has its own path; a path opens its tab; back returns to the last tab", async () => {
+    render(<QueryClientProvider client={new QueryClient()}><App /></QueryClientProvider>);
+    fireEvent.click(screen.getByRole("tab", { name: "Runs" }));
+    expect(window.location.pathname).toBe("/runs");
+    fireEvent.click(screen.getByRole("tab", { name: "Settings" }));
+    expect(window.location.pathname).toBe("/settings");
+    fireEvent.click(screen.getByRole("tab", { name: "Timeline" }));
+    expect(window.location.pathname).toBe("/");
+    window.history.replaceState(null, "", "/runs");
+    fireEvent(window, new PopStateEvent("popstate"));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Runs" }).getAttribute("aria-selected")).toBe("true"));
+  });
+
+  it("opens the tab its path names on load", async () => {
+    window.history.replaceState(null, "", "/ledger");
+    render(<QueryClientProvider client={new QueryClient()}><App /></QueryClientProvider>);
+    expect(screen.getByRole("tab", { name: "Ledger" }).getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("the drawer closes with its close button and with Escape, without saving", () => {
+    render(<QueryClientProvider client={new QueryClient()}><App /></QueryClientProvider>);
+    fireEvent.click(screen.getByRole("button", { name: "Quick capture" }));
+    expect(screen.getByRole("complementary", { name: "Quick capture" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("complementary")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Ask" }));
+    expect(screen.getByRole("complementary", { name: "Ask" })).toBeTruthy();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("complementary")).toBeNull();
+  });
+
   it("shows a login banner when the API answers 401", async () => {
     render(<QueryClientProvider client={new QueryClient()}><App /></QueryClientProvider>);
     const banner = await screen.findByRole("alert");
@@ -58,8 +92,24 @@ describe("App", () => {
     expect(screen.getByRole("tab", { name: "Project" }).getAttribute("aria-selected")).toBe("true");
     expect(screen.getAllByRole("tab").map(t => t.textContent)).toEqual(["Timeline", "Ledger", "Runs", "Reports", "Project", "Inbox", "Settings"]);
     expect(await screen.findByRole("heading", { name: "CLMI" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/project/clmi");
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("tab", { name: "Project" })).toBeNull();
     expect(screen.getByRole("tab", { name: "Timeline" }).getAttribute("aria-selected")).toBe("true");
+    expect(window.location.pathname).toBe("/");
+  });
+
+  it("a project path opens that project once the projects load; an unknown slug says so", async () => {
+    const p = { id: "p1", slug: "clmi", title: "CLMI", kind: "research" as const, status: "active" as const, lane_order: 0, summary_md: "", recurrence: null, props: {}, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" };
+    vi.mocked(api.projects).mockImplementation(async () => [p]);
+    vi.mocked(api.timeline).mockImplementation(async () => ({ projects: [p], events: [], todos: [], edges: [], pending: { event: {}, todo: {}, edge: {} }, strip: [], live: [], stale: [] }));
+    window.history.replaceState(null, "", "/project/clmi");
+    const { unmount } = render(<QueryClientProvider client={new QueryClient()}><App /></QueryClientProvider>);
+    expect(screen.getByRole("tab", { name: "Project" }).getAttribute("aria-selected")).toBe("true");
+    expect(await screen.findByRole("heading", { name: "CLMI" })).toBeTruthy();
+    unmount();
+    window.history.replaceState(null, "", "/project/nope");
+    render(<QueryClientProvider client={new QueryClient()}><App /></QueryClientProvider>);
+    expect(await screen.findByText('No project "nope"')).toBeTruthy();
   });
 });

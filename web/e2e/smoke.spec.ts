@@ -162,3 +162,40 @@ test("a sideways wheel pans the timeline; a block's tooltip stays inside the win
   await expect.poll(() => block.getAttribute("transform")).not.toBe(before);
   expect(await page.evaluate(() => window.scrollX)).toBe(0);
 });
+
+test("tabs have paths that survive a refresh; the drawer closes unsaved; a project's kind changes", async ({ page }) => {
+  const token = readFileSync(process.env.TRAJECTREE_DATA_DIR + "/token", "utf8").trim();
+  const auth = { Authorization: `Bearer ${token}` };
+  const created = await page.request.post("/api/projects", { headers: auth, data: { slug: "kind-change", title: "Kind change", kind: "research" } });
+  expect(created.status()).toBe(200);
+  await page.goto(`/?token=${token}`);
+  await expect(page).toHaveURL(/\/$/);
+
+  await page.getByRole("tab", { name: "Runs" }).click();
+  await expect(page).toHaveURL(/\/runs$/);
+  await page.reload();
+  await expect(page.getByRole("tab", { name: "Runs" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("list", { name: "Runners" })).toContainText("codex");
+  await page.goto("/settings");
+  await expect(page.getByRole("heading", { name: "Runners" })).toBeVisible();
+  await page.goBack();
+  await expect(page.getByRole("tab", { name: "Runs" })).toHaveAttribute("aria-selected", "true");
+
+  await page.getByRole("button", { name: "Quick capture" }).click();
+  const drawer = page.getByRole("complementary", { name: "Quick capture" });
+  await drawer.getByLabel("Title").fill("never saved");
+  await drawer.getByRole("button", { name: "Close" }).click();
+  await expect(drawer).toBeHidden();
+  await page.getByRole("button", { name: "Ask" }).click();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("complementary")).toBeHidden();
+
+  await page.goto("/project/kind-change");
+  await expect(page.getByRole("heading", { name: "Kind change" })).toBeVisible();
+  await page.getByRole("button", { name: "Edit" }).click();
+  await page.getByLabel("Kind").selectOption("tooling");
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect(page.getByText("tooling · active")).toBeVisible();
+  await page.reload();
+  await expect(page.getByText("tooling · active")).toBeVisible();
+});

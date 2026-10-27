@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import type { Caps, Run, UsageDay, UsageSlice } from "../api/types";
-import { statusLine } from "../components/runnerStatus";
+import { RunnerStatusList } from "../components/runnerStatus";
 import { Proposals } from "../components/Proposals";
 import { RoutinesSection } from "../components/RoutinesSection";
 import { useRun } from "../components/useRun";
@@ -126,6 +126,7 @@ function RunRow({ run, slug }: { run: Run; slug: string | null }) {
           {run.kind} · {new Date(run.created_at).toLocaleString()}
         </button>
         <span className={`badge run-${run.status}`}>{run.status}</span>
+        <span className="muted">{run.model ? `${run.runner} · ${run.model}` : run.runner}</span>
         <span className="muted">{run.slot}</span>
         {run.attempt > 1 && <span className="badge">{`retry ${run.attempt}`}</span>}
         {slug && <span className="muted">{slug}</span>}
@@ -148,7 +149,7 @@ export function RunsView() {
 
   return (
     <div className="runs inbox">
-      {status.data && <p className="muted">{statusLine(status.data)}</p>}
+      {status.data && <RunnerStatusList status={status.data} />}
       <h2>Usage</h2>
       {usage.data && (
         <>

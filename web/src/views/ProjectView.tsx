@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
-import type { ModelChoice, Resource, Signal } from "../api/types";
+import type { ModelChoice, Project, ProjectKind, ProjectStatus, Resource, Signal } from "../api/types";
 import { errorText } from "../components/errorText";
+import { KINDS } from "../components/ProjectForm";
 import { ModelPicker } from "../components/ModelPicker";
 import { useRun } from "../components/useRun";
 import { glyph } from "../timeline/render";
@@ -26,6 +27,49 @@ function latestJobStates(signals: Signal[]): Map<string, string> {
 
 const jobId = (r: Resource) => r.locator.slice(r.locator.indexOf(":") + 1);
 
+const STATUSES: ProjectStatus[] = ["active", "paused", "done", "archived"];
+
+// Title, kind and status; only the changed fields are sent.
+function ProjectEdit({ project, onDone }: { project: Project; onDone: () => void }) {
+  const qc = useQueryClient();
+  const [title, setTitle] = useState(project.title);
+  const [kind, setKind] = useState<ProjectKind>(project.kind);
+  const [status, setStatus] = useState<ProjectStatus>(project.status);
+  const save = useMutation({
+    mutationFn: () => api.updateProject(project.id, {
+      ...(title !== project.title ? { title } : {}),
+      ...(kind !== project.kind ? { kind } : {}),
+      ...(status !== project.status ? { status } : {}),
+    }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["projects"] });
+      void qc.invalidateQueries({ queryKey: ["timeline"] });
+      void qc.invalidateQueries({ queryKey: ["txns"] });
+      onDone();
+    },
+  });
+  const unchanged = title === project.title && kind === project.kind && status === project.status;
+  return (
+    <form className="panel-form project-edit" onSubmit={e => { e.preventDefault(); save.mutate(); }}>
+      <label htmlFor="pe-title">Title</label>
+      <input id="pe-title" required value={title} onChange={e => setTitle(e.target.value)} />
+      <label htmlFor="pe-kind">Kind</label>
+      <select id="pe-kind" value={kind} onChange={e => setKind(e.target.value as ProjectKind)}>
+        {KINDS.map(k => <option key={k} value={k}>{k}</option>)}
+      </select>
+      <label htmlFor="pe-status">Status</label>
+      <select id="pe-status" value={status} onChange={e => setStatus(e.target.value as ProjectStatus)}>
+        {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+      </select>
+      {save.isError && <p role="alert" className="form-error">{errorText(save.error)}</p>}
+      <div className="row-actions">
+        <button type="submit" disabled={unchanged || title.trim() === "" || save.isPending}>Save</button>
+        <button type="button" onClick={onDone}>Cancel</button>
+      </div>
+    </form>
+  );
+}
+
 export function ProjectView({ projectId, onClose }: { projectId: string; onClose: () => void }) {
   const qc = useQueryClient();
   const [[from, to]] = useState(() => {
@@ -45,6 +89,7 @@ export function ProjectView({ projectId, onClose }: { projectId: string; onClose
   });
   const routines = useQuery({ queryKey: ["routines"], queryFn: api.routines });
 
+  const [editing, setEditing] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [choice, setChoice] = useState<ModelChoice | null>(null);
   const summarize = useMutation({
@@ -97,8 +142,12 @@ export function ProjectView({ projectId, onClose }: { projectId: string; onClose
           <h1>{project?.title ?? (projects.isPending ? "loading…" : "Unknown project")}</h1>
           {project && <p className="muted">{`${project.kind} · ${project.status}`}</p>}
         </div>
-        <button onClick={onClose}>Close</button>
+        <div className="row-actions">
+          {project && <button aria-expanded={editing} onClick={() => setEditing(e => !e)}>Edit</button>}
+          <button onClick={onClose}>Close</button>
+        </div>
       </div>
+      {project && editing && <ProjectEdit project={project} onDone={() => setEditing(false)} />}
       {projects.isError && <p className="form-error">{errorText(projects.error)}</p>}
       <ActionNotice conflicts={null} error={notice} onDismiss={() => setNotice(null)} />
 

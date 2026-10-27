@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import type { ConnectorStatus, RunnerCatalog, TokenCreate, TokenOut, TokenScope, TokenSecret } from "../api/types";
 import { errorText } from "../components/errorText";
-import { statusLine } from "../components/runnerStatus";
+import { RunnerStatusList } from "../components/runnerStatus";
 
 const local = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : "never");
 
@@ -164,9 +164,9 @@ function RunnerSection() {
   const status = useQuery({ queryKey: ["runner-status"], queryFn: api.runnerStatus });
   return (
     <section>
-      <h2>Runner</h2>
+      <h2>Runners</h2>
       {status.isError && <p className="form-error">{errorText(status.error)}</p>}
-      {status.data && <p className="muted">{statusLine(status.data)}</p>}
+      {status.data && <RunnerStatusList status={status.data} />}
     </section>
   );
 }

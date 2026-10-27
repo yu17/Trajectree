@@ -601,6 +601,7 @@ export interface Catalog {
   runners: RunnerCatalog[];
 }
 
+export type ProjectPatch = Partial<ProjectIn>;
 export type EventPatch = Partial<EventIn>;
 export type TodoPatch = Partial<TodoIn>;
 

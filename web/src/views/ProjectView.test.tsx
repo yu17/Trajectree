@@ -6,7 +6,7 @@ import { ProjectView } from "./ProjectView";
 import { FABLE, pickFable, testCatalog } from "../components/testCatalog";
 import type { Event, Project, Routine, Run, TimelineResponse } from "../api/types";
 
-const api = vi.hoisted(() => ({ projects: vi.fn(), timeline: vi.fn(), resources: vi.fn(), signals: vi.fn(), routines: vi.fn(), summarize: vi.fn(), inspect: vi.fn(), run: vi.fn(), models: vi.fn() }));
+const api = vi.hoisted(() => ({ projects: vi.fn(), timeline: vi.fn(), resources: vi.fn(), signals: vi.fn(), routines: vi.fn(), summarize: vi.fn(), inspect: vi.fn(), run: vi.fn(), models: vi.fn(), updateProject: vi.fn() }));
 vi.mock("../api/client", () => ({ api, ApiError: class extends Error {} }));
 
 const wrap = (ui: React.ReactElement) => render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>{ui}</QueryClientProvider>);
@@ -128,5 +128,24 @@ describe("ProjectView", () => {
     fireEvent.change(screen.getByLabelText("Re-inspect since"), { target: { value: "2026-09-01" } });
     await user.click(screen.getByRole("button", { name: "Re-inspect" }));
     await waitFor(() => expect(api.inspect).toHaveBeenCalledWith("p1", FABLE, "2026-09-01"));
+  });
+
+  it("edits the kind and status, sending only what changed; Cancel discards", async () => {
+    const user = userEvent.setup();
+    api.updateProject.mockResolvedValue(project("p1", "clmi", { kind: "tooling", status: "paused" }));
+    wrap(<ProjectView projectId="p1" onClose={() => {}} />);
+    await user.click(await screen.findByRole("button", { name: "Edit" }));
+    const save = screen.getByRole("button", { name: "Save" }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true); // nothing changed yet
+    await user.selectOptions(screen.getByLabelText("Kind"), "tooling");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByLabelText("Kind")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    expect((screen.getByLabelText("Kind") as HTMLSelectElement).value).toBe("research");
+    await user.selectOptions(screen.getByLabelText("Kind"), "tooling");
+    await user.selectOptions(screen.getByLabelText("Status"), "paused");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(api.updateProject).toHaveBeenCalledWith("p1", { kind: "tooling", status: "paused" }));
+    await waitFor(() => expect(screen.queryByLabelText("Kind")).toBeNull());
   });
 });
