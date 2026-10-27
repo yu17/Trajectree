@@ -1,4 +1,4 @@
-import { render, fireEvent } from "@testing-library/react";
+import { act, render, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 import { Timeline } from "./Timeline";
 import type { TimelineResponse } from "../api/types";
@@ -48,6 +48,30 @@ describe("Timeline", () => {
     expect(tip.style.display).toBe("none");
     fireEvent.click(container.querySelector("svg")!);
     expect(onSelect).toHaveBeenCalledWith(null);
+  });
+  it("the tooltip flips above and left of the cursor near the window's bottom-right corner", () => {
+    const { container } = render(<Timeline data={data} now={new Date("2026-01-10T00:00:00Z")} range={[new Date("2026-01-01T00:00:00Z"), new Date("2026-02-01T00:00:00Z")]} selected={null} onSelect={() => {}} />);
+    const block = container.querySelector("g.block.k-milestone")!;
+    fireEvent.mouseMove(block, { clientX: 100, clientY: 100 });
+    const tip = container.querySelector<HTMLDivElement>("div.tip")!;
+    expect([tip.style.left, tip.style.top]).toEqual(["112px", "112px"]);
+    fireEvent.mouseMove(block, { clientX: window.innerWidth - 2, clientY: window.innerHeight - 2 });
+    expect(parseFloat(tip.style.left)).toBeLessThan(window.innerWidth - 2);
+    expect(parseFloat(tip.style.top)).toBeLessThan(window.innerHeight - 2);
+  });
+  it("a horizontal or shift wheel pans the timeline", () => {
+    const { container } = render(<Timeline data={data} now={new Date("2026-01-10T00:00:00Z")} range={[new Date("2026-01-01T00:00:00Z"), new Date("2026-02-01T00:00:00Z")]} selected={null} onSelect={() => {}} />);
+    const x = () => container.querySelector("g.block.k-decision")!.getAttribute("transform");
+    const before = x();
+    const svg = container.querySelector("svg")!;
+    const swipe = new WheelEvent("wheel", { deltaX: 120, deltaY: 0, bubbles: true, cancelable: true });
+    act(() => { svg.dispatchEvent(swipe); });
+    expect(swipe.defaultPrevented).toBe(true);
+    const panned = x();
+    expect(panned).not.toBe(before);
+    expect(parseFloat(panned!.match(/translate\(([-\d.]+)/)![1])).toBeLessThan(parseFloat(before!.match(/translate\(([-\d.]+)/)![1]));
+    act(() => { svg.dispatchEvent(new WheelEvent("wheel", { deltaY: 120, shiftKey: true, bubbles: true, cancelable: true })); });
+    expect(x()).not.toBe(panned);
   });
   it("re-lays out blocks when the range changes", () => {
     const now = new Date("2026-01-10T00:00:00Z");

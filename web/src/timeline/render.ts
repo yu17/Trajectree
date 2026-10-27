@@ -92,7 +92,6 @@ function layer(parent: Sel, tag: string, cls: string): Sel {
 export function renderTimeline(
   svgEl: SVGSVGElement,
   tipEl: HTMLDivElement,
-  wrapEl: HTMLDivElement,
   input: RenderInput,
 ): void {
   const { data, now, range, width, transform, selected, hovered, showAllWires, uid, onSelect, onHover, onChip, onLane } = input;
@@ -233,9 +232,14 @@ export function renderTimeline(
     b.textContent = title;
     tipEl.replaceChildren(b, document.createElement("br"), document.createTextNode(sub));
     tipEl.style.display = "block";
-    const r = wrapEl.getBoundingClientRect();
-    tipEl.style.left = `${ev.clientX - r.left + 12}px`;
-    tipEl.style.top = `${ev.clientY - r.top + 12}px`;
+    // Fixed to the viewport so the timeline frame never clips it; flips to the other side of
+    // the cursor when it would run past the window edge.
+    const w = tipEl.offsetWidth;
+    const h = tipEl.offsetHeight;
+    const left = ev.clientX + 12 + w > window.innerWidth ? ev.clientX - 12 - w : ev.clientX + 12;
+    const top = ev.clientY + 12 + h > window.innerHeight ? ev.clientY - 12 - h : ev.clientY + 12;
+    tipEl.style.left = `${Math.max(0, left)}px`;
+    tipEl.style.top = `${Math.max(0, top)}px`;
   };
   const hideTip = () => {
     tipEl.style.display = "none";

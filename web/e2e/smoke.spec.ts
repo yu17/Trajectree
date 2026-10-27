@@ -125,3 +125,40 @@ test("the Routines tab does not scroll sideways at phone width with a long runne
   const widths = await page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, inner: window.innerWidth }));
   expect(widths.scroll).toBeLessThanOrEqual(widths.inner);
 });
+
+test("a sideways wheel pans the timeline; a block's tooltip stays inside the window", async ({ page }) => {
+  const token = readFileSync(process.env.TRAJECTREE_DATA_DIR + "/token", "utf8").trim();
+  const auth = { Authorization: `Bearer ${token}` };
+  const project = await page.request.post("/api/projects", { headers: auth, data: { slug: "bottom-lane", title: "Bottom lane", kind: "research", lane_order: 99 } });
+  expect(project.status()).toBe(200);
+  const day = new Date(Date.now() - 86_400_000).toISOString();
+  const event = await page.request.post("/api/events", {
+    headers: auth, data: { project_id: (await project.json()).id, kind: "milestone", title: "Bottom block", t_start: day },
+  });
+  expect(event.status()).toBe(200);
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto(`/?token=${token}`);
+  await expect(page).toHaveURL(/\/$/);
+  const block = page.locator("g.block", { hasText: "Bottom block" });
+  await expect(block).toBeVisible();
+
+  // Hovering the bottom lane's block: the tooltip is fixed to the window, not clipped by the frame.
+  const box = (await block.locator("rect.body").boundingBox())!; // the label beside it takes no pointer
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height - 1);
+  const tip = page.locator("div.tip");
+  await expect(tip).toBeVisible();
+  const placed = await tip.evaluate(el => {
+    const r = el.getBoundingClientRect();
+    return { position: getComputedStyle(el).position, top: r.top, bottom: r.bottom, right: r.right, h: window.innerHeight, w: window.innerWidth };
+  });
+  expect(placed.position).toBe("fixed");
+  expect(placed.top).toBeGreaterThanOrEqual(0);
+  expect(placed.bottom).toBeLessThanOrEqual(placed.h);
+  expect(placed.right).toBeLessThanOrEqual(placed.w);
+
+  // A horizontal wheel pans the time axis and never scrolls the page.
+  const before = await block.getAttribute("transform");
+  await page.mouse.wheel(300, 0);
+  await expect.poll(() => block.getAttribute("transform")).not.toBe(before);
+  expect(await page.evaluate(() => window.scrollX)).toBe(0);
+});

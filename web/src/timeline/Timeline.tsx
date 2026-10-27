@@ -21,6 +21,10 @@ export interface TimelineProps {
 
 const FALLBACK_W = 1200; // jsdom reports 0 for every layout measurement
 
+function isHorizontalWheel(ev: WheelEvent): boolean {
+  return ev.shiftKey || Math.abs(ev.deltaX) > Math.abs(ev.deltaY);
+}
+
 export function Timeline({ data, now, range, selected, onSelect, showAllWires = false, onChip, onLane }: TimelineProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -58,12 +62,22 @@ export function Timeline({ data, now, range, selected, onSelect, showAllWires = 
     const zoom = d3.zoom<SVGSVGElement, unknown>()
       .scaleExtent([0.6, 120])
       .extent(() => [[0, 0], [Number(svgEl.getAttribute("width")) || FALLBACK_W, Number(svgEl.getAttribute("height")) || 1]])
-      .filter(ev => !ev.button)
+      // A horizontal wheel (trackpad swipe, tilt wheel, shift+wheel) pans instead of zooming.
+      .filter(ev => ev.type === "wheel" ? !isHorizontalWheel(ev) : !ev.button)
       .on("zoom", ev => setTransform(ev.transform));
     svg.call(zoom).on("dblclick.zoom", null);
     zoomRef.current = zoom;
+    const onWheel = (ev: WheelEvent) => {
+      if (!isHorizontalWheel(ev)) return;
+      ev.preventDefault(); // keep the browser from scrolling the page or swiping back
+      const unit = ev.deltaMode === 1 ? 16 : ev.deltaMode === 2 ? svgEl.clientWidth || FALLBACK_W : 1;
+      const delta = (ev.deltaX || ev.deltaY) * unit;
+      zoom.translateBy(svg, -delta / d3.zoomTransform(svgEl).k, 0);
+    };
+    svgEl.addEventListener("wheel", onWheel, { passive: false });
     return () => {
       svg.on(".zoom", null);
+      svgEl.removeEventListener("wheel", onWheel);
       zoomRef.current = null;
     };
   }, []);
@@ -81,7 +95,7 @@ export function Timeline({ data, now, range, selected, onSelect, showAllWires = 
 
   useEffect(() => {
     if (!width) return;
-    renderTimeline(svgRef.current!, tipRef.current!, wrapRef.current!, {
+    renderTimeline(svgRef.current!, tipRef.current!, {
       data,
       now: new Date(nowMs),
       range: [new Date(from), new Date(to)],
